@@ -36,12 +36,12 @@ public final class QwenToolSurfaceRewriteContributor implements ToolSurfaceContr
 
     private String overrideDescription(String toolName) {
         return switch (toolName) {
-            case "read_file" -> "Read an existing workspace file or a 1-based line range. Use it for exact source inspection after discovery and keep paths workspace-relative."; //$NON-NLS-1$
+            case "read_file" -> "Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths."; //$NON-NLS-1$
             case "list_files" -> "List projects or directory contents in the workspace. Use it for pathname discovery, not for text search or semantic symbol lookup."; //$NON-NLS-1$
             case "glob" -> "Find files by glob pattern under the workspace or a subdirectory. Use it for pathname discovery before read_file."; //$NON-NLS-1$
             case "grep" -> "Search plain text or regex across workspace files. Use it for string occurrences only; prefer EDT semantic tools for symbols, metadata, and platform behavior."; //$NON-NLS-1$
-            case "edit_file" -> "Edit an existing workspace file in place via full replace, targeted search/replace, or SEARCH/REPLACE blocks. Do not use it to create files or mutate EDT metadata descriptors unless an explicit emergency override is intended."; //$NON-NLS-1$
-            case "write_file" -> "Overwrite an existing workspace file with full content. Prefer edit_file for narrow patches and ensure_module_artifact before touching metadata-owned BSL modules."; //$NON-NLS-1$
+            case "edit_file" -> "Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override."; //$NON-NLS-1$
+            case "write_file" -> "Overwrite a workspace file with full content; can create project-root Code.md. Prefer edit_file for narrow patches."; //$NON-NLS-1$
             case "workspace_import_project" -> "Import an existing Eclipse/EDT project directory into the current workspace. Inspect repository and project state first, then import only when a .project-based project already exists."; //$NON-NLS-1$
             case "git_inspect" -> "Показывает состояние git-репозитория через безопасные read-only операции. Для EDT проекта предпочитай project_name; repo_path используй только как явный override."; //$NON-NLS-1$
             case "git_mutate" -> "Выполняет разрешённые git-изменения. Для существующего EDT проекта передавай project_name, а для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$

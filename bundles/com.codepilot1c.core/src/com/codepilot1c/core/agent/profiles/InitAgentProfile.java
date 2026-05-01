@@ -17,21 +17,21 @@ import com.codepilot1c.core.agent.prompts.PromptProviderRegistry;
 import com.codepilot1c.core.permissions.PermissionRule;
 
 /**
- * Read-mostly profile for cross-domain orchestration through sub-agents.
+ * Agent profile for initializing and refreshing the project Code.md context file.
  */
-public final class OrchestratorProfile implements AgentProfile {
+public class InitAgentProfile implements AgentProfile {
 
-    public static final String ID = "orchestrator"; //$NON-NLS-1$
+    public static final String ID = "init"; //$NON-NLS-1$
 
     private static final Set<String> ALLOWED_TOOLS = new HashSet<>(Arrays.asList(
             "read_file", //$NON-NLS-1$
             "list_files", //$NON-NLS-1$
             "glob", //$NON-NLS-1$
             "grep", //$NON-NLS-1$
-            "delegate_to_agent", //$NON-NLS-1$
-            "task", //$NON-NLS-1$
-            "skill", //$NON-NLS-1$
-            "discover_tools")); //$NON-NLS-1$
+            "write_file", //$NON-NLS-1$
+            "scan_metadata_index", //$NON-NLS-1$
+            "discover_tools" //$NON-NLS-1$
+    ));
 
     @Override
     public String getId() {
@@ -40,12 +40,12 @@ public final class OrchestratorProfile implements AgentProfile {
 
     @Override
     public String getName() {
-        return "Оркестрация"; //$NON-NLS-1$
+        return "Инициализация Code.md"; //$NON-NLS-1$
     }
 
     @Override
     public String getDescription() {
-        return "Координирует multi-domain задачи: читает контекст, выбирает профиль и делегирует работу специализированным подагентам."; //$NON-NLS-1$
+        return "Анализирует проект 1С и создаёт или обновляет Code.md с контекстом для AI-агента."; //$NON-NLS-1$
     }
 
     @Override
@@ -60,31 +60,33 @@ public final class OrchestratorProfile implements AgentProfile {
                 PermissionRule.allow("list_files").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("glob").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("grep").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("delegate_to_agent").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("task").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("skill").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("discover_tools").forAllResources()); //$NON-NLS-1$
+                PermissionRule.allow("scan_metadata_index").forAllResources(), //$NON-NLS-1$
+                PermissionRule.allow("discover_tools").forAllResources(), //$NON-NLS-1$
+                PermissionRule.ask("write_file") //$NON-NLS-1$
+                        .withDescription("Создание или обновление Code.md") //$NON-NLS-1$
+                        .forAllResources()
+        );
     }
 
     @Override
     public String getSystemPromptAddition() {
-        String defaultPrompt = AgentPromptTemplates.buildOrchestratorPrompt();
+        String defaultPrompt = AgentPromptTemplates.buildInitPrompt();
         return PromptProviderRegistry.getInstance().getSystemPromptAddition(getId(), defaultPrompt);
     }
 
     @Override
     public int getMaxSteps() {
-        return 30;
+        return 20;
     }
 
     @Override
     public long getTimeoutMs() {
-        return 10 * 60 * 1000L;
+        return 5 * 60 * 1000L;
     }
 
     @Override
     public boolean isReadOnly() {
-        return true;
+        return false;
     }
 
     @Override

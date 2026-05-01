@@ -80,7 +80,8 @@ public class ExploreAgentProfile implements AgentProfile {
             "bsl_module_exports",
             "inspect_platform_reference",
             "skill",
-            "task"
+            "task",
+            "discover_tools"
     ));
 
     @Override
@@ -140,7 +141,8 @@ public class ExploreAgentProfile implements AgentProfile {
                 PermissionRule.allow("bsl_module_exports").forAllResources(),
                 PermissionRule.allow("inspect_platform_reference").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
-                PermissionRule.allow("task").forAllResources()
+                PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources()
         );
     }
 

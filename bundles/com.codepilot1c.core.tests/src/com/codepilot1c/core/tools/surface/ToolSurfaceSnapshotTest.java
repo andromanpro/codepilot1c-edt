@@ -58,8 +58,8 @@ public class ToolSurfaceSnapshotTest {
         assertEquals("""
                 provider=backend
                 profile=build
-                read_file=Read an existing workspace file or a 1-based line range. Use it for exact source inspection after discovery and keep paths workspace-relative.
-                edit_file=Edit an existing workspace file in place via full replace, targeted search/replace, or SEARCH/REPLACE blocks. Do not use it to create files or mutate EDT metadata descriptors unless an explicit emergency override is intended.
+                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths.
+                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override.
                 create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику.
                 qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation.
                 skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
@@ -69,8 +69,8 @@ public class ToolSurfaceSnapshotTest {
         assertEquals("""
                 provider=backend
                 profile=build
-                read_file=Read an existing workspace file or a 1-based line range. Use it for exact source inspection after discovery and keep paths workspace-relative. Qwen routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
-                edit_file=Edit an existing workspace file in place via full replace, targeted search/replace, or SEARCH/REPLACE blocks. Do not use it to create files or mutate EDT metadata descriptors unless an explicit emergency override is intended. Qwen routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
+                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths. Qwen routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
+                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override. Qwen routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
                 create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику. Qwen routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
                 qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Qwen routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
                 skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.

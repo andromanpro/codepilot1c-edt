@@ -31,7 +31,7 @@ final class ToolSurfaceSchemaNormalizer {
                       "properties": {
                         "path": {
                           "type": "string",
-                          "description": "Existing workspace file path. Use a workspace-relative path whenever possible."
+                          "description": "Existing workspace file path. Bare Code.md resolves to the current project root."
                         },
                         "start_line": {
                           "type": "integer",
@@ -135,7 +135,7 @@ final class ToolSurfaceSchemaNormalizer {
                       "properties": {
                         "path": {
                           "type": "string",
-                          "description": "Existing workspace-relative file path."
+                          "description": "Workspace-relative file path. Project-root Code.md may be created."
                         },
                         "content": {
                           "type": "string",
@@ -155,7 +155,7 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "create": {
                           "type": "boolean",
-                          "description": "Deprecated and ignored; this tool edits existing files only."
+                          "description": "Deprecated except for creating project-root Code.md with full content."
                         },
                         "allow_metadata_descriptor_edit": {
                           "type": "boolean",
@@ -172,7 +172,7 @@ final class ToolSurfaceSchemaNormalizer {
                       "properties": {
                         "path": {
                           "type": "string",
-                          "description": "Existing workspace-relative file path."
+                          "description": "Workspace-relative file path. Existing files are overwritten; project-root Code.md may be created."
                         },
                         "content": {
                           "type": "string",
@@ -180,7 +180,7 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "overwrite": {
                           "type": "boolean",
-                          "description": "Must be true because write_file only overwrites existing files."
+                          "description": "Must be true. Existing files are overwritten; project-root Code.md may be created."
                         }
                       },
                       "required": ["path", "content"],

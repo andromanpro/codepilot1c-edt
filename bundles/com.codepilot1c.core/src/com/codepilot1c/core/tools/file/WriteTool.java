@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -26,15 +27,18 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Status;
 
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
+
 /**
- * Инструмент записи в существующие файлы.
+ * Инструмент записи файлов workspace.
  *
- * <p>Используется только для изменения существующих файлов в workspace.
- * Создание новых файлов через этот инструмент запрещено.</p>
+ * <p>Используется для изменения существующих файлов в workspace.
+ * Дополнительно разрешает создать Code.md в корне текущего проекта.</p>
  *
  * <p>Особенности:</p>
  * <ul>
- *   <li>Не создает новые файлы и директории</li>
+ *   <li>Не создает новые файлы и директории, кроме Code.md в корне проекта</li>
  *   <li>Поддерживает UTF-8 кодировку</li>
  *   <li>Работает только в пределах workspace (безопасность)</li>
  *   <li>Перезаписывает существующие файлы (с overwrite=true)</li>
@@ -51,7 +55,7 @@ public class WriteTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to an existing workspace file that should be overwritten"
+                        "description": "Path to a workspace file. Existing files are overwritten; project-root Code.md may be created."
                     },
                     "content": {
                         "type": "string",
@@ -59,7 +63,7 @@ public class WriteTool extends AbstractTool {
                     },
                     "overwrite": {
                         "type": "boolean",
-                        "description": "Must be true; this tool only overwrites existing files"
+                        "description": "Must be true; existing files are overwritten and project-root Code.md may be created"
                     }
                 },
                 "required": ["path", "content"]
@@ -68,7 +72,7 @@ public class WriteTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Перезаписывает содержимое существующего файла целиком. Используй, когда нужен осознанный full overwrite без patch-логики. Предпочитай edit_file для точечных правок и не используй этот tool как основной путь изменения EDT metadata или .mdo файлов."; //$NON-NLS-1$
+        return "Перезаписывает файл workspace целиком; может создать Code.md в корне текущего проекта. Используй, когда нужен осознанный full overwrite без patch-логики. Предпочитай edit_file для точечных правок и не используй этот tool как основной путь изменения EDT metadata или .mdo файлов."; //$NON-NLS-1$
     }
 
     @Override
@@ -118,7 +122,7 @@ public class WriteTool extends AbstractTool {
     }
 
     /**
-     * Записывает содержимое в существующий файл.
+     * Записывает содержимое в файл workspace.
      */
     private ToolResult writeFile(String pathStr, String content)
             throws CoreException {
@@ -166,18 +170,23 @@ public class WriteTool extends AbstractTool {
             return ToolResult.failure("Не удалось получить файл: " + pathStr);
         }
 
-        if (!file.exists()) {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        boolean created = false;
+
+        if (!file.exists() && !isProjectRootCodeMd(file)) {
             return ToolResult.failure(
                     "Создание новых файлов через write_file запрещено: " + file.getFullPath() + ". " +
+                    "Исключение разрешено только для Code.md в корне проекта. " +
                     "Используйте ensure_module_artifact для подготовки Module.bsl/ObjectModule.bsl/ManagerModule.bsl, " +
                     "после чего применяйте edit_file/write_file только к существующему файлу.");
         }
 
-        // Write content
-        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
-        ByteArrayInputStream source = new ByteArrayInputStream(bytes);
-
-        file.setContents(source, IResource.FORCE, new NullProgressMonitor());
+        if (file.exists()) {
+            file.setContents(new ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+        } else {
+            file.create(new ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+            created = true;
+        }
 
         // Refresh
         file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
@@ -187,9 +196,9 @@ public class WriteTool extends AbstractTool {
         result.append("**Файл обновлен:** `").append(file.getFullPath()).append("`\n");
         result.append("**Размер:** ").append(bytes.length).append(" байт\n");
         result.append("**Строк:** ").append(countLines(content)).append("\n");
-        result.append("**Статус:** перезаписан");
+        result.append("**Статус:** ").append(created ? "создан" : "перезаписан");
 
-        logInfo("Файл обновлен: " + file.getFullPath());
+        logInfo((created ? "Файл создан: " : "Файл обновлен: ") + file.getFullPath());
 
         return ToolResult.success(result.toString(), ToolResult.ToolResultType.TEXT);
     }
@@ -211,21 +220,59 @@ public class WriteTool extends AbstractTool {
         // Convert separators
         normalized = normalized.replace('\\', '/');
 
-        return normalized;
+        return ProjectMemoryFilePolicy.canonicalizeBarePath(normalized);
     }
 
     /**
      * Находит или создает файл по пути.
      */
     private IFile findOrCreateFile(IWorkspaceRoot root, String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+
         try {
-            // Try to get file handle
             IPath ipath = org.eclipse.core.runtime.Path.fromPortableString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                return project != null ? project.getFile(ipath) : null;
+            }
             return root.getFile(ipath);
         } catch (Exception e) {
             logError("Ошибка получения файла: " + path, e);
             return null;
         }
+    }
+
+    private IProject resolveCurrentProject(IWorkspaceRoot root) {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
+                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+                if (project != null && project.exists() && project.isOpen()) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            logWarning("Не удалось определить текущий проект из сессии: " + e.getMessage());
+        }
+
+        for (IProject project : root.getProjects()) {
+            if (project.exists() && project.isOpen()) {
+                return project;
+            }
+        }
+        return null;
+    }
+
+    private boolean isProjectRootCodeMd(IFile file) {
+        if (file == null || file.getProjectRelativePath() == null) {
+            return false;
+        }
+        if (file.getProjectRelativePath().segmentCount() != 1) {
+            return false;
+        }
+        return ProjectMemoryFilePolicy.isCanonicalFileName(file.getName());
     }
 
     /**

@@ -25,7 +25,7 @@ public final class DelegateToAgentTool extends AbstractTool {
               "properties": {
                 "agentType": {
                   "type": "string",
-                  "enum": ["auto", "code", "metadata", "qa", "dcs", "extension", "recovery", "plan", "explore", "orchestrator"],
+                  "enum": ["auto", "init", "code", "metadata", "qa", "dcs", "extension", "recovery", "plan", "explore", "orchestrator"],
                   "description": "Target agent type or auto routing."
                 },
                 "task": {

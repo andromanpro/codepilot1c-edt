@@ -424,6 +424,16 @@ final class QwenToolCallExamples {
                     new String[]{"category"}, //$NON-NLS-1$
                     new String[]{"metadata"}); //$NON-NLS-1$
         }
+        if ("connect_infobase".equals(name)) { //$NON-NLS-1$
+            return new ExampleParams(
+                    new String[]{"project_name", "database_path", "kind", "set_primary"}, //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    new String[]{"DemoConfiguration", "/srv/1c/ib/demo", "file", "true"}); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        }
+        if ("update_infobase_status".equals(name)) { //$NON-NLS-1$
+            return new ExampleParams(
+                    new String[]{"job_id"}, //$NON-NLS-1$
+                    new String[]{"update-ib-123"}); //$NON-NLS-1$
+        }
         if ("remember_fact".equals(name)) { //$NON-NLS-1$
             return new ExampleParams(
                     new String[]{"content", "category", "domain"}, //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$

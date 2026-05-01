@@ -50,6 +50,12 @@
             category="com.codepilot1c.ui.preferences.VibePreferencePage"
             class="com.codepilot1c.ui.preferences.McpHostPreferencePage">
         </page>
+        <page
+            id="com.codepilot1c.ui.preferences.CodeMdPreferencePage"
+            name="%preferences.codeMd.name"
+            category="com.codepilot1c.ui.preferences.VibePreferencePage"
+            class="com.codepilot1c.ui.preferences.CodeMdPreferencePage">
+        </page>
     </extension>
 
     <extension point="org.eclipse.ui.propertyPages">

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -30,6 +31,8 @@ import org.eclipse.core.runtime.IPath;
 
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
 import com.codepilot1c.core.tools.util.ToolResultTruncator;
 
 /**
@@ -50,7 +53,7 @@ public class ReadFileTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Existing workspace file path. Use for literal file text, not for semantic metadata inspection."
+                        "description": "Existing workspace file path. Bare Code.md resolves to the current project root."
                     },
                     "start_line": {
                         "type": "integer",
@@ -88,7 +91,7 @@ public class ReadFileTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает текст существующего файла workspace, при необходимости по диапазону строк."; //$NON-NLS-1$
+        return "Читает текст существующего файла workspace; bare Code.md ищет в корне текущего проекта."; //$NON-NLS-1$
     }
 
     @Override
@@ -180,7 +183,8 @@ public class ReadFileTool extends AbstractTool {
             normalized = normalized.substring(1);
         }
         // Convert to platform-specific separators
-        return normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        normalized = normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        return ProjectMemoryFilePolicy.canonicalizeBarePath(normalized);
     }
 
     /**
@@ -189,6 +193,23 @@ public class ReadFileTool extends AbstractTool {
      */
     private IFile findWorkspaceFile(String path) {
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+
+        // Strategy 0: A bare file name, especially Code.md from the chat action,
+        // belongs to the current project root rather than the workspace root.
+        try {
+            IPath ipath = org.eclipse.core.runtime.Path.fromOSString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                if (project != null) {
+                    IFile file = project.getFile(ipath);
+                    if (file.exists()) {
+                        return file;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Continue to workspace-relative lookup.
+        }
 
         // Strategy 1: Try as workspace-relative path
         try {
@@ -221,6 +242,27 @@ public class ReadFileTool extends AbstractTool {
             // File not found
         }
 
+        return null;
+    }
+
+    private IProject resolveCurrentProject(IWorkspaceRoot root) {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
+                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+                if (project != null && project.exists() && project.isOpen()) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("read_file: could not resolve current project from session", e); //$NON-NLS-1$
+        }
+
+        for (IProject project : root.getProjects()) {
+            if (project.exists() && project.isOpen()) {
+                return project;
+            }
+        }
         return null;
     }
 

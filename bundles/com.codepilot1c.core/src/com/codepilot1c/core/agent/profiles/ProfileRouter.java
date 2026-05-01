@@ -43,6 +43,24 @@ public final class ProfileRouter {
             "search", //$NON-NLS-1$
             "grep"); //$NON-NLS-1$
 
+    private static final Set<String> CODE_MD_KEYWORDS = Set.of(
+            "code.md", //$NON-NLS-1$
+            "codemd"); //$NON-NLS-1$
+
+    private static final Set<String> INIT_ACTION_KEYWORDS = Set.of(
+            "создай", //$NON-NLS-1$
+            "создать", //$NON-NLS-1$
+            "сгенерируй", //$NON-NLS-1$
+            "обнови", //$NON-NLS-1$
+            "обновить", //$NON-NLS-1$
+            "инициализ", //$NON-NLS-1$
+            "generate", //$NON-NLS-1$
+            "create", //$NON-NLS-1$
+            "update", //$NON-NLS-1$
+            "init", //$NON-NLS-1$
+            "initialize", //$NON-NLS-1$
+            "refresh"); //$NON-NLS-1$
+
     static {
         DOMAIN_KEYWORDS.put(CodeBuildProfile.ID, Set.of(
                 "bsl", //$NON-NLS-1$
@@ -102,6 +120,10 @@ public final class ProfileRouter {
             return CodeBuildProfile.ID;
         }
 
+        if (containsAny(normalized, CODE_MD_KEYWORDS) && containsAny(normalized, INIT_ACTION_KEYWORDS)) {
+            return InitAgentProfile.ID;
+        }
+
         Set<String> matchedProfiles = new LinkedHashSet<>();
         for (Map.Entry<String, Set<String>> entry : DOMAIN_KEYWORDS.entrySet()) {
             if (containsAny(normalized, entry.getValue())) {
@@ -145,6 +167,7 @@ public final class ProfileRouter {
         }
         return switch (normalized) {
             case "auto" -> "auto"; //$NON-NLS-1$ //$NON-NLS-2$
+            case "init", "code.md", "codemd", "инициализация" -> InitAgentProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             case "build", "разработка" -> BuildAgentProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$
             case "code", "bsl", "код" -> CodeBuildProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "metadata", "meta", "метаданные" -> MetadataBuildProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -162,6 +185,7 @@ public final class ProfileRouter {
     public Set<String> supportedDelegateTargets() {
         return Set.of(
                 "auto", //$NON-NLS-1$
+                InitAgentProfile.ID,
                 CodeBuildProfile.ID,
                 MetadataBuildProfile.ID,
                 QABuildProfile.ID,

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -29,6 +30,8 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
@@ -40,7 +43,8 @@ import com.codepilot1c.core.logging.VibeLogger;
 /**
  * Tool for editing file contents.
  *
- * <p>Supports modifying existing files only.</p>
+ * <p>Supports modifying existing files. The only create-mode exception is Code.md
+ * in the current project root.</p>
  */
 @ToolMeta(
     name = "edit_file",
@@ -58,7 +62,7 @@ public class EditFileTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to an existing workspace file that should be edited"
+                        "description": "Path to an existing workspace file; project-root Code.md may be created with create=true and content"
                     },
                     "content": {
                         "type": "string",
@@ -78,7 +82,7 @@ public class EditFileTool extends AbstractTool {
                     },
                     "create": {
                         "type": "boolean",
-                        "description": "Deprecated. Creating new files is not allowed."
+                        "description": "Deprecated except for creating project-root Code.md with full content."
                     },
                     "allow_metadata_descriptor_edit": {
                         "type": "boolean",
@@ -95,7 +99,7 @@ public class EditFileTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Редактирует существующий файл workspace через replace, SEARCH/REPLACE или fuzzy-патч."; //$NON-NLS-1$
+        return "Редактирует существующий файл workspace через replace, SEARCH/REPLACE или fuzzy-патч; с create=true может создать Code.md в корне текущего проекта."; //$NON-NLS-1$
     }
 
     @Override
@@ -157,10 +161,18 @@ public class EditFileTool extends AbstractTool {
                 IFile file = findWorkspaceFile(normalizedPath);
 
                 if (file == null || !file.exists()) {
+                    IFile newFile = create ? findWorkspaceFileHandle(normalizedPath) : null;
+                    if (content != null && isProjectRootCodeMd(newFile)) {
+                        LOG.info("edit_file: создание Code.md в корне проекта %s", //$NON-NLS-1$
+                                newFile.getProject().getName());
+                        return createContent(newFile, content);
+                    }
+
                     LOG.warn("edit_file: файл не найден: %s", pathStr); //$NON-NLS-1$
                     return ToolResult.failure(
                             "File not found: " + pathStr + ". " + //$NON-NLS-1$ //$NON-NLS-2$
                             "Creating new files via edit_file is not allowed. " + //$NON-NLS-1$
+                            "Exception: create=true with full content may create project-root Code.md. " + //$NON-NLS-1$
                             "Use ensure_module_artifact to prepare Module.bsl/ObjectModule.bsl/ManagerModule.bsl first, " + //$NON-NLS-1$
                             "then edit existing module files only."); //$NON-NLS-1$
                 }
@@ -216,7 +228,8 @@ public class EditFileTool extends AbstractTool {
             normalized = normalized.substring(1);
         }
         // Convert to platform-specific separators
-        return normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        normalized = normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        return ProjectMemoryFilePolicy.canonicalizeBarePath(normalized);
     }
 
     /**
@@ -226,6 +239,24 @@ public class EditFileTool extends AbstractTool {
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
         LOG.debug("findWorkspaceFile: ищем файл по пути '%s'", path); //$NON-NLS-1$
         LOG.debug("findWorkspaceFile: workspace root = %s", root.getLocation()); //$NON-NLS-1$
+
+        // Bare Code.md belongs to the current project root, not the workspace root.
+        try {
+            org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                if (project != null) {
+                    IFile file = project.getFile(ipath);
+                    if (file.exists()) {
+                        LOG.debug("findWorkspaceFile: найден в корне текущего проекта: %s -> %s", //$NON-NLS-1$
+                                file.getFullPath(), file.getLocation());
+                        return file;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("findWorkspaceFile: current project lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
 
         // Strategy 1: Try as workspace-relative path
         try {
@@ -268,6 +299,56 @@ public class EditFileTool extends AbstractTool {
         return null;
     }
 
+    private IFile findWorkspaceFileHandle(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+
+        IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+        try {
+            org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                return project != null ? project.getFile(ipath) : null;
+            }
+            return root.getFile(ipath);
+        } catch (Exception e) {
+            LOG.debug("findWorkspaceFileHandle: failed for %s: %s", path, e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
+    }
+
+    private IProject resolveCurrentProject(IWorkspaceRoot root) {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
+                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+                if (project != null && project.exists() && project.isOpen()) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("resolveCurrentProject: session lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+
+        for (IProject project : root.getProjects()) {
+            if (project.exists() && project.isOpen()) {
+                return project;
+            }
+        }
+        return null;
+    }
+
+    private boolean isProjectRootCodeMd(IFile file) {
+        if (file == null || file.getProjectRelativePath() == null) {
+            return false;
+        }
+        if (file.getProjectRelativePath().segmentCount() != 1) {
+            return false;
+        }
+        return ProjectMemoryFilePolicy.isCanonicalFileName(file.getName());
+    }
+
     private boolean isMetadataDescriptorPath(String normalizedPath) {
         if (normalizedPath == null) {
             return false;
@@ -301,6 +382,22 @@ public class EditFileTool extends AbstractTool {
 
         return ToolResult.success(
                 "Updated file: " + file.getFullPath().toString() + //$NON-NLS-1$
+                " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
+                ToolResult.ToolResultType.CONFIRMATION);
+    }
+
+    private ToolResult createContent(IFile file, String content) throws CoreException {
+        String normalizedContent = normalizeLineEndings(content, System.lineSeparator());
+        ByteArrayInputStream stream = new ByteArrayInputStream(
+                normalizedContent.getBytes(StandardCharsets.UTF_8));
+        file.create(stream, IResource.FORCE, new NullProgressMonitor());
+        file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
+
+        LOG.info("edit_file: Code.md создан в %s (%d байт)", //$NON-NLS-1$
+                file.getFullPath(), normalizedContent.length());
+
+        return ToolResult.success(
+                "Created file: " + file.getFullPath().toString() + //$NON-NLS-1$
                 " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
                 ToolResult.ToolResultType.CONFIRMATION);
     }

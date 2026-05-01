@@ -185,7 +185,7 @@ public class AgentRunner implements IAgentRunner {
 
             // Add system prompt if not already present
             if (conversationHistory.isEmpty() || !isSystemMessage(conversationHistory.get(0))) {
-                String fullSystemPrompt = buildSystemPrompt(config);
+                String fullSystemPrompt = buildSystemPrompt(prompt, config);
                 appliedSystemPrompt.set(fullSystemPrompt);
                 if (!fullSystemPrompt.isEmpty()) {
                     conversationHistory.add(0, LlmMessage.system(fullSystemPrompt));
@@ -719,12 +719,13 @@ public class AgentRunner implements IAgentRunner {
     /**
      * Строит системный промпт.
      */
-    private String buildSystemPrompt(AgentConfig config) {
-        return SystemPromptAssembler.getInstance().assemble(
+    private String buildSystemPrompt(String prompt, AgentConfig config) {
+        return SystemPromptAssembler.getInstance().assembleDetailedForCurrentSession(
                 systemPrompt,
                 config.getSystemPromptAddition(),
                 config.getProfileName(),
-                config.getRequestedSkills());
+                List.copyOf(config.getRequestedSkills()),
+                prompt).prompt();
     }
 
     /**

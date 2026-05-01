@@ -13,6 +13,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
+import org.osgi.framework.Bundle;
+
 import com.codepilot1c.core.memory.prompt.PromptAssemblyContext;
 import com.codepilot1c.core.memory.prompt.PromptContextContributorRegistry;
 import com.codepilot1c.core.provider.ProviderSelectionGate;
@@ -26,6 +31,8 @@ import com.codepilot1c.core.skills.SkillDefinition;
  * Single prompt assembly path for runtime, UI, and MCP host.
  */
 public final class SystemPromptAssembler {
+
+    private static final String PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
 
     public record PromptAssembly(
             String prompt,
@@ -42,12 +49,25 @@ public final class SystemPromptAssembler {
             String profileName,
             List<String> requestedSkills,
             String projectPath,
-            String sessionId) {
+            String sessionId,
+            String currentUserQuery) {
+
+        public AssemblyInput(String basePrompt, String promptAddition,
+                String profileName, List<String> requestedSkills,
+                String projectPath, String sessionId) {
+            this(basePrompt, promptAddition, profileName, requestedSkills, projectPath, sessionId, null);
+        }
 
         public static AssemblyInput of(String basePrompt, String promptAddition,
                 String profileName, List<String> requestedSkills) {
             return new AssemblyInput(basePrompt, promptAddition, profileName,
-                    requestedSkills, null, null);
+                    requestedSkills, null, null, null);
+        }
+
+        public static AssemblyInput of(String basePrompt, String promptAddition,
+                String profileName, List<String> requestedSkills, String currentUserQuery) {
+            return new AssemblyInput(basePrompt, promptAddition, profileName,
+                    requestedSkills, null, null, currentUserQuery);
         }
     }
 
@@ -56,14 +76,26 @@ public final class SystemPromptAssembler {
 
     private final InstructionContextService instructionContextService;
     private final SkillCatalog skillCatalog;
+    private final ContributorAssembler contributorAssembler;
+
+    @FunctionalInterface
+    interface ContributorAssembler {
+        String assemble(PromptAssemblyContext ctx);
+    }
 
     public static SystemPromptAssembler getInstance() {
         return INSTANCE;
     }
 
     public SystemPromptAssembler(InstructionContextService instructionContextService, SkillCatalog skillCatalog) {
+        this(instructionContextService, skillCatalog, SystemPromptAssembler::assembleRegisteredContributors);
+    }
+
+    SystemPromptAssembler(InstructionContextService instructionContextService, SkillCatalog skillCatalog,
+            ContributorAssembler contributorAssembler) {
         this.instructionContextService = Objects.requireNonNull(instructionContextService, "instructionContextService"); //$NON-NLS-1$
         this.skillCatalog = Objects.requireNonNull(skillCatalog, "skillCatalog"); //$NON-NLS-1$
+        this.contributorAssembler = Objects.requireNonNull(contributorAssembler, "contributorAssembler"); //$NON-NLS-1$
     }
 
     public String assemble(String basePrompt, String promptAddition, String profileName, List<String> requestedSkills) {
@@ -81,6 +113,30 @@ public final class SystemPromptAssembler {
                 ProviderSelectionGate.isCodePilotSelectedInUi());
     }
 
+    public PromptAssembly assembleDetailedForCurrentSession(String basePrompt, String promptAddition,
+            String profileName, List<String> requestedSkills, String currentUserQuery) {
+        return assembleDetailedForCurrentSession(basePrompt, promptAddition, profileName, requestedSkills,
+                currentUserQuery, ProviderSelectionGate.isCodePilotSelectedInUi());
+    }
+
+    PromptAssembly assembleDetailedForCurrentSession(String basePrompt, String promptAddition,
+            String profileName, List<String> requestedSkills, String currentUserQuery,
+            boolean backendSelectedInUi) {
+        String projectPath = null;
+        String sessionId = null;
+        try {
+            Session current = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (current != null) {
+                projectPath = current.getProjectPath();
+                sessionId = current.getId();
+            }
+        } catch (RuntimeException | LinkageError e) {
+            // SessionManager may not be initialized yet during startup.
+        }
+        return assembleDetailed(new AssemblyInput(basePrompt, promptAddition, profileName,
+                requestedSkills, projectPath, sessionId, currentUserQuery), backendSelectedInUi);
+    }
+
     PromptAssembly assembleDetailed(String basePrompt, String promptAddition, String profileName,
             List<String> requestedSkills, boolean backendSelectedInUi) {
         // Auto-resolve projectPath and sessionId from current session (BLOCKER #1 fix)
@@ -93,11 +149,11 @@ public final class SystemPromptAssembler {
                 projectPath = current.getProjectPath();
                 sessionId = current.getId();
             }
-        } catch (Exception e) {
+        } catch (RuntimeException | LinkageError e) {
             // SessionManager may not be initialized yet during startup
         }
         return assembleDetailed(new AssemblyInput(basePrompt, promptAddition, profileName,
-                requestedSkills, projectPath, sessionId), backendSelectedInUi);
+                requestedSkills, projectPath, sessionId, null), backendSelectedInUi);
     }
 
     /**
@@ -111,9 +167,10 @@ public final class SystemPromptAssembler {
     }
 
     PromptAssembly assembleDetailed(AssemblyInput input, boolean backendSelectedInUi) {
-        List<InstructionContextService.InstructionLayer> agentsLayers = instructionContextService.loadAgentsLayers();
+        List<InstructionContextService.InstructionLayer> agentsLayers =
+                instructionContextService.loadAgentsLayers(input.projectPath());
         List<InstructionContextService.InstructionLayer> codeLayers =
-                instructionContextService.loadCodeLayers(backendSelectedInUi);
+                instructionContextService.loadCodeLayers(backendSelectedInUi, input.projectPath());
         List<SkillDefinition> skills = loadRequestedSkills(input.requestedSkills(), backendSelectedInUi);
         String effectiveBasePrompt = AgentPromptTemplates.adaptForBackend(input.basePrompt(), backendSelectedInUi);
         String effectivePromptAddition = AgentPromptTemplates.adaptForBackend(input.promptAddition(), backendSelectedInUi);
@@ -140,20 +197,41 @@ public final class SystemPromptAssembler {
      * Appends memory contributor sections between Code.md and Skills.
      */
     private void appendContributors(StringBuilder prompt, AssemblyInput input, boolean backendSelectedInUi) {
-        PromptContextContributorRegistry registry = PromptContextContributorRegistry.getInstance();
-        if (registry.size() == 0) {
-            return;
-        }
-
         PromptAssemblyContext ctx = PromptAssemblyContext.of(
                 input.projectPath(),
                 input.profileName(),
                 backendSelectedInUi,
-                input.sessionId());
+                input.sessionId(),
+                PromptAssemblyContext.DEFAULT_GLOBAL_BUDGET,
+                input.currentUserQuery());
 
-        String contributions = registry.assembleContributions(ctx);
+        String contributions = contributorAssembler.assemble(ctx);
         if (!contributions.isBlank()) {
             prompt.append(contributions);
+        }
+    }
+
+    private static String assembleRegisteredContributors(PromptAssemblyContext ctx) {
+        try {
+            PromptContextContributorRegistry registry = PromptContextContributorRegistry.getInstance();
+            if (registry.size() == 0) {
+                return ""; //$NON-NLS-1$
+            }
+            return registry.assembleContributions(ctx);
+        } catch (RuntimeException | LinkageError e) {
+            logWarning("Prompt context contributor registry unavailable during prompt assembly", e); //$NON-NLS-1$
+            return ""; //$NON-NLS-1$
+        }
+    }
+
+    private static void logWarning(String message, Throwable error) {
+        try {
+            Bundle bundle = Platform.getBundle(PLUGIN_ID);
+            if (bundle != null) {
+                Platform.getLog(bundle).log(new Status(IStatus.WARNING, PLUGIN_ID, message, error));
+            }
+        } catch (RuntimeException ignored) {
+            // Plain JUnit execution can run without an initialized OSGi bundle.
         }
     }
 
@@ -197,6 +275,21 @@ public final class SystemPromptAssembler {
         prompt.append("\n\n## Layered Context: ").append(fileLabel).append("\n"); //$NON-NLS-1$
         for (InstructionContextService.InstructionLayer layer : layers) {
             prompt.append("\n### Source: ").append(layer.sourcePath()).append("\n\n"); //$NON-NLS-1$
+            if (layer.status() != null && !layer.status().isBlank()) {
+                prompt.append("Status: ").append(layer.status()).append("\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            if (layer.sizeBytes() > 0 || layer.readBytes() > 0) {
+                prompt.append("Bytes: ").append(layer.readBytes()).append("/")
+                        .append(layer.sizeBytes()).append("\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            if (layer.warning() != null && !layer.warning().isBlank()) {
+                prompt.append("Warning: ").append(layer.warning()).append("\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            if ((layer.status() != null && !layer.status().isBlank())
+                    || layer.sizeBytes() > 0 || layer.readBytes() > 0
+                    || (layer.warning() != null && !layer.warning().isBlank())) {
+                prompt.append("\n"); //$NON-NLS-1$
+            }
             prompt.append(layer.content()).append("\n"); //$NON-NLS-1$
         }
     }

@@ -38,11 +38,14 @@ public class RecoveryProfile implements AgentProfile {
             "get_bookmarks",
             "get_tasks",
             "edt_diagnostics",
+            "update_infobase_status",
             "edt_validate_request",
             "inspect_platform_reference",
             // Meta
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -78,10 +81,13 @@ public class RecoveryProfile implements AgentProfile {
                 PermissionRule.allow("get_bookmarks").forAllResources(),
                 PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
+                PermissionRule.allow("update_infobase_status").forAllResources(),
                 PermissionRule.allow("edt_validate_request").forAllResources(),
                 PermissionRule.allow("inspect_platform_reference").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Targeted write - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов для восстановления")

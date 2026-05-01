@@ -45,7 +45,9 @@ public class DCSBuildProfile implements AgentProfile {
             // Meta
             "edt_diagnostics",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -86,6 +88,8 @@ public class DCSBuildProfile implements AgentProfile {
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")

@@ -48,6 +48,7 @@ public class BuildAgentProfile implements AgentProfile {
             "grep",
             "list_files",
             "workspace_import_project",
+            "connect_infobase",
             "git_inspect",
             "git_mutate",
             "git_clone_and_import_project",
@@ -111,6 +112,7 @@ public class BuildAgentProfile implements AgentProfile {
             "evaluate_expression",
             "debug_status",
             "edt_diagnostics",
+            "update_infobase_status",
             "qa_inspect",
             "qa_generate",
             "qa_run",
@@ -118,7 +120,9 @@ public class BuildAgentProfile implements AgentProfile {
             "qa_plan_scenario",
             "qa_validate_feature",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -191,8 +195,11 @@ public class BuildAgentProfile implements AgentProfile {
                 PermissionRule.allow("qa_plan_scenario").forAllResources(),
                 PermissionRule.allow("qa_validate_feature").forAllResources(),
                 PermissionRule.allow("get_profiling_results").forAllResources(),
+                PermissionRule.allow("update_infobase_status").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
 
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
@@ -203,6 +210,9 @@ public class BuildAgentProfile implements AgentProfile {
 	                        .forAllResources(),
                 PermissionRule.ask("workspace_import_project")
                         .withDescription("Импорт проекта в workspace")
+                        .forAllResources(),
+                PermissionRule.ask("connect_infobase")
+                        .withDescription("Подключение инфобазы к EDT проекту")
                         .forAllResources(),
                 PermissionRule.ask("git_mutate")
                         .withDescription("Мутирующие git-операции")

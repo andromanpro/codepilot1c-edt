@@ -23,6 +23,16 @@ public class Messages extends NLS {
     public static String ChatView_StopButton;
     public static String ChatView_ApplyCodeButton;
     public static String ChatView_ApplyCodeTooltip;
+    public static String ChatView_CreateCodeMdButton;
+    public static String ChatView_UpdateCodeMdButton;
+    public static String ChatView_CreateCodeMdTooltip;
+    public static String ChatView_UpdateCodeMdTooltip;
+    public static String ChatView_CodeMdNoProjectTooltip;
+    public static String ChatView_InitCodeMdConfirmTitle;
+    public static String ChatView_CreateCodeMdConfirmMessage;
+    public static String ChatView_UpdateCodeMdConfirmMessage;
+    public static String ChatView_CreateCodeMdPrompt;
+    public static String ChatView_UpdateCodeMdPrompt;
     public static String ChatView_ApplyCodeTitle;
     public static String ChatView_ApplyCodeMessage;
     public static String ChatView_ReplaceSelection;
@@ -60,6 +70,33 @@ public class Messages extends NLS {
     public static String ChatView_ModelSwitchMessage;
     public static String ChatView_ModelSwitchNewChat;
     public static String ChatView_ModelSwitchContinue;
+
+    public static String CodeMdPreferencePage_Description;
+    public static String CodeMdPreferencePage_ProjectLabel;
+    public static String CodeMdPreferencePage_FileLabel;
+    public static String CodeMdPreferencePage_EditorLabel;
+    public static String CodeMdPreferencePage_Hint;
+    public static String CodeMdPreferencePage_InsertTemplateButton;
+    public static String CodeMdPreferencePage_ClearButton;
+    public static String CodeMdPreferencePage_DefaultTemplate;
+    public static String CodeMdPreferencePage_NoOpenProjects;
+    public static String CodeMdPreferencePage_NoProjectLocation;
+    public static String CodeMdPreferencePage_FileMissingStatus;
+    public static String CodeMdPreferencePage_FileLoadedStatus;
+    public static String CodeMdPreferencePage_ReadErrorStatus;
+    public static String CodeMdPreferencePage_SavedStatus;
+    public static String CodeMdPreferencePage_SaveError;
+    public static String CodeMdPreferencePage_StatusFormat;
+    public static String CodeMdPreferencePage_WriteStatusFormat;
+    public static String CodeMdPreferencePage_WarningFormat;
+    public static String CodeMdPreferencePage_StatusFound;
+    public static String CodeMdPreferencePage_StatusMissing;
+    public static String CodeMdPreferencePage_StatusEmpty;
+    public static String CodeMdPreferencePage_StatusTruncated;
+    public static String CodeMdPreferencePage_StatusReadError;
+    public static String CodeMdPreferencePage_StatusWriteError;
+    public static String CodeMdPreferencePage_StatusOutsideProject;
+    public static String CodeMdPreferencePage_UnknownError;
 
     public static String PreferencePage_Description;
     public static String PreferencePage_ProviderLabel;
@@ -284,6 +321,7 @@ public class Messages extends NLS {
     public static String SkillDisplayInfo_SkillLabel_architect;
     public static String SkillDisplayInfo_SkillLabel_validator;
     public static String SkillDisplayInfo_ProfileLabel_build;
+    public static String SkillDisplayInfo_ProfileLabel_init;
     public static String SkillDisplayInfo_ProfileLabel_code;
     public static String SkillDisplayInfo_ProfileLabel_metadata;
     public static String SkillDisplayInfo_ProfileLabel_qa;

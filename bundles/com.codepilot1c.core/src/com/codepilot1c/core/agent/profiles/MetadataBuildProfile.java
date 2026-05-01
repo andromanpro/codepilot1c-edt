@@ -71,7 +71,9 @@ public class MetadataBuildProfile implements AgentProfile {
             "get_tasks",
             // Meta
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -123,6 +125,8 @@ public class MetadataBuildProfile implements AgentProfile {
                 PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")

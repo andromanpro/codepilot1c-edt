@@ -19,6 +19,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
 import org.eclipse.jface.dialogs.MessageDialog;
@@ -60,6 +63,7 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.memory.project.ProjectMemoryContextService;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.provider.ProviderCapabilities;
@@ -106,6 +110,7 @@ public class ChatView extends ViewPart {
     private static final boolean USE_BROWSER_RENDERING = true;
     private static final int MAX_TOOL_RESULT_PREVIEW_CHARS = 20_000;
     private static final String CORE_PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
+    private static final ProjectMemoryContextService PROJECT_MEMORY_SERVICE = new ProjectMemoryContextService();
 
     private ScrolledComposite scrolledComposite;
     private Composite messagesContainer;
@@ -117,6 +122,7 @@ public class ChatView extends ViewPart {
     private Button newChatButton;
     private Button stopButton;
     private Button applyCodeButton;
+    private Button initCodeMdButton;
     private Button compactButton;
     private Button modelButton;
     private String overrideModelId;
@@ -362,7 +368,7 @@ public class ChatView extends ViewPart {
         Composite buttonBar = new Composite(inputArea, SWT.NONE);
         buttonBar.setBackground(inputArea.getBackground());
         buttonBar.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
-        GridLayout buttonLayout = new GridLayout(8, false);
+        GridLayout buttonLayout = new GridLayout(9, false);
         buttonLayout.marginWidth = 0;
         buttonLayout.marginHeight = 0;
         buttonLayout.horizontalSpacing = 4; // Compact spacing
@@ -388,6 +394,12 @@ public class ChatView extends ViewPart {
         sendData.heightHint = 28;
         sendButton.setLayoutData(sendData);
         sendButton.addListener(SWT.Selection, e -> sendMessage());
+
+        initCodeMdButton = new Button(buttonBar, SWT.PUSH);
+        initCodeMdButton.setFont(theme.getFont());
+        initCodeMdButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        initCodeMdButton.addListener(SWT.Selection, e -> runCodeMdInitialization());
+        updateInitCodeMdButton();
 
         // Apply code button with icon
         applyCodeButton = new Button(buttonBar, SWT.PUSH);
@@ -791,6 +803,160 @@ public class ChatView extends ViewPart {
         // detector — whatever the user asks next is a fresh intent.
         toolRepetitionDetector.resetForNewTurn();
         startConversationLoop(provider);
+    }
+
+    private void runCodeMdInitialization() {
+        if (isProcessing) {
+            return;
+        }
+        IProject project = resolveCodeMdProject();
+        if (project == null) {
+            updateInitCodeMdButton();
+            return;
+        }
+        boolean updateExisting = hasCodeMd(project);
+        bindCurrentSessionToProject(project);
+        String codeMdToolPath = resolveCodeMdToolPath(project, updateExisting);
+        if (!inputField.getText().trim().isEmpty() || !draftAttachments.isEmpty()) {
+            boolean confirmed = MessageDialog.openConfirm(
+                    getSite().getShell(),
+                    Messages.ChatView_InitCodeMdConfirmTitle,
+                    updateExisting
+                            ? Messages.ChatView_UpdateCodeMdConfirmMessage
+                            : Messages.ChatView_CreateCodeMdConfirmMessage);
+            if (!confirmed) {
+                return;
+            }
+            draftAttachments.clear();
+            refreshAttachmentPreview();
+        }
+        String prompt = MessageFormat.format(updateExisting
+                ? Messages.ChatView_UpdateCodeMdPrompt
+                : Messages.ChatView_CreateCodeMdPrompt, codeMdToolPath);
+        sendProgrammaticMessage(prompt);
+    }
+
+    private void updateInitCodeMdButton() {
+        if (initCodeMdButton == null || initCodeMdButton.isDisposed()) {
+            return;
+        }
+
+        IProject project = resolveCodeMdProject();
+        boolean hasProject = project != null;
+        boolean updateExisting = hasProject && hasCodeMd(project);
+        initCodeMdButton.setText(updateExisting
+                ? Messages.ChatView_UpdateCodeMdButton
+                : Messages.ChatView_CreateCodeMdButton);
+        initCodeMdButton.setToolTipText(hasProject
+                ? (updateExisting
+                        ? Messages.ChatView_UpdateCodeMdTooltip
+                        : Messages.ChatView_CreateCodeMdTooltip)
+                : Messages.ChatView_CodeMdNoProjectTooltip);
+        initCodeMdButton.setEnabled(!isProcessing && hasProject);
+        if (initCodeMdButton.getParent() != null && !initCodeMdButton.getParent().isDisposed()) {
+            initCodeMdButton.getParent().layout(true, true);
+        }
+    }
+
+    private IProject resolveCodeMdProject() {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            IProject project = SessionManager.getInstance().findProjectByPath(
+                    session != null ? session.getProjectPath() : null);
+            if (isOpenProject(project)) {
+                return project;
+            }
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve Code.md project from session: %s", e.getMessage()); //$NON-NLS-1$
+        }
+
+        try {
+            for (IProject project : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
+                if (isOpenProject(project)) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve Code.md project from workspace: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return null;
+    }
+
+    private boolean isOpenProject(IProject project) {
+        return project != null && project.exists() && project.isOpen();
+    }
+
+    private void bindCurrentSessionToProject(IProject project) {
+        try {
+            SessionManager manager = SessionManager.getInstance();
+            Session session = manager.getOrCreateCurrentSession();
+            manager.bindSessionToProject(session, project);
+        } catch (Exception e) {
+            LOG.debug("Failed to bind Code.md session to project: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private String resolveCodeMdToolPath(IProject project, boolean updateExisting) {
+        if (!isOpenProject(project)) {
+            return ProjectMemoryContextService.CANONICAL_FILE_NAME;
+        }
+        IPath location = project.getLocation();
+        if (location == null) {
+            return ProjectMemoryContextService.CANONICAL_FILE_NAME;
+        }
+
+        if (updateExisting) {
+            ProjectMemoryContextService.ReadResult result =
+                    PROJECT_MEMORY_SERVICE.status(location.toOSString());
+            String existingPath = toWorkspaceRelativeToolPath(project, location, result.getSourcePath());
+            if (existingPath != null) {
+                return existingPath;
+            }
+        }
+        String canonicalPath = toWorkspaceRelativeToolPath(project, location,
+                Path.of(location.toOSString()).resolve(ProjectMemoryContextService.CANONICAL_FILE_NAME));
+        return canonicalPath != null ? canonicalPath : ProjectMemoryContextService.CANONICAL_FILE_NAME;
+    }
+
+    private String toWorkspaceRelativeToolPath(IProject project, IPath projectLocation, Path sourcePath) {
+        if (sourcePath == null || projectLocation == null) {
+            return null;
+        }
+        try {
+            Path projectRoot = Path.of(projectLocation.toOSString()).toAbsolutePath().normalize();
+            Path source = sourcePath.toAbsolutePath().normalize();
+            if (!source.startsWith(projectRoot)) {
+                return null;
+            }
+            String projectRelative = projectRoot.relativize(source).toString().replace('\\', '/');
+            if (projectRelative.isBlank()) {
+                return null;
+            }
+            String workspaceRelative = project.getFullPath().append(projectRelative).toPortableString();
+            return workspaceRelative.startsWith("/") ? workspaceRelative.substring(1) : workspaceRelative; //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            LOG.debug("Failed to resolve Code.md workspace path: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
+    }
+
+    private boolean hasCodeMd(IProject project) {
+        if (!isOpenProject(project)) {
+            return false;
+        }
+        IPath location = project.getLocation();
+        if (location == null) {
+            return false;
+        }
+        ProjectMemoryContextService.Status status = PROJECT_MEMORY_SERVICE.status(location.toOSString()).getStatus();
+        switch (status) {
+        case FOUND:
+        case EMPTY:
+        case TRUNCATED:
+            return true;
+        default:
+            return false;
+        }
     }
 
     /**
@@ -2273,6 +2439,7 @@ public class ChatView extends ViewPart {
             if (attachButton != null && !attachButton.isDisposed()) {
                 attachButton.setEnabled(!processing);
             }
+            updateInitCodeMdButton();
             stopButton.setEnabled(processing);
             inputField.setEnabled(!processing);
             if (compactButton != null && !compactButton.isDisposed()) {

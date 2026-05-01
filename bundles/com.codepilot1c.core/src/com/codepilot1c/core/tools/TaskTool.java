@@ -40,7 +40,7 @@ import com.google.gson.JsonObject;
  * <p>Особенности:</p>
  * <ul>
  *   <li>Ограничение глубины вложенности (макс. 3)</li>
- *   <li>Выбор профиля подагента (auto, explore, plan, code, metadata, qa, dcs, extension, recovery)</li>
+ *   <li>Выбор профиля подагента (auto, init, explore, plan, code, metadata, qa, dcs, extension, recovery)</li>
  *   <li>Автоматическое суммирование результата</li>
  *   <li>Таймаут выполнения</li>
  * </ul>
@@ -69,7 +69,7 @@ public class TaskTool extends AbstractTool {
                     },
                     "profile": {
                         "type": "string",
-                        "enum": ["auto", "explore", "plan", "build", "code", "metadata", "qa", "dcs", "extension", "recovery", "orchestrator"],
+                        "enum": ["auto", "explore", "plan", "init", "build", "code", "metadata", "qa", "dcs", "extension", "recovery", "orchestrator"],
                         "description": "Sub-agent profile or auto routing based on prompt keywords."
                     },
                     "description": {

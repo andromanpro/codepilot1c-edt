@@ -14,17 +14,32 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.codepilot1c.core.memory.project.ProjectMemoryContextService;
+
 /**
  * Loads layered instruction files with source provenance.
  */
 public final class InstructionContextService {
+
+    private static final int CODE_PROMPT_BUDGET_BYTES = 64 * 1024;
 
     public enum LayerKind {
         AGENTS,
         CODE
     }
 
-    public record InstructionLayer(LayerKind kind, String sourcePath, String content) {
+    public record InstructionLayer(
+            LayerKind kind,
+            String sourcePath,
+            String content,
+            String status,
+            String warning,
+            long readBytes,
+            long sizeBytes) {
+
+        public InstructionLayer(LayerKind kind, String sourcePath, String content) {
+            this(kind, sourcePath, content, null, null, 0, 0);
+        }
     }
 
     private final WorkspacePromptSourceResolver sourceResolver;
@@ -45,11 +60,43 @@ public final class InstructionContextService {
         return discoverLayers("AGENTS.md", LayerKind.AGENTS); //$NON-NLS-1$
     }
 
+    public List<InstructionLayer> loadAgentsLayers(String projectPath) {
+        return serviceForProjectPath(projectPath).loadAgentsLayers();
+    }
+
     public List<InstructionLayer> loadCodeLayers(boolean backendSelectedInUi) {
-        if (!backendSelectedInUi) {
+        return List.of();
+    }
+
+    public List<InstructionLayer> loadCodeLayers(boolean backendSelectedInUi, String projectPath) {
+        if (projectPath == null || projectPath.isBlank()) {
             return List.of();
         }
-        return discoverLayers("Code.md", LayerKind.CODE); //$NON-NLS-1$
+        try {
+            Path projectRoot = Path.of(projectPath).toAbsolutePath().normalize();
+            if (!Files.isDirectory(projectRoot)) {
+                return List.of();
+            }
+            return loadProjectMemoryCodeLayer(projectRoot);
+        } catch (RuntimeException e) {
+            return List.of();
+        }
+    }
+
+    private InstructionContextService serviceForProjectPath(String projectPath) {
+        if (projectPath == null || projectPath.isBlank()) {
+            return this;
+        }
+        try {
+            Path projectStart = Path.of(projectPath).toAbsolutePath().normalize();
+            Path currentStart = sourceResolver.getProjectStart();
+            if (projectStart.equals(currentStart != null ? currentStart.toAbsolutePath().normalize() : null)) {
+                return this;
+            }
+            return new InstructionContextService(sourceResolver.withProjectStart(projectStart));
+        } catch (RuntimeException e) {
+            return this;
+        }
     }
 
     private List<InstructionLayer> discoverLayers(String fileName, LayerKind kind) {
@@ -66,6 +113,27 @@ public final class InstructionContextService {
         return List.copyOf(layers.values());
     }
 
+    private List<InstructionLayer> loadProjectMemoryCodeLayer(Path projectRoot) {
+        ProjectMemoryContextService.ReadResult result =
+                new ProjectMemoryContextService().readForPrompt(projectRoot, CODE_PROMPT_BUDGET_BYTES);
+        ProjectMemoryContextService.Status status = result.getStatus();
+        if (status != ProjectMemoryContextService.Status.FOUND
+                && status != ProjectMemoryContextService.Status.TRUNCATED) {
+            return List.of();
+        }
+        Path sourcePath = result.getSourcePath();
+        String source = sourcePath != null ? sourcePath.toAbsolutePath().normalize().toString()
+                : ProjectMemoryContextService.CANONICAL_FILE_NAME;
+        return List.of(new InstructionLayer(
+                LayerKind.CODE,
+                source,
+                result.getContent().strip(),
+                status.name(),
+                result.getWarning(),
+                result.getReadBytes(),
+                result.getSizeBytes()));
+    }
+
     private void addCandidate(Map<String, InstructionLayer> layers, Path candidate, LayerKind kind) {
         if (candidate == null || !Files.isRegularFile(candidate)) {
             return;
@@ -73,8 +141,8 @@ public final class InstructionContextService {
         try {
             String content = Files.readString(candidate, StandardCharsets.UTF_8).strip();
             if (!content.isEmpty()) {
-                layers.put(candidate.toAbsolutePath().normalize().toString(),
-                        new InstructionLayer(kind, candidate.toAbsolutePath().normalize().toString(), content));
+                Path source = candidate.toRealPath();
+                layers.put(source.toString(), new InstructionLayer(kind, source.toString(), content));
             }
         } catch (Exception e) {
             // Ignore unreadable layer and keep remaining context discovery alive.

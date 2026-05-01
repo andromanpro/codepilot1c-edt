@@ -17,10 +17,13 @@ import com.codepilot1c.core.memory.MemoryEntry;
 import com.codepilot1c.core.memory.MemoryService;
 import com.codepilot1c.core.memory.MemoryVisibility;
 import com.codepilot1c.core.memory.RetentionPolicy;
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
 import com.codepilot1c.core.tools.AbstractTool;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
+import com.google.gson.JsonObject;
 
 /**
  * Built-in tool for explicit fact storage into long-term memory.
@@ -34,6 +37,7 @@ import com.codepilot1c.core.tools.ToolResult;
 @ToolMeta(
     name = "remember_fact",
     category = "memory",
+    mutating = true,
     tags = {"memory", "workspace"}
 )
 public class RememberFactTool extends AbstractTool {
@@ -58,7 +62,8 @@ public class RememberFactTool extends AbstractTool {
                         "description": "Module or subsystem area (optional)"
                     }
                 },
-                "required": ["content"]
+                "required": ["content"],
+                "additionalProperties": false
             }
             """;
 
@@ -75,12 +80,19 @@ public class RememberFactTool extends AbstractTool {
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
         return CompletableFuture.supplyAsync(() -> {
-            String content = params.requireString("content"); //$NON-NLS-1$
-            if (content.isBlank()) {
-                return ToolResult.failure("content must not be empty"); //$NON-NLS-1$
+            String content;
+            try {
+                content = params.requireString("content"); //$NON-NLS-1$
+            } catch (RuntimeException e) {
+                return failure("INVALID_ARGUMENTS", e.getMessage()); //$NON-NLS-1$
             }
+            if (content.isBlank()) {
+                return failure("EMPTY_CONTENT", "content must not be empty"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            boolean truncated = false;
             if (content.length() > 500) {
                 content = content.substring(0, 500);
+                truncated = true;
             }
 
             String categoryStr = params.optString("category", "FACT"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -102,13 +114,23 @@ public class RememberFactTool extends AbstractTool {
             // Resolve project path from tool context
             String projectPath = resolveProjectPath();
             if (projectPath == null) {
-                return ToolResult.failure("No active project found"); //$NON-NLS-1$
+                return failure("NO_ACTIVE_PROJECT", "No active project found"); //$NON-NLS-1$ //$NON-NLS-2$
             }
 
             MemoryService.remember(projectPath, entry);
             LOG.info("RememberFactTool: saved fact [" + category + "] " + content); //$NON-NLS-1$ //$NON-NLS-2$
 
-            return ToolResult.success("Fact saved to memory: " + content); //$NON-NLS-1$
+            JsonObject result = new JsonObject();
+            result.addProperty("status", "saved"); //$NON-NLS-1$ //$NON-NLS-2$
+            result.addProperty("content", content); //$NON-NLS-1$
+            result.addProperty("category", category.name()); //$NON-NLS-1$
+            result.addProperty("key", key); //$NON-NLS-1$
+            result.addProperty("project_path", projectPath); //$NON-NLS-1$
+            result.addProperty("truncated", truncated); //$NON-NLS-1$
+            if (domain != null && !domain.isBlank()) {
+                result.addProperty("domain", domain); //$NON-NLS-1$
+            }
+            return ToolResult.success(result.toString(), result);
         });
     }
 
@@ -129,6 +151,14 @@ public class RememberFactTool extends AbstractTool {
      */
     private String resolveProjectPath() {
         try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isBlank()) {
+                return session.getProjectPath();
+            }
+        } catch (Exception e) {
+            LOG.warn("RememberFactTool: could not resolve session project path", e); //$NON-NLS-1$
+        }
+        try {
             var root = org.eclipse.core.resources.ResourcesPlugin.getWorkspace().getRoot();
             var projects = root.getProjects();
             for (var project : projects) {
@@ -140,5 +170,13 @@ public class RememberFactTool extends AbstractTool {
             LOG.warn("RememberFactTool: could not resolve project path", e); //$NON-NLS-1$
         }
         return null;
+    }
+
+    private static ToolResult failure(String code, String message) {
+        JsonObject result = new JsonObject();
+        result.addProperty("status", "error"); //$NON-NLS-1$ //$NON-NLS-2$
+        result.addProperty("code", code); //$NON-NLS-1$
+        result.addProperty("message", message != null ? message : ""); //$NON-NLS-1$ //$NON-NLS-2$
+        return ToolResult.failure(result.toString());
     }
 }

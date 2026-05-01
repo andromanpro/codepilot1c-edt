@@ -33,6 +33,18 @@ public class ProfileRouterTest {
     }
 
     @Test
+    public void routesCodeMdInitializationToInitProfile() {
+        assertEquals(InitAgentProfile.ID,
+                router.route("Создай Code.md для текущего проекта")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void routesEnglishCodeMdCreationToInitProfile() {
+        assertEquals(InitAgentProfile.ID,
+                router.route("Create or update Code.md for the current project")); //$NON-NLS-1$
+    }
+
+    @Test
     public void resolvesBuildToAutoRoutedDomain() {
         assertEquals(QABuildProfile.ID,
                 router.resolveRequestedProfile("Подготовь и запусти тесты YAxUnit", "build")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -42,6 +54,7 @@ public class ProfileRouterTest {
     public void normalizesDelegateAliases() {
         assertEquals(ExtensionBuildProfile.ID, router.normalizeProfileId("расширения")); //$NON-NLS-1$
         assertEquals(RecoveryProfile.ID, router.normalizeProfileId("diag")); //$NON-NLS-1$
+        assertEquals(InitAgentProfile.ID, router.normalizeProfileId("Code.md")); //$NON-NLS-1$
         assertEquals("auto", router.normalizeProfileId("auto")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 }

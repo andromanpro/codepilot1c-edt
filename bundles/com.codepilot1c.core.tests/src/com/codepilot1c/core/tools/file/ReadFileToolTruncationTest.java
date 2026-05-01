@@ -38,6 +38,13 @@ public class ReadFileToolTruncationTest {
         assertSame(small, ReadFileTool.capForOutput(small));
     }
 
+    @Test
+    public void projectMemoryPathAliasesCanonicalizeToCodeMd() {
+        org.junit.Assert.assertEquals("Code.md", ProjectMemoryFilePolicy.canonicalizeBarePath("Code.md"));
+        org.junit.Assert.assertEquals("Code.md", ProjectMemoryFilePolicy.canonicalizeBarePath("Cd.md"));
+        org.junit.Assert.assertEquals("Project/Cd.md", ProjectMemoryFilePolicy.canonicalizeBarePath("Project/Cd.md"));
+    }
+
     private static String repeat(char c, int n) {
         char[] buf = new char[n];
         for (int i = 0; i < n; i++) {
