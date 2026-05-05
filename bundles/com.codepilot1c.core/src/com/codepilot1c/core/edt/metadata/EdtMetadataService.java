@@ -262,7 +262,7 @@ public class EdtMetadataService {
 
             MdObject object = createTopLevelObject(request.kind());
             LOG.debug("[%s] Created object instance: %s", opId, object.eClass().getName()); //$NON-NLS-1$
-            setCommonProperties(object, request.name(), request.synonym(), request.comment());
+            setCommonProperties(object, request.name(), request.synonym(), request.comment(), txConfiguration);
             MdObject txObject = attachTopLevelObject(transaction, project, object, fqn);
             LOG.debug("[%s] Attached top object by FQN=%s", opId, fqn); //$NON-NLS-1$
             ensureUuidsRecursively(txObject, opId, fqn);
@@ -347,7 +347,7 @@ public class EdtMetadataService {
             }
             validateReservedChildName(owner, MetadataChildKind.FORM, capturedName);
             MdObject form = createFormByParent(owner);
-            setCommonProperties(form, capturedName, request.synonym(), request.comment());
+            setCommonProperties(form, capturedName, request.synonym(), request.comment(), txConfiguration);
             initializeFormForRequest(form, request);
             ensureUuidsRecursively(form, opId, formFqn);
             try {
@@ -4196,7 +4196,7 @@ public class EdtMetadataService {
                     ? createFormByParent(parent)
                     : createChildByFactory(parent, effectiveKind);
             LOG.debug("createGenericChild created child class=%s", child.eClass().getName()); //$NON-NLS-1$
-            setCommonProperties(child, request.name(), request.synonym(), request.comment());
+            setCommonProperties(child, request.name(), request.synonym(), request.comment(), configuration);
             initializeFormIfNeeded(child);
             initializeTemplateIfNeeded(child, request.properties());
             ensureUuidsRecursively(child, "child", request.parentFqn()); //$NON-NLS-1$
@@ -5184,7 +5184,7 @@ public class EdtMetadataService {
             }
             validateReservedChildName(parent, kind, name);
             MdObject child = createChildByFactory(parent, kind);
-            setCommonProperties(child, name, asString(rawMap.get("synonym")), asString(rawMap.get("comment"))); //$NON-NLS-1$ //$NON-NLS-2$
+            setCommonProperties(child, name, asString(rawMap.get("synonym")), asString(rawMap.get("comment")), configuration); //$NON-NLS-1$ //$NON-NLS-2$
             @SuppressWarnings("unchecked")
             Map<String, Object> childProperties = (Map<String, Object>) rawMap;
             initializeTemplateIfNeeded(child, childProperties);
@@ -8514,14 +8514,41 @@ public class EdtMetadataService {
     }
 
     private void setCommonProperties(MdObject object, String name, String synonym, String comment) {
+        // Backwards-compatible entry point: callers that do not have a
+        // Configuration in scope (e.g. external-project flows or recursive
+        // form initialization) keep landing on the historical "ru" key.
+        setCommonProperties(object, name, synonym, comment, (Configuration) null);
+    }
+
+    private void setCommonProperties(
+            MdObject object,
+            String name,
+            String synonym,
+            String comment,
+            Configuration configuration
+    ) {
+        setCommonProperties(object, name, synonym, comment, resolveSynonymLocaleKey(configuration));
+    }
+
+    private void setCommonProperties(
+            MdObject object,
+            String name,
+            String synonym,
+            String comment,
+            String synonymLocaleKey
+    ) {
         if (object.getUuid() == null) {
             object.setUuid(UUID.randomUUID());
         }
-        LOG.debug("setCommonProperties class=%s name=%s synonym=%s commentLength=%s", // $NON-NLS-1$
+        String effectiveKey = synonymLocaleKey == null || synonymLocaleKey.isBlank()
+                ? BmSynonymLocaleResolver.FALLBACK_LANGUAGE_CODE
+                : synonymLocaleKey;
+        LOG.debug("setCommonProperties class=%s name=%s synonym=%s commentLength=%s synonymKey=%s", // $NON-NLS-1$
                 object.eClass().getName(),
                 name,
                 synonym != null ? LogSanitizer.truncate(synonym, 80) : "null", //$NON-NLS-1$
-                comment != null ? comment.length() : 0);
+                comment != null ? comment.length() : 0,
+                effectiveKey);
         object.setName(name);
         if (comment != null && !comment.isBlank()) {
             object.setComment(comment);
@@ -8529,9 +8556,41 @@ public class EdtMetadataService {
         if (synonym != null && !synonym.isBlank()) {
             EMap<String, String> synonymMap = object.getSynonym();
             if (synonymMap != null) {
-                synonymMap.put(RU_LANGUAGE, synonym);
+                synonymMap.put(effectiveKey, synonym);
             }
         }
+    }
+
+    /**
+     * Resolves the synonym-map key for a Configuration: prefers
+     * {@code defaultLanguage.languageCode}, falls back to the first
+     * configured language, and finally to {@code "ru"} for parity with
+     * the historical hard-coded behaviour.
+     */
+    private String resolveSynonymLocaleKey(Configuration configuration) {
+        if (configuration == null) {
+            return BmSynonymLocaleResolver.FALLBACK_LANGUAGE_CODE;
+        }
+        String defaultCode = null;
+        try {
+            com._1c.g5.v8.dt.metadata.mdclass.Language defaultLanguage = configuration.getDefaultLanguage();
+            if (defaultLanguage != null) {
+                defaultCode = defaultLanguage.getLanguageCode();
+            }
+        } catch (Exception e) {
+            LOG.debug("resolveSynonymLocaleKey: defaultLanguage unavailable: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        List<String> codes = new ArrayList<>();
+        try {
+            for (com._1c.g5.v8.dt.metadata.mdclass.Language language : configuration.getLanguages()) {
+                if (language != null) {
+                    codes.add(language.getLanguageCode());
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("resolveSynonymLocaleKey: languages list unavailable: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return BmSynonymLocaleResolver.resolve(defaultCode, codes);
     }
 
     private void repairConfigurationMissingUuids(IProject project, String opId) {
