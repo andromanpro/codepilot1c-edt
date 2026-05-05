@@ -6104,6 +6104,18 @@ public class EdtMetadataService {
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "children_ops item must contain op", false); //$NON-NLS-1$
             }
+            String normalizedOp = normalizeToken(opType);
+            // children_ops only operates on already-existing children. The agent must use
+            // add_metadata_child for creation — surface that explicitly so the agent doesn't
+            // hit the indirect "child_fqn is required" / "Metadata child object not found"
+            // sequence and conclude the request is malformed.  Logic lives in a pure helper
+            // so it can be unit-tested without an Eclipse OSGi runtime.
+            if (ChildrenOpsValidator.isCreateChildIntent(normalizedOp)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        ChildrenOpsValidator.createChildIntentRejectionMessage(opType),
+                        false);
+            }
             String childFqn = asString(op.get("child_fqn")); //$NON-NLS-1$
             if (childFqn == null || childFqn.isBlank()) {
                 throw new MetadataOperationException(
@@ -6123,7 +6135,7 @@ public class EdtMetadataService {
                         "Metadata child object not found: " + childFqn, false); //$NON-NLS-1$
             }
 
-            String normalizedOp = normalizeToken(opType);
+
             switch (normalizedOp) {
                 case "renamechild", "rename" -> renameChildObject(child, childFqn, asString(op.get("new_name"))); //$NON-NLS-1$ //$NON-NLS-2$
                 case "deletechild", "delete", "remove" -> { //$NON-NLS-1$ //$NON-NLS-2$
