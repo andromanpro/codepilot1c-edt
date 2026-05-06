@@ -5744,6 +5744,7 @@ public class EdtMetadataService {
         if (feature == null || properties == null || properties.isEmpty()) {
             return;
         }
+        // Boolean flags on BasicFeature ---------------------------------------
         Boolean multiLine = firstParsedBoolean(
                 getMapValueIgnoreCase(properties, "multiLine"), //$NON-NLS-1$
                 getMapValueIgnoreCase(properties, "multiline"), //$NON-NLS-1$
@@ -5751,6 +5752,152 @@ public class EdtMetadataService {
         if (multiLine != null) {
             feature.setMultiLine(multiLine.booleanValue());
         }
+        Boolean passwordMode = firstParsedBoolean(
+                getMapValueIgnoreCase(properties, "passwordMode"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "password_mode")); //$NON-NLS-1$
+        if (passwordMode != null) {
+            feature.setPasswordMode(passwordMode.booleanValue());
+        }
+        Boolean markNegatives = firstParsedBoolean(
+                getMapValueIgnoreCase(properties, "markNegatives"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "mark_negatives")); //$NON-NLS-1$
+        if (markNegatives != null) {
+            feature.setMarkNegatives(markNegatives.booleanValue());
+        }
+        Object maskValue = getMapValueIgnoreCase(properties, "mask"); //$NON-NLS-1$
+        if (maskValue != null) {
+            String maskString = String.valueOf(maskValue);
+            if (!maskString.isBlank()) {
+                feature.setMask(maskString);
+            }
+        }
+        // Enum-typed: fillChecking on BasicFeature ----------------------------
+        applyFillChecking(feature, properties);
+        // Enum-typed: dataHistory on DataHistorySupport (Catalog/Document/...) -
+        applyDataHistory(feature, properties);
+        // Enum-typed: fullTextSearch / indexing on DbObjectAttribute ----------
+        applyFullTextSearch(feature, properties);
+        applyIndexing(feature, properties);
+    }
+
+    private void applyFillChecking(BasicFeature feature, Map<String, Object> properties) {
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "fillChecking"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fill_checking"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fillchecking")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveFillChecking(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized fillChecking value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            feature.setFillChecking(
+                    com._1c.g5.v8.dt.metadata.common.FillChecking.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply fillChecking=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyDataHistory(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DataHistorySupport dhs)) {
+            // Not all attribute kinds support data history (e.g. tabular section attributes).
+            // Surface a warning so the agent can spot a mismatched kind, but do not throw.
+            if (firstNonNull(
+                    getMapValueIgnoreCase(properties, "dataHistory"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "data_history")) != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: dataHistory not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "dataHistory"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "data_history")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveDataHistory(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized dataHistory value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dhs.setDataHistory(
+                    com._1c.g5.v8.dt.metadata.mdclass.DataHistoryUse.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply dataHistory=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyFullTextSearch(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DbObjectAttribute dbo)) {
+            if (firstNonNull(
+                    getMapValueIgnoreCase(properties, "fullTextSearch"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "full_text_search"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "fulltextsearch")) != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: fullTextSearch not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "fullTextSearch"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "full_text_search"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fulltextsearch")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveFullTextSearch(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized fullTextSearch value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dbo.setFullTextSearch(
+                    com._1c.g5.v8.dt.metadata.mdclass.FullTextSearchUsing.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply fullTextSearch=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyIndexing(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DbObjectAttribute dbo)) {
+            if (getMapValueIgnoreCase(properties, "indexing") != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: indexing not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = getMapValueIgnoreCase(properties, "indexing"); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveIndexing(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized indexing value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dbo.setIndexing(
+                    com._1c.g5.v8.dt.metadata.mdclass.Indexing.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply indexing=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private static Object firstNonNull(Object... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private boolean isKindWithRequiredType(MetadataChildKind kind) {
