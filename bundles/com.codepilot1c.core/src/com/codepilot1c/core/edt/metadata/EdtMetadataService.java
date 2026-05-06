@@ -867,6 +867,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
+                    rejectTableAsSetItemType(operation, set, item);
                     applyFormPropertySet(item, set);
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
@@ -1249,6 +1250,34 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     FormGroupTypeIntent.tableNotAGroupMessage(rawType, groupName),
+                    false);
+        }
+    }
+
+    /**
+     * Pre-flight reject {@code set_item} attempting to flip an existing
+     * item's {@code type} field to {@code Table}.  The fallback path used
+     * to bubble up as {@code "Unsupported value type for field type: TABLE"}
+     * — technically correct but uninformative.  Mirror the wording used by
+     * {@code add_group} so the agent learns the same constraint from both
+     * entry points: Table is a different EMF class, you cannot flip
+     * xsi:type via set_item.
+     */
+    private void rejectTableAsSetItemType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            FormItem item
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            Object itemId = item == null ? null : Integer.valueOf(item.getId());
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotChangeableViaSetItemMessage(rawType, itemId),
                     false);
         }
     }
@@ -2419,6 +2448,8 @@ public class EdtMetadataService {
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
+                + "Inside a Table parent, Boolean columns must use field_type=\"INPUT_FIELD\" (the platform draws a checkmark automatically); " //$NON-NLS-1$
+                + "CHECK_BOX_FIELD/RADIO_BUTTON_FIELD/PROGRESS_BAR_FIELD/TRACK_BAR_FIELD are rejected by SU107 in Tables. " //$NON-NLS-1$
                 + "Valid ops: add_field, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
     }
 
