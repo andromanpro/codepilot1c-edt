@@ -840,6 +840,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_NAME,
                                 "Invalid field name: " + name, false); //$NON-NLS-1$
                     }
+                    rejectTableIncompatibleFieldType(parentContainer, operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
                     FormField field = addFieldItem(
@@ -2324,6 +2325,48 @@ public class EdtMetadataService {
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Use {\"op\":\"add_group\"} instead of {\"op\":\"add\",\"type\":\"group\"}", false); //$NON-NLS-1$
             }
+        }
+    }
+
+    /**
+     * Pre-flight check: certain {@code field_type} values (CHECK_BOX_FIELD,
+     * RADIO_BUTTON_FIELD, PROGRESS_BAR_FIELD, TRACK_BAR_FIELD) are flagged by the
+     * 1C platform with diagnostic SU107 ("Illegal extension type for field type")
+     * when they appear inside a Table.  Boolean cells render via
+     * {@code INPUT_FIELD} automatically, so converting/replacing those is what the
+     * agent ultimately wants.  Surface a clear message before the BM transaction
+     * fires.
+     */
+    private void rejectTableIncompatibleFieldType(
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String fieldName
+    ) {
+        if (parentContainer == null || operation == null) {
+            return;
+        }
+        String parentClassName = parentContainer.eClass() != null
+                ? parentContainer.eClass().getName()
+                : null;
+        if (!"Table".equals(parentClassName)) { //$NON-NLS-1$
+            return;
+        }
+        String rawFieldType = asString(getMapValueIgnoreCase(operation, "field_type")); //$NON-NLS-1$
+        if (rawFieldType == null) {
+            rawFieldType = asString(getMapValueIgnoreCase(operation, "fieldType")); //$NON-NLS-1$
+        }
+        if (rawFieldType == null) {
+            Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+            rawFieldType = asString(getMapValueIgnoreCase(set, "field_type")); //$NON-NLS-1$
+            if (rawFieldType == null) {
+                rawFieldType = asString(getMapValueIgnoreCase(set, "fieldType")); //$NON-NLS-1$
+            }
+        }
+        if (FormFieldTypeValidator.isIncompatibleWithTableParent(rawFieldType)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormFieldTypeValidator.tableIncompatibleFieldTypeMessage(rawFieldType, fieldName),
+                    false);
         }
     }
 
