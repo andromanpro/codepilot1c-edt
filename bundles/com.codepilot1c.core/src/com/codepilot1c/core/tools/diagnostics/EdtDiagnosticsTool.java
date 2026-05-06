@@ -45,6 +45,18 @@ public class EdtDiagnosticsTool extends AbstractTool {
                   "type": "string",
                   "description": "Diagnostics command. Use metadata_smoke for headless verification, trace_export for export issues, analyze_error for a concrete error payload, update_infobase or launch_app for runtime workflow.",
                   "enum": ["metadata_smoke", "trace_export", "analyze_error", "update_infobase", "launch_app"]
+                },
+                "project": {
+                  "type": "string",
+                  "description": "EDT project name. REQUIRED for command=metadata_smoke or trace_export. Also accepted as an alias for project_name in update_infobase / launch_app."
+                },
+                "project_name": {
+                  "type": "string",
+                  "description": "EDT project name. REQUIRED for command=update_infobase or launch_app. Also accepted as an alias for project in metadata_smoke / trace_export."
+                },
+                "tool_result": {
+                  "type": "object",
+                  "description": "Structured tool result/error payload. REQUIRED for command=analyze_error."
                 }
               },
               "required": ["command"],
@@ -77,7 +89,10 @@ public class EdtDiagnosticsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает EDT диагностику и runtime-команды: smoke, trace export, разбор ошибок, обновление инфобазы и запуск приложения."; //$NON-NLS-1$
+        return "Запускает EDT диагностику и runtime-команды: smoke, trace export, разбор ошибок, обновление инфобазы и запуск приложения. " //$NON-NLS-1$
+                + "Per-command required fields: " //$NON-NLS-1$
+                + EdtDiagnosticsCommandContract.describeRequirements()
+                + ". project and project_name are interchangeable aliases."; //$NON-NLS-1$
     }
 
     @Override
@@ -105,6 +120,20 @@ public class EdtDiagnosticsTool extends AbstractTool {
                             ". Use one of: " + String.join(", ", ALL_COMMANDS))); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
+        // Apply project/project_name aliasing so each delegate sees the field-name it
+        // expects, regardless of which one the caller supplied.
+        Map<String, Object> aliased = EdtDiagnosticsCommandContract.applyProjectFieldAliases(p);
+
+        // Pre-flight per-command required-field check.  This used to fail inside
+        // the delegate with a confusing "[INVALID_ARGUMENT] project is required"
+        // because the parent schema never advertised the field; now we surface it
+        // up-front with a message that names the right field for the chosen command.
+        String missing = EdtDiagnosticsCommandContract.findFirstMissingRequired(command, aliased);
+        if (missing != null) {
+            return CompletableFuture.completedFuture(
+                    ToolResult.failure(EdtDiagnosticsCommandContract.missingRequiredFieldMessage(command, missing)));
+        }
+
         ITool delegate = switch (command) {
             case "metadata_smoke" -> metadataSmoke; //$NON-NLS-1$
             case "trace_export" -> traceExport; //$NON-NLS-1$
@@ -119,7 +148,7 @@ public class EdtDiagnosticsTool extends AbstractTool {
                     ToolResult.failure("Unknown command: " + command)); //$NON-NLS-1$
         }
 
-        // Forward all parameters except "command" to the delegate tool
-        return delegate.execute(p);
+        // Forward parameters (with project alias applied) to the delegate tool
+        return delegate.execute(aliased);
     }
 }
