@@ -815,6 +815,7 @@ public class EdtMetadataService {
                                 "Invalid group name: " + name, false); //$NON-NLS-1$
                     }
                     Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+                    rejectTableAsAddGroupType(operation, set, name);
                     ManagedFormGroupType groupType = resolveRequestedGroupType(operation, set);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
                     FormGroup group = addGroupItem(
@@ -842,6 +843,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_NAME,
                                 "Invalid field name: " + name, false); //$NON-NLS-1$
                     }
+                    rejectTableIncompatibleFieldType(parentContainer, operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
                     FormField field = addFieldItem(
@@ -867,6 +869,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
+                    rejectTableAsSetItemType(operation, set, item);
                     applyFormPropertySet(item, set);
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
@@ -1202,9 +1205,17 @@ public class EdtMetadataService {
     }
 
     private ManagedFormGroupType resolveRequestedGroupType(Map<String, Object> operation, Map<String, Object> set) {
+        // Look at all three commonly-used positions in priority order:
+        // group_type (most specific), top-level type, set.type (legacy).
         Object rawType = hasMapKeyIgnoreCase(operation, "group_type") //$NON-NLS-1$
                 ? getMapValueIgnoreCase(operation, "group_type") //$NON-NLS-1$
-                : getMapValueIgnoreCase(set, "type"); //$NON-NLS-1$
+                : null;
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(operation, "type"); //$NON-NLS-1$
+        }
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(set, "type"); //$NON-NLS-1$
+        }
         if (rawType instanceof ManagedFormGroupType groupType) {
             return groupType;
         }
@@ -1217,6 +1228,60 @@ public class EdtMetadataService {
             }
         }
         return ManagedFormGroupType.USUAL_GROUP;
+    }
+
+    /**
+     * Pre-flight reject {@code add_group type:"TABLE"} (and aliases).  Table
+     * is a distinct EMF model class, not a FormGroup variant, so the
+     * historical fallback to USUAL_GROUP silently produced a UsualGroup
+     * pretending to be a Table.  Until mutate_form_model grows a dedicated
+     * {@code add_table} op, fail fast with an actionable hint pointing the
+     * agent at direct .form XML editing.
+     */
+    private void rejectTableAsAddGroupType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            String groupName
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotAGroupMessage(rawType, groupName),
+                    false);
+        }
+    }
+
+    /**
+     * Pre-flight reject {@code set_item} attempting to flip an existing
+     * item's {@code type} field to {@code Table}.  The fallback path used
+     * to bubble up as {@code "Unsupported value type for field type: TABLE"}
+     * — technically correct but uninformative.  Mirror the wording used by
+     * {@code add_group} so the agent learns the same constraint from both
+     * entry points: Table is a different EMF class, you cannot flip
+     * xsi:type via set_item.
+     */
+    private void rejectTableAsSetItemType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            FormItem item
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            Object itemId = item == null ? null : Integer.valueOf(item.getId());
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotChangeableViaSetItemMessage(rawType, itemId),
+                    false);
+        }
     }
 
     private Map<String, Object> stripMapKeysIgnoreCase(Map<String, Object> source, String... keysToRemove) {
@@ -2330,6 +2395,48 @@ public class EdtMetadataService {
     }
 
     /**
+     * Pre-flight check: certain {@code field_type} values (CHECK_BOX_FIELD,
+     * RADIO_BUTTON_FIELD, PROGRESS_BAR_FIELD, TRACK_BAR_FIELD) are flagged by the
+     * 1C platform with diagnostic SU107 ("Illegal extension type for field type")
+     * when they appear inside a Table.  Boolean cells render via
+     * {@code INPUT_FIELD} automatically, so converting/replacing those is what the
+     * agent ultimately wants.  Surface a clear message before the BM transaction
+     * fires.
+     */
+    private void rejectTableIncompatibleFieldType(
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String fieldName
+    ) {
+        if (parentContainer == null || operation == null) {
+            return;
+        }
+        String parentClassName = parentContainer.eClass() != null
+                ? parentContainer.eClass().getName()
+                : null;
+        if (!"Table".equals(parentClassName)) { //$NON-NLS-1$
+            return;
+        }
+        String rawFieldType = asString(getMapValueIgnoreCase(operation, "field_type")); //$NON-NLS-1$
+        if (rawFieldType == null) {
+            rawFieldType = asString(getMapValueIgnoreCase(operation, "fieldType")); //$NON-NLS-1$
+        }
+        if (rawFieldType == null) {
+            Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+            rawFieldType = asString(getMapValueIgnoreCase(set, "field_type")); //$NON-NLS-1$
+            if (rawFieldType == null) {
+                rawFieldType = asString(getMapValueIgnoreCase(set, "fieldType")); //$NON-NLS-1$
+            }
+        }
+        if (FormFieldTypeValidator.isIncompatibleWithTableParent(rawFieldType)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormFieldTypeValidator.tableIncompatibleFieldTypeMessage(rawFieldType, fieldName),
+                    false);
+        }
+    }
+
+    /**
      * Builds a concise mutation hint string that is embedded in the inspect_form_layout
      * output. LLMs read this hint before calling mutate_form_model, which dramatically
      * reduces parameter name hallucinations (parent_id vs parent_item_id, etc.).
@@ -2343,6 +2450,8 @@ public class EdtMetadataService {
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
+                + "Inside a Table parent, Boolean columns must use field_type=\"INPUT_FIELD\" (the platform draws a checkmark automatically); " //$NON-NLS-1$
+                + "CHECK_BOX_FIELD/RADIO_BUTTON_FIELD/PROGRESS_BAR_FIELD/TRACK_BAR_FIELD are rejected by SU107 in Tables. " //$NON-NLS-1$
                 + "Valid ops: add_field, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
     }
 
