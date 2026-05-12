@@ -40,7 +40,7 @@ public class UpdateMetadataTool extends AbstractTool {
                 },
                 "changes": {
                   "type": "object",
-                  "description": "Property changes for an existing object: {set:{...}, unset:[...], children_ops:[...]}. Use add_metadata_child for a new child and mutate_form_model for forms."
+                  "description": "Property changes for an existing object: {set:{...}, unset:[...], children_ops:[...]}. children_ops only supports rename/delete/set on EXISTING children (op: rename|delete|set). To CREATE a new child use add_metadata_child; to mutate form layout use mutate_form_model."
                 },
                 "validation_token": {
                   "type": "string",
