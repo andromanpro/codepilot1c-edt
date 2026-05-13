@@ -382,7 +382,7 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.getSettings(infobase, InfobaseAccess.INFOBASE);
+            settings = accessManager.resolveSettings(infobase);
         } catch (Exception | NoSuchMethodError e) {
             return null;
         }
@@ -548,7 +548,7 @@ public class EdtRuntimeService {
         }
         builder.forInfobase(infobase.getConnectionString(), false);
         applyAccessSettings(builder, infobase);
-        builder.updateInfobase();
+        builder.updateDatabaseConfiguration();
         builder.disableStartupDialogs();
         builder.disableStartupMessages();
         if (logFile != null) {
@@ -710,7 +710,7 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings = null;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.getSettings(infobase, InfobaseAccess.INFOBASE);
+            settings = accessManager.resolveSettings(infobase);
         } catch (Exception | NoSuchMethodError e) {
             LOG.warn("Failed to resolve access settings (possible EDT 2025.2 API change): " + e.getMessage(), e); //$NON-NLS-1$
             settings = null;

@@ -434,7 +434,7 @@ public class EdtInfobaseConnectService {
                 access == InfobaseAccess.INFOBASE ? (password == null ? "" : password) : null, //$NON-NLS-1$
                 null);
         try {
-            accessManager.storeSettings(reference, settings);
+            accessManager.updateSettings(reference, settings);
         } catch (Exception e) {
             String detail = e.getMessage() != null && !e.getMessage().isBlank()
                     ? e.getMessage() : e.getClass().getSimpleName();
