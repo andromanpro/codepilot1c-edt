@@ -31,7 +31,7 @@ public class FuzzyMatcherWhitespaceTest {
         MatchResult result = new FuzzyMatcher().findMatch(search, doc);
 
         assertTrue("match must succeed via whitespace normalization", result.isSuccess()); //$NON-NLS-1$
-        MatchLocation location = result.getLocation();
+        MatchLocation location = result.getLocation().orElseThrow();
         assertNotNull(location);
         assertEquals("matched text should be exactly the closing tag", //$NON-NLS-1$
                 "</root>", location.getMatchedText()); //$NON-NLS-1$
@@ -49,7 +49,7 @@ public class FuzzyMatcherWhitespaceTest {
         MatchResult result = new FuzzyMatcher().findMatch(search, doc);
 
         assertTrue(result.isSuccess());
-        MatchLocation location = result.getLocation();
+        MatchLocation location = result.getLocation().orElseThrow();
         assertEquals("matched text should cover both lines, preserving CRLF", //$NON-NLS-1$
                 "  <a/>\r\n</root>", location.getMatchedText()); //$NON-NLS-1$
         assertEquals(doc.length(), location.getEndOffset());
@@ -64,7 +64,7 @@ public class FuzzyMatcherWhitespaceTest {
         MatchResult result = new FuzzyMatcher().findMatch(search, doc);
 
         assertTrue(result.isSuccess());
-        MatchLocation location = result.getLocation();
+        MatchLocation location = result.getLocation().orElseThrow();
         assertEquals("beta   \ngamma", location.getMatchedText()); //$NON-NLS-1$
         assertEquals(doc.length(), location.getEndOffset());
     }
@@ -81,7 +81,7 @@ public class FuzzyMatcherWhitespaceTest {
 
         MatchResult result = new FuzzyMatcher().findMatch(search, doc);
         assertTrue(result.isSuccess());
-        MatchLocation location = result.getLocation();
+        MatchLocation location = result.getLocation().orElseThrow();
 
         String updated = doc.substring(0, location.getStartOffset())
                 + replacement
