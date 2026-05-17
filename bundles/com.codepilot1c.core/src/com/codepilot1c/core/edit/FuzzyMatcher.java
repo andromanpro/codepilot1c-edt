@@ -129,28 +129,34 @@ public class FuzzyMatcher {
 
     /**
      * Match with whitespace normalization.
+     *
+     * <p>Uses a positional map built during normalization to translate normalized
+     * offsets back to the original document. Previously this was done with two
+     * approximate helpers (line counting + char walking) that miscounted CRLF
+     * pairs and EOF-anchored matches, producing matched regions that didn't
+     * cover the trailing closing tag — replacements then duplicated it.
      */
     private MatchResult tryWhitespaceNormalizedMatch(String searchText, String documentContent) {
-        String normalizedSearch = normalizeWhitespace(searchText);
-        String normalizedDoc = normalizeWhitespace(documentContent);
+        NormalizationMap docMap = buildNormalizationMap(documentContent);
+        NormalizationMap searchMap = buildNormalizationMap(searchText);
 
-        int normalizedIndex = normalizedDoc.indexOf(normalizedSearch);
+        int normalizedIndex = docMap.normalized.indexOf(searchMap.normalized);
         if (normalizedIndex < 0) {
             return MatchResult.failure("Совпадение не найдено после нормализации пробелов"); //$NON-NLS-1$
         }
 
-        // Map back to original offsets
-        int originalStart = mapNormalizedToOriginal(documentContent, normalizedDoc, normalizedIndex);
-        int originalEnd = findOriginalEnd(documentContent, originalStart, searchText, normalizedSearch.length());
+        int normalizedEnd = normalizedIndex + searchMap.normalized.length();
+        int originalStart = docMap.toOriginal(normalizedIndex);
+        int originalEnd = docMap.toOriginal(normalizedEnd);
 
         // Check uniqueness
-        int secondIndex = normalizedDoc.indexOf(normalizedSearch, normalizedIndex + 1);
+        int secondIndex = docMap.normalized.indexOf(searchMap.normalized, normalizedIndex + 1);
         if (secondIndex >= 0) {
             List<MatchResult.SimilarMatch> candidates = new ArrayList<>();
             candidates.add(extractCandidate(documentContent, originalStart, originalEnd));
-            int secondOriginalStart = mapNormalizedToOriginal(documentContent, normalizedDoc, secondIndex);
-            int secondOriginalEnd = findOriginalEnd(documentContent, secondOriginalStart, searchText, normalizedSearch.length());
-            candidates.add(extractCandidate(documentContent, secondOriginalStart, secondOriginalEnd));
+            int secondStart = docMap.toOriginal(secondIndex);
+            int secondEnd = docMap.toOriginal(secondIndex + searchMap.normalized.length());
+            candidates.add(extractCandidate(documentContent, secondStart, secondEnd));
             return MatchResult.ambiguous(candidates);
         }
 
@@ -364,51 +370,99 @@ public class FuzzyMatcher {
     }
 
     /**
-     * Maps normalized index back to original document offset.
+     * Builds a positional map between the original text and its normalized form.
+     *
+     * <p>For every position in the normalized string the map records the
+     * corresponding offset in the original. The map has one extra entry beyond
+     * the last character that points at the past-the-end offset of the original
+     * — this lets callers translate a half-open {@code [start, end)} range in
+     * normalized space back to the exact byte range in the original.</p>
+     *
+     * <p>The normalization rules mirror {@link #normalizeWhitespace}:</p>
+     * <ul>
+     *   <li>{@code \r\n} and bare {@code \r} collapse to {@code \n} (one
+     *       normalized char consumed by two/one original chars).</li>
+     *   <li>Trailing whitespace runs before a newline / EOF are stripped from
+     *       the normalized output (zero normalized chars consumed by N original
+     *       chars).</li>
+     * </ul>
+     *
+     * @param original the original text
+     * @return a normalization map; never {@code null}
      */
-    private int mapNormalizedToOriginal(String original, String normalized, int normalizedIndex) {
-        // Simple approximation - count characters, adjusting for removed spaces
-        int originalIndex = 0;
-        int normalizedPos = 0;
+    private NormalizationMap buildNormalizationMap(String original) {
+        int len = original.length();
+        StringBuilder sb = new StringBuilder(len);
+        int[] map = new int[len + 1];
 
-        String normalizedOriginal = normalizeWhitespace(original);
-        while (normalizedPos < normalizedIndex && originalIndex < original.length()) {
-            char origChar = original.charAt(originalIndex);
-            if (normalizedPos < normalizedOriginal.length()) {
-                char normChar = normalizedOriginal.charAt(normalizedPos);
-                if (origChar == normChar || (origChar == '\r' && normChar == '\n')) {
-                    normalizedPos++;
+        int i = 0;
+        while (i < len) {
+            char c = original.charAt(i);
+            if (c == '\r') {
+                map[sb.length()] = i;
+                sb.append('\n');
+                i++;
+                if (i < len && original.charAt(i) == '\n') {
+                    i++;
                 }
+            } else if (c == '\n') {
+                map[sb.length()] = i;
+                sb.append('\n');
+                i++;
+            } else if (c == ' ' || c == '\t') {
+                // A whitespace run is "trailing" iff it ends at \r/\n/EOF.
+                int j = i;
+                while (j < len) {
+                    char d = original.charAt(j);
+                    if (d != ' ' && d != '\t') {
+                        break;
+                    }
+                    j++;
+                }
+                boolean trailing = j == len
+                        || original.charAt(j) == '\n'
+                        || original.charAt(j) == '\r';
+                if (trailing) {
+                    i = j;
+                } else {
+                    map[sb.length()] = i;
+                    sb.append(c);
+                    i++;
+                }
+            } else {
+                map[sb.length()] = i;
+                sb.append(c);
+                i++;
             }
-            originalIndex++;
         }
-        return originalIndex;
+        map[sb.length()] = len;
+        int[] trimmed = java.util.Arrays.copyOf(map, sb.length() + 1);
+        return new NormalizationMap(sb.toString(), trimmed);
     }
 
     /**
-     * Finds the end offset in original document.
+     * Positional map between a text and its whitespace-normalized form.
      */
-    private int findOriginalEnd(String documentContent, int originalStart, String searchText, int normalizedLength) {
-        // Approximate by finding the search text lines in document
-        String[] searchLines = searchText.split("\n", -1); //$NON-NLS-1$
-        int lineCount = searchLines.length;
+    private static final class NormalizationMap {
 
-        int currentLine = 0;
-        int pos = originalStart;
-        while (pos < documentContent.length() && currentLine < lineCount) {
-            int nextNewline = documentContent.indexOf('\n', pos);
-            if (nextNewline < 0) {
-                pos = documentContent.length();
-                break;
-            }
-            currentLine++;
-            pos = nextNewline + 1;
+        final String normalized;
+        private final int[] normToOrig;
+
+        NormalizationMap(String normalized, int[] normToOrig) {
+            this.normalized = normalized;
+            this.normToOrig = normToOrig;
         }
-        // Adjust for last line if not followed by newline
-        if (currentLine < lineCount && pos < documentContent.length()) {
-            pos = documentContent.length();
+
+        /**
+         * Translates a half-open offset in normalized space to the original.
+         *
+         * @param normalizedOffset offset in {@link #normalized},
+         *                         {@code 0 <= normalizedOffset <= normalized.length()}
+         * @return the corresponding offset in the original text
+         */
+        int toOriginal(int normalizedOffset) {
+            return normToOrig[normalizedOffset];
         }
-        return Math.min(pos, documentContent.length());
     }
 
     /**
