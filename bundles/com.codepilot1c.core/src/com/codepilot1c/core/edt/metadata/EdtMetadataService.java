@@ -64,10 +64,13 @@ import com._1c.g5.v8.dt.form.model.DataPath;
 import com._1c.g5.v8.dt.form.model.DynamicListExtInfo;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttribute;
+import com._1c.g5.v8.dt.form.model.FormAttributeColumn;
 import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.FieldExtInfo;
+import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
 import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
@@ -1408,6 +1411,48 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Ensures the field carries a {@link FieldExtInfo} so that ext-info properties
+     * (multiLine, passwordMode, extendedEdit, wrap, …) can be resolved on it.
+     * Mirrors {@link #ensureFormGroupExtInfo}. Only creates when absent — an
+     * existing ext-info (set by the EDT item-management service per field type)
+     * is kept as-is to avoid discarding model data.
+     */
+    private FieldExtInfo ensureFormFieldExtInfo(FormField field) {
+        if (field == null) {
+            return null;
+        }
+        FieldExtInfo existing = field.getExtInfo();
+        if (existing != null) {
+            return existing;
+        }
+        ManagedFormFieldType type = field.getType();
+        FieldExtInfo created = switch (type == null ? ManagedFormFieldType.INPUT_FIELD : type) {
+            case LABEL_FIELD -> FormFactory.eINSTANCE.createLabelFieldExtInfo();
+            case CHECK_BOX_FIELD -> FormFactory.eINSTANCE.createCheckBoxFieldExtInfo();
+            case RADIO_BUTTON_FIELD -> FormFactory.eINSTANCE.createRadioButtonsFieldExtInfo();
+            case PICTURE_FIELD -> FormFactory.eINSTANCE.createImageFieldExtInfo();
+            case HTML_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createHtmlFieldExtInfo();
+            case TEXT_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createTextDocFieldExtInfo();
+            case SPREADSHEET_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createSpreadSheetDocFieldExtInfo();
+            case CHART_FIELD -> FormFactory.eINSTANCE.createChartFieldExtInfo();
+            case GANTT_CHART_FIELD -> FormFactory.eINSTANCE.createGanttChartFieldExtInfo();
+            case PROGRESS_BAR_FIELD -> FormFactory.eINSTANCE.createProgressBarFieldExtInfo();
+            case TRACK_BAR_FIELD -> FormFactory.eINSTANCE.createTrackBarFieldExtInfo();
+            case CALENDAR_FIELD -> FormFactory.eINSTANCE.createCalendarFieldExtInfo();
+            case PERIOD_FIELD -> FormFactory.eINSTANCE.createPeriodFieldExtInfo();
+            case FORMATTED_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createFormattedDocFieldExtInfo();
+            case PDF_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createPDFDocumentFieldExtInfo();
+            case PLANNER_FIELD -> FormFactory.eINSTANCE.createPlannerFieldExtInfo();
+            case DENDROGRAM_FIELD -> FormFactory.eINSTANCE.createDendrogramFieldExtInfo();
+            case GEOGRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createGeographicalMapFieldExtInfo();
+            case GRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createFlowchartFieldExtInfo();
+            default -> FormFactory.eINSTANCE.createInputFieldExtInfo();
+        };
+        field.setExtInfo(created);
+        return created;
+    }
+
     private FormItemContainer resolveTargetContainer(Form formModel, Map<String, Object> operation) {
         // Accept parent_item_id (canonical) or parent_id/parentId (common LLM hallucination aliases)
         Integer parentItemId = asOptionalInteger(getMapValueIgnoreCase(operation, "parent_item_id"), "parent_item_id"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -1960,6 +2005,10 @@ public class EdtMetadataService {
                 }
                 applyFormAttributePatch(created, patch.patch);
                 formModel.getAttributes().add(created);
+                if (patch.columnsValue != null) {
+                    applyFormAttributeColumns(formModel, created, patch.columnsValue,
+                            transaction, preResolvedTypes, txConfiguration);
+                }
                 stats.created++;
                 byId.put(created.getId(), created);
                 if (created.getName() != null) {
@@ -1978,6 +2027,10 @@ public class EdtMetadataService {
                 applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
             applyFormAttributePatch(existing, patch.patch);
+            if (patch.columnsValue != null) {
+                applyFormAttributeColumns(formModel, existing, patch.columnsValue,
+                        transaction, preResolvedTypes, txConfiguration);
+            }
             stats.updated++;
         }
 
@@ -2025,6 +2078,13 @@ public class EdtMetadataService {
             typeValue = setType != null ? setType : propsType;
         }
 
+        Object columnsValue = removeMapValueIgnoreCase(patch, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
+        Object setColumns = removeMapValueIgnoreCase(set, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
+        Object propsColumns = removeMapValueIgnoreCase(props, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (columnsValue == null) {
+            columnsValue = setColumns != null ? setColumns : propsColumns;
+        }
+
         if (!set.isEmpty()) {
             patch.put("set", set); //$NON-NLS-1$
         } else {
@@ -2035,11 +2095,11 @@ public class EdtMetadataService {
         } else {
             patch.remove("properties"); //$NON-NLS-1$
         }
-        return new FormAttributePatch(patch, typeValue);
+        return new FormAttributePatch(patch, typeValue, columnsValue);
     }
 
     private void applyFormAttributeType(
-            FormAttribute attribute,
+            AbstractFormAttribute attribute,
             Object typeValue,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
@@ -2205,6 +2265,95 @@ public class EdtMetadataService {
             }
         }
         return maxId + 1;
+    }
+
+    private int nextFormColumnId(Form formModel) {
+        int maxId = 0;
+        if (formModel != null) {
+            for (FormAttribute attribute : formModel.getAttributes()) {
+                if (attribute == null) {
+                    continue;
+                }
+                maxId = Math.max(maxId, attribute.getId());
+                for (FormAttributeColumn column : attribute.getColumns()) {
+                    if (column != null) {
+                        maxId = Math.max(maxId, column.getId());
+                    }
+                }
+            }
+        }
+        return maxId + 1;
+    }
+
+    /**
+     * Creates/updates/removes columns of a ValueTable form attribute.
+     * Columns are containment children ({@code FormAttribute.getColumns()}),
+     * not a settable reference — they cannot go through applyFormPropertySet.
+     * Reuses {@link #applyFormAttributeType} (now {@link AbstractFormAttribute}-typed)
+     * for column value-type resolution.
+     */
+    private void applyFormAttributeColumns(
+            Form formModel,
+            FormAttribute attribute,
+            Object columnsValue,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
+        if (attribute == null || columnsValue == null) {
+            return;
+        }
+        List<Map<String, Object>> columnSpecs = asListOfMaps(columnsValue);
+        if (columnSpecs.isEmpty()) {
+            return;
+        }
+        Map<String, FormAttributeColumn> byName = new HashMap<>();
+        for (FormAttributeColumn column : attribute.getColumns()) {
+            if (column != null && column.getName() != null) {
+                byName.put(normalizeToken(column.getName()), column);
+            }
+        }
+        for (Map<String, Object> spec : columnSpecs) {
+            if (spec == null || spec.isEmpty()) {
+                continue;
+            }
+            String name = asString(getMapValueIgnoreCase(spec, "name")); //$NON-NLS-1$
+            if (name == null) {
+                name = asString(getMapValueIgnoreCase(spec, "column")); //$NON-NLS-1$
+            }
+            String action = normalizeToken(asString(getMapValueIgnoreCase(spec, "action"))); //$NON-NLS-1$
+            FormAttributeColumn existing = name == null ? null : byName.get(normalizeToken(name));
+            if ("remove".equals(action) || "delete".equals(action) || "drop".equals(action)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                if (existing != null) {
+                    attribute.getColumns().remove(existing);
+                    byName.remove(normalizeToken(existing.getName()));
+                }
+                continue;
+            }
+            FormAttributeColumn column = existing;
+            if (column == null) {
+                if (!MetadataNameValidator.isValidName(name)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_NAME,
+                            "Invalid form attribute column name: " + name, false); //$NON-NLS-1$
+                }
+                column = FormFactory.eINSTANCE.createFormAttributeColumn();
+                column.setName(name);
+                column.setId(nextFormColumnId(formModel));
+                attribute.getColumns().add(column);
+                byName.put(normalizeToken(name), column);
+            }
+            Object columnType = getMapValueIgnoreCase(spec, "type"); //$NON-NLS-1$
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(spec, "field_type"); //$NON-NLS-1$
+            }
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(spec, "fieldType"); //$NON-NLS-1$
+            }
+            if (columnType != null) {
+                applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
+            }
+        }
     }
 
     private Map<String, TypeItem> preResolveFormAttributeTypes(
@@ -2765,6 +2914,14 @@ public class EdtMetadataService {
     private void applySimpleFeatureValue(EObject target, String fieldName, Object value) {
         EStructuralFeature feature = resolveStructuralFeatureIgnoreCase(target, fieldName);
         if (feature == null) {
+            if (target instanceof FormField formField) {
+                FieldExtInfo fieldExtInfo = ensureFormFieldExtInfo(formField);
+                if (fieldExtInfo != null
+                        && resolveStructuralFeatureIgnoreCase(fieldExtInfo, fieldName) != null) {
+                    applySimpleFeatureValue(fieldExtInfo, fieldName, value);
+                    return;
+                }
+            }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Unknown form property: " + fieldName, false); //$NON-NLS-1$
@@ -9519,7 +9676,7 @@ public class EdtMetadataService {
         }
     }
 
-    private record FormAttributePatch(Map<String, Object> patch, Object typeValue) {
+    private record FormAttributePatch(Map<String, Object> patch, Object typeValue, Object columnsValue) {
     }
 
     private record FormRecipeApplyResult(FormAttributeRecipeStats stats, List<String> layoutSummaries) {
