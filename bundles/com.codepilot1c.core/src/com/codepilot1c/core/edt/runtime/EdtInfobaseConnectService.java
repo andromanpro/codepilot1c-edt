@@ -214,7 +214,8 @@ public class EdtInfobaseConnectService {
                 sanitizeLogin(request.login()), null, primary, replacedPrevious);
     }
 
-    private ConnectResult connectStandalone(IProject project, ConnectRequest request) {
+    // Visible for testing.
+    protected ConnectResult connectStandalone(IProject project, ConnectRequest request) {
         Path resolvedPath = ensureStandaloneDataPath(request.databasePath());
         String filePathArg = resolvedPath.toAbsolutePath().toString();
         int port = request.serverPort() != null && request.serverPort().intValue() > 0
@@ -229,6 +230,12 @@ public class EdtInfobaseConnectService {
                     ? "infobase" //$NON-NLS-1$
                     : resolvedPath.getFileName().toString();
             reference.setName(infobaseName);
+        }
+
+        // EDT's StandaloneServerInfobase constructor requires a non-null UUID;
+        // newFileInfobaseReference() does not populate one, so assign before the EDT call.
+        if (reference.getUuid() == null) {
+            reference.setUuid(UUID.randomUUID());
         }
 
         IStandaloneServerService service = gateway.getStandaloneServerService();
@@ -274,6 +281,14 @@ public class EdtInfobaseConnectService {
             throw new EdtToolException(EdtToolErrorCode.STANDALONE_SERVER_CREATE_FAILED,
                     "Standalone server operation failed: " + detail, e); //$NON-NLS-1$
         } catch (ReflectiveOperationException e) {
+            String detail = e.getMessage() != null && !e.getMessage().isBlank()
+                    ? e.getMessage() : e.getClass().getSimpleName();
+            throw new EdtToolException(EdtToolErrorCode.STANDALONE_SERVER_CREATE_FAILED,
+                    "Failed to create standalone server: " + detail, e); //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            // Surface unchecked exceptions from EDT (e.g. IllegalArgumentException from a
+            // Preconditions check inside the standalone API) as a typed error instead of
+            // letting them escape and be mislabelled as EDT_SERVICE_UNAVAILABLE upstream.
             String detail = e.getMessage() != null && !e.getMessage().isBlank()
                     ? e.getMessage() : e.getClass().getSimpleName();
             throw new EdtToolException(EdtToolErrorCode.STANDALONE_SERVER_CREATE_FAILED,
