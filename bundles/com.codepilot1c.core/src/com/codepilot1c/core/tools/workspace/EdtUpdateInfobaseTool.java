@@ -99,9 +99,11 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         String opId = LogSanitizer.newId("edt-update"); //$NON-NLS-1$
         File workspaceRoot = getWorkspaceRoot();
         String projectName = asString(parameters == null ? null : parameters.get("project_name")); //$NON-NLS-1$
-        boolean keepConnected = parameters == null || !Boolean.FALSE.equals(parameters.get("keep_connected")); //$NON-NLS-1$
-        boolean dryRun = parameters != null && Boolean.TRUE.equals(parameters.get("dry_run")); //$NON-NLS-1$
-        boolean async = parameters != null && Boolean.TRUE.equals(parameters.get("async")); //$NON-NLS-1$
+        // Lenient: callers reaching this tool through edt_diagnostics may ship
+        // these as strings (the parent schema doesn't advertise their types).
+        boolean keepConnected = asBoolean(parameters == null ? null : parameters.get("keep_connected"), true); //$NON-NLS-1$
+        boolean dryRun = asBoolean(parameters == null ? null : parameters.get("dry_run"), false); //$NON-NLS-1$
+        boolean async = asBoolean(parameters == null ? null : parameters.get("async"), false); //$NON-NLS-1$
 
         if (async && dryRun) {
             // Dry-run is fast and deterministic; running it synchronously avoids
@@ -239,5 +241,34 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     private static String asString(Object value) {
         return value == null ? null : String.valueOf(value).trim();
+    }
+
+    /**
+     * Coerces a JSON-decoded value into a boolean. Accepts {@link Boolean},
+     * canonical strings ({@code "true"}, {@code "false"}, case-insensitive,
+     * with surrounding whitespace ignored), and {@link Number} (non-zero ->
+     * true). Falls back to {@code defaultValue} on null/unrecognized input.
+     */
+    static boolean asBoolean(Object value, boolean defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean b) {
+            return b.booleanValue();
+        }
+        if (value instanceof Number n) {
+            return n.doubleValue() != 0d;
+        }
+        String s = String.valueOf(value).trim();
+        if (s.isEmpty()) {
+            return defaultValue;
+        }
+        if ("true".equalsIgnoreCase(s) || "1".equals(s)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return true;
+        }
+        if ("false".equalsIgnoreCase(s) || "0".equals(s)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return false;
+        }
+        return defaultValue;
     }
 }
