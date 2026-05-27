@@ -142,6 +142,40 @@ public class EdtUpdateInfobaseToolTest {
         assertTrue(resultJson.get("updated").getAsBoolean()); //$NON-NLS-1$
     }
 
+    @Test
+    public void async_stringTrue_returnsJobIdImmediately() throws Exception {
+        // Regression: "async":"true" (JSON string) must take the async path,
+        // not be silently coerced to false and block the MCP transport.
+        File workspaceRoot = Files.createTempDirectory("edt-update-tool-async-str").toFile(); //$NON-NLS-1$
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        BlockingRuntimeService runtimeService = new BlockingRuntimeService(entered, release);
+        EdtUpdateInfobaseTool tool = new TestEdtUpdateInfobaseTool(
+                new StubProjectResolver(),
+                runtimeService,
+                workspaceRoot);
+
+        long t0 = System.currentTimeMillis();
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "async", "true" //$NON-NLS-1$ //$NON-NLS-2$
+        )).join();
+        long elapsed = System.currentTimeMillis() - t0;
+
+        assertTrue(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertTrue(json.get("async").getAsBoolean()); //$NON-NLS-1$
+        assertEquals("RUNNING", json.get("state").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        String jobId = json.get("job_id").getAsString(); //$NON-NLS-1$
+        assertNotNull(jobId);
+        assertTrue("Async tool returned in " + elapsed + " ms", elapsed < 2000); //$NON-NLS-1$ //$NON-NLS-2$
+
+        // Drain the blocked background job so it doesn't leak into other tests.
+        release.countDown();
+        entered.await(5, TimeUnit.SECONDS);
+        pollForTerminal(BackgroundJobRegistry.getInstance(), jobId);
+    }
+
     private static JobStatus pollForTerminal(BackgroundJobRegistry registry, String jobId)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
