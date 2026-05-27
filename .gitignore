@@ -6,6 +6,10 @@
 .codex/
 .claude/
 .runs/
+.mcp.json
+.paperclip/
+.playwright-mcp/
+.scripts/
 tools/__pycache__/
 .planning/local/
 .planning/qwen35-optimization-*.md
@@ -24,6 +28,12 @@ OSS_SUMMARY.md
 AGENTS.md
 CLAUDE.md
 CLAUDE.md
+*.bak
+git-paperclip-sync*.py
+github-sync-state*.json
+qwen-code/
+tool-guide-light.png
+tools/run_github_sync.sh
 
 # QA локальная конфигурация и результаты
 tests/qa/qa-config.json
