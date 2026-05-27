@@ -46,17 +46,12 @@ public final class ProviderUtils {
             return base.build();
         }
         if (config.getType() == ProviderType.CODEPILOT_BACKEND) {
-            String modelFamily = ProviderCapabilities.resolveModelFamily(config.getModel());
-            float defaultTemp = ProviderCapabilities.FAMILY_UNKNOWN.equals(modelFamily)
-                    ? -1f
-                    : ProviderCapabilities.QWEN_DEFAULT_TEMPERATURE;
             return base
                     .codePilotBackend(true)
                     .backendOptimizations(true)
                     .promptCacheHeaders(true)
                     .resolvedModel(true)
-                    .resolvedModelFamily(modelFamily)
-                    .defaultTemperature(defaultTemp)
+                    .textToolCallFallback(true)
                     .streamUsage(true)
                     .build();
         }

@@ -38,10 +38,10 @@ public class ToolSurfaceSnapshotTest {
         ToolRegistry registry = createIsolatedRegistry();
         registerSnapshotTools(registry);
         String nonBackend = snapshotFor(registry, "openai-local", ProviderType.OPENAI_COMPATIBLE, "model", "build"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        String nonQwenBackend = snapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "minimax-m2", "build"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        String qwenBackend = snapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "qwen3-coder", "build"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        String minimaxBackend = snapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "minimax-m2", "build"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        String explicitBackend = snapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "backend-coder", "build"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
-        // Non-backend provider: no Qwen contributions. Tool descriptions come straight from the tool.
+        // Non-backend provider: no backend contributions. Tool descriptions come straight from the tool.
         assertEquals("""
                 provider=openai-local
                 profile=build
@@ -52,29 +52,26 @@ public class ToolSurfaceSnapshotTest {
                 skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
                 """, nonBackend);
 
-        // Non-Qwen CodePilot backend (MiniMax / Kimi / Moonshot): backend description rewrite still
-        // runs, but Qwen routing hints / XML priming MUST NOT be contributed — they waste tokens on
-        // models that do not emit Qwen XML tool calls.
+        // CodePilot backend uses one provider-neutral tool surface across model families.
         assertEquals("""
                 provider=backend
                 profile=build
-                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths.
-                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override.
-                create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику.
-                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation.
+                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths. Tool routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
+                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override. Tool routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
+                create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику. Tool routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
+                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Tool routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
                 skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
-                """, nonQwenBackend);
+                """, minimaxBackend);
 
-        // Qwen-native CodePilot backend: rewrite + Qwen routing hints appended per category.
         assertEquals("""
                 provider=backend
                 profile=build
-                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths. Qwen routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
-                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override. Qwen routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
-                create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику. Qwen routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
-                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Qwen routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
+                read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths. Tool routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
+                edit_file=Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override. Tool routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
+                create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику. Tool routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
+                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Tool routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
                 skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
-                """, qwenBackend);
+                """, explicitBackend);
     }
 
     private String snapshotFor(ToolRegistry registry, String activeProviderId, ProviderType type, String model,

@@ -51,7 +51,7 @@ public class ToolSurfaceContextTest {
 
     @Test
     public void contributorCannotMutateOriginalProviderConfig() {
-        LlmProviderConfig original = configured("provider", "qwen2.5-coder"); //$NON-NLS-1$ //$NON-NLS-2$
+        LlmProviderConfig original = configured("provider", "backend-coder"); //$NON-NLS-1$ //$NON-NLS-2$
         ToolSurfaceContext context = ToolSurfaceContext.builder()
                 .providerConfig(original)
                 .profile(STUB_PROFILE)
@@ -60,7 +60,7 @@ public class ToolSurfaceContextTest {
 
         MUTATING_CONTRIBUTOR.contribute(context, ToolDefinition.builder().name("t").description("d")); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertEquals("qwen2.5-coder", original.getModel()); //$NON-NLS-1$
+        assertEquals("backend-coder", original.getModel()); //$NON-NLS-1$
         assertEquals("https://api.example.com/v1", original.getBaseUrl()); //$NON-NLS-1$
         assertEquals("sk-secret", original.getApiKey()); //$NON-NLS-1$
         assertEquals(8192, original.getMaxTokens());

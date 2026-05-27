@@ -69,6 +69,9 @@ public class GitMutateTool extends AbstractTool {
                 },
                 "paths": {
                   "type": ["array", "string"],
+                  "items": {
+                    "type": "string"
+                  },
                   "description": "Пути для add"
                 },
                 "message": {
@@ -144,18 +147,6 @@ public class GitMutateTool extends AbstractTool {
         if ((operation == GitOperation.INIT || operation == GitOperation.CLONE) && repoPath == null) {
             throw new GitToolException(GitErrorCode.INVALID_ARGUMENT,
                     "repo_path is required for operation=" + operation.name().toLowerCase()); //$NON-NLS-1$
-        }
-
-        // Operations against an existing repo accept either project_name or repo_path.
-        switch (operation) {
-            case REMOTE_ADD, REMOTE_SET_URL, FETCH, PULL, PUSH, CHECKOUT, CREATE_BRANCH, ADD, COMMIT -> {
-                if (repoPath == null && (projectName == null || projectName.isBlank())) {
-                    throw new GitToolException(GitErrorCode.INVALID_ARGUMENT,
-                            "project_name or repo_path is required for operation=" //$NON-NLS-1$
-                                    + operation.name().toLowerCase());
-                }
-            }
-            default -> { /* no repo-context requirement */ }
         }
 
         // remote_url is required for clone/remote_add/remote_set_url.

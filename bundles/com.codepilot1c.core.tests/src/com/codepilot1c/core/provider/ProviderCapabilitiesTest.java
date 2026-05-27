@@ -31,12 +31,28 @@ public class ProviderCapabilitiesTest {
     }
 
     @Test
-    public void codePilotBackendQwenCoderSupportsStreamUsage() {
+    public void codePilotBackendExplicitModelSupportsStreamUsage() {
         ProviderCapabilities capabilities = ProviderUtils.capabilitiesFor(
-                configured(ProviderType.CODEPILOT_BACKEND, "qwen3-coder-plus")); //$NON-NLS-1$
+                configured(ProviderType.CODEPILOT_BACKEND, "backend-coder-plus")); //$NON-NLS-1$
 
-        assertTrue(capabilities.isQwenNative());
+        assertTrue(capabilities.isCodePilotBackend());
         assertTrue(capabilities.supportsStreamUsage());
+    }
+
+    @Test
+    public void codePilotBackendSupportsTextToolCallFallback() {
+        ProviderCapabilities capabilities = ProviderUtils.capabilitiesFor(
+                configured(ProviderType.CODEPILOT_BACKEND, "backend-coder-plus")); //$NON-NLS-1$
+
+        assertTrue(capabilities.supportsTextToolCallFallback());
+    }
+
+    @Test
+    public void genericOpenAiCompatibleDoesNotSupportTextToolCallFallback() {
+        ProviderCapabilities capabilities = ProviderUtils.capabilitiesFor(
+                configured(ProviderType.OPENAI_COMPATIBLE, "gpt-4o")); //$NON-NLS-1$
+
+        assertFalse(capabilities.supportsTextToolCallFallback());
     }
 
     @Test

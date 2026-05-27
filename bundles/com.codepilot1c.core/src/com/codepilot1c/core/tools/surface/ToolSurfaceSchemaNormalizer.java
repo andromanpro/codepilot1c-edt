@@ -65,6 +65,7 @@ final class ToolSurfaceSchemaNormalizer {
                           "description": "List descendants recursively."
                         }
                       },
+                      "required": [],
                       "additionalProperties": false
                     }
                     """; //$NON-NLS-1$
@@ -275,6 +276,9 @@ final class ToolSurfaceSchemaNormalizer {
             if (definesClosedObjectShape(object)) {
                 object.addProperty("additionalProperties", false); //$NON-NLS-1$
             }
+            if (definesObjectWithProperties(object) && !object.has("required")) { //$NON-NLS-1$
+                object.add("required", new JsonArray()); //$NON-NLS-1$
+            }
             if (object.has("properties") && object.get("properties").isJsonObject()) { //$NON-NLS-1$
                 for (JsonElement value : object.getAsJsonObject("properties").asMap().values()) { //$NON-NLS-1$
                     hardenElement(value);
@@ -299,10 +303,14 @@ final class ToolSurfaceSchemaNormalizer {
     }
 
     private static boolean definesClosedObjectShape(JsonObject object) {
+        return definesObjectWithProperties(object)
+                && !object.has("additionalProperties"); //$NON-NLS-1$
+    }
+
+    private static boolean definesObjectWithProperties(JsonObject object) {
         return "object".equals(typeOf(object)) //$NON-NLS-1$
                 && object.has("properties") //$NON-NLS-1$
-                && object.get("properties").isJsonObject() //$NON-NLS-1$
-                && !object.has("additionalProperties"); //$NON-NLS-1$
+                && object.get("properties").isJsonObject(); //$NON-NLS-1$
     }
 
     private static String typeOf(JsonObject object) {

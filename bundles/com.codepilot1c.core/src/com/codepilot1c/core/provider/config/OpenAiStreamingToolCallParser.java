@@ -8,12 +8,12 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.codepilot1c.core.model.ToolCall;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 /**
  * Stateful parser for fragmented streaming tool calls.
@@ -124,92 +124,11 @@ class OpenAiStreamingToolCallParser {
 
     private RepairOutcome repairArguments(String arguments) {
         String normalized = arguments != null && !arguments.isBlank() ? arguments.strip() : "{}"; //$NON-NLS-1$
-        if (isValidJson(normalized)) {
-            return new RepairOutcome(normalized, false, true);
-        }
-
-        String repaired = normalized;
-        if (repaired.endsWith(",")) { //$NON-NLS-1$
-            repaired = repaired.substring(0, repaired.length() - 1);
-        }
-        repaired = repaired.replaceAll(",\\s*([}\\]])", "$1"); //$NON-NLS-1$ //$NON-NLS-2$
-        if (repaired.endsWith(":")) { //$NON-NLS-1$
-            return new RepairOutcome(normalized, false, false);
-        }
-        if (hasOddQuoteCount(repaired)) {
-            repaired = repaired + "\""; //$NON-NLS-1$
-        }
-        repaired = closeOpenContainers(repaired);
-        if (isValidJson(repaired)) {
-            return new RepairOutcome(repaired, true, true);
+        Optional<String> normalizedArguments = ToolCallArguments.normalize(normalized);
+        if (normalizedArguments.isPresent()) {
+            return new RepairOutcome(normalizedArguments.get(), !normalizedArguments.get().equals(normalized), true);
         }
         return new RepairOutcome(normalized, false, false);
-    }
-
-    private boolean hasOddQuoteCount(String value) {
-        boolean escaped = false;
-        int quoteCount = 0;
-        for (int i = 0; i < value.length(); i++) {
-            char current = value.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (current == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (current == '"') {
-                quoteCount++;
-            }
-        }
-        return (quoteCount % 2) != 0;
-    }
-
-    private String closeOpenContainers(String value) {
-        StringBuilder suffix = new StringBuilder();
-        boolean inString = false;
-        boolean escaped = false;
-        List<Character> stack = new ArrayList<>();
-        for (int i = 0; i < value.length(); i++) {
-            char current = value.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (current == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (current == '"') {
-                inString = !inString;
-                continue;
-            }
-            if (inString) {
-                continue;
-            }
-            if (current == '{' || current == '[') {
-                stack.add(Character.valueOf(current));
-            } else if (current == '}' || current == ']') {
-                if (stack.isEmpty()) {
-                    return value;
-                }
-                stack.remove(stack.size() - 1);
-            }
-        }
-        for (int i = stack.size() - 1; i >= 0; i--) {
-            suffix.append(stack.get(i).charValue() == '{' ? '}' : ']');
-        }
-        return value + suffix;
-    }
-
-    private boolean isValidJson(String value) {
-        try {
-            JsonParser.parseString(value);
-            return true;
-        } catch (RuntimeException e) {
-            return false;
-        }
     }
 
     private String mergeStableField(String current, String incoming) {

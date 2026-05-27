@@ -1,6 +1,7 @@
 package com.codepilot1c.core.provider.config;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Method;
@@ -105,6 +106,61 @@ public class DynamicLlmProviderRequestBodyTest {
         assertEquals("", assistant.get("reasoning_content").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("read_file", assistant.getAsJsonArray("tool_calls").get(0).getAsJsonObject() //$NON-NLS-1$ //$NON-NLS-2$
                 .getAsJsonObject("function").get("name").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void codePilotBackendUsesSingleOpenAiToolPathWithoutXmlPriming() throws Exception {
+        ToolCall noop = new ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        LlmRequest request = LlmRequest.builder()
+                .systemMessage("You are a coding agent.") //$NON-NLS-1$
+                .addMessage(LlmMessage.assistantWithToolCalls(null, "", List.of(noop))) //$NON-NLS-1$
+                .addMessage(LlmMessage.toolResult("call-1", "file content")) //$NON-NLS-1$ //$NON-NLS-2$
+                .addTool(com.codepilot1c.core.model.ToolDefinition.builder()
+                        .name("read_file") //$NON-NLS-1$
+                        .description("Read file") //$NON-NLS-1$
+                        .parametersSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}") //$NON-NLS-1$
+                        .build())
+                .build();
+
+        LlmProviderConfig config = configured(ProviderType.CODEPILOT_BACKEND, "backend-coder-plus"); //$NON-NLS-1$
+        DynamicLlmProvider provider = new DynamicLlmProvider(config);
+        ProviderExecutionPlan plan = new OpenAiModelCompatibilityPolicy().plan(config, request, true);
+        Method method = DynamicLlmProvider.class.getDeclaredMethod(
+                "buildRequestBody", LlmRequest.class, ProviderExecutionPlan.class); //$NON-NLS-1$
+        method.setAccessible(true);
+
+        String requestBody = (String) method.invoke(provider, request, plan);
+        JsonObject body = JsonParser.parseString(requestBody).getAsJsonObject();
+        String systemContent = body.getAsJsonArray("messages").get(0).getAsJsonObject() //$NON-NLS-1$
+                .get("content").getAsString(); //$NON-NLS-1$
+
+        assertEquals("You are a coding agent.", systemContent); //$NON-NLS-1$
+        assertFalse(requestBody.contains("<function=read_file>")); //$NON-NLS-1$
+        assertEquals("read_file", body.getAsJsonArray("tools").get(0).getAsJsonObject() //$NON-NLS-1$ //$NON-NLS-2$
+                .getAsJsonObject("function").get("name").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(body.get("enable_thinking").getAsBoolean()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void gpt5RequestUsesMaxCompletionTokensInsteadOfMaxTokens() throws Exception {
+        LlmRequest request = LlmRequest.builder()
+                .userMessage("hi") //$NON-NLS-1$
+                .maxTokens(1234)
+                .build();
+
+        LlmProviderConfig config = configured(ProviderType.OPENAI_COMPATIBLE, "gpt-5.4"); //$NON-NLS-1$
+        DynamicLlmProvider provider = new DynamicLlmProvider(config);
+        ProviderExecutionPlan plan = new OpenAiModelCompatibilityPolicy().plan(config, request, false);
+        Method method = DynamicLlmProvider.class.getDeclaredMethod(
+                "buildOpenAiRequestBody", LlmRequest.class, ProviderExecutionPlan.class); //$NON-NLS-1$
+        method.setAccessible(true);
+
+        String requestBody = (String) method.invoke(provider, request, plan);
+        JsonObject body = JsonParser.parseString(requestBody).getAsJsonObject();
+
+        assertEquals("gpt-5.4", body.get("model").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(body.has("max_tokens")); //$NON-NLS-1$
+        assertEquals(1234, body.get("max_completion_tokens").getAsInt()); //$NON-NLS-1$
     }
 
     private static LlmProviderConfig configured(ProviderType type, String model) {

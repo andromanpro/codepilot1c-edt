@@ -141,6 +141,15 @@ public final class AgentPromptTemplates {
         sb.append("4. Для параметров/вычисляемых полей: edt_validate_request -> dcs_manage(command=upsert_param|upsert_field).\n"); //$NON-NLS-1$
         sb.append("5. После изменений СКД обязательно get_diagnostics(scope=project, project_name=<project>).\n\n"); //$NON-NLS-1$
 
+        sb.append("## 1C development harness workflow\n"); //$NON-NLS-1$
+        sb.append("1. Сначала классифицируй задачу по фреймам 1С: справочные данные, бизнес-события, учет ресурсов, история состояний, отчетность, формы, BSL-логика, QA, интеграции, расширения.\n"); //$NON-NLS-1$
+        sb.append("2. Выбери платформенные паттерны, а не предметный шаблон: Catalog для устойчивых сущностей, Document для событий, AccumulationRegister для ресурсов, InformationRegister для состояний, Report/DCS для аналитики, ManagedForm для UI.\n"); //$NON-NLS-1$
+        sb.append("3. Перед мутациями сформулируй минимальный FeatureBlueprint: какие объекты, движения, формы, модули, СКД и проверки нужны. Если уверенности мало, сначала исследуй или уточни.\n"); //$NON-NLS-1$
+        sb.append("4. Выполняй blueprint только через семантические EDT-инструменты: metadata/forms/DCS через edt_validate_request -> mutation tool, модули через ensure_module_artifact -> edit_file.\n"); //$NON-NLS-1$
+        sb.append("5. Проверяй общие инварианты: не редактировать .mdo/.form/.mxl/.dcs напрямую, не создавать стандартные реквизиты повторно, агрегировать списание ресурсов по ключу учета, явно задавать границу периода для отчетов на дату.\n"); //$NON-NLS-1$
+        sb.append("6. Конкретные recipes применяй только после классификации как композицию паттернов. Не делай один предметный сценарий универсальным правилом для всех 1С-задач.\n"); //$NON-NLS-1$
+        sb.append("7. Финальный gate: перечитай созданные/измененные объекты, проверь DCS summary/list_nodes при наличии СКД, выполни get_diagnostics/edt_diagnostics и исправь type/runtime warnings перед успехом.\n\n"); //$NON-NLS-1$
+
         sb.append("## Workflow расширений EDT\n"); //$NON-NLS-1$
         sb.append("1. project и base_project всегда обозначают проект основной конфигурации; extension_project — отдельный проект расширения.\n"); //$NON-NLS-1$
         sb.append("2. Перед заимствованием найди объект в базе, затем вызывай edt_validate_request(operation=extension_manage, payload.command=adopt, payload.project=<base>, payload.base_project=<base>, payload.extension_project=<extension>, payload.source_object_fqn=<FQN>).\n"); //$NON-NLS-1$
@@ -365,11 +374,13 @@ public final class AgentPromptTemplates {
         sb.append("## Операционный контракт\n"); //$NON-NLS-1$
         sb.append("1. Определи рабочий проект и его верхнеуровневую структуру через list_files/glob.\n"); //$NON-NLS-1$
         sb.append("2. Найди `Configuration.mdo`, ключевые CommonModules, Documents, Catalogs, Registers и DataProcessors.\n"); //$NON-NLS-1$
-        sb.append("3. Прочитай только 2-5 наиболее информативных файлов; не сканируй весь проект подряд.\n"); //$NON-NLS-1$
-        sb.append("4. Составь `Code.md` в Markdown с секциями: Project Overview, Architecture, Development Conventions, AI Added Memories.\n"); //$NON-NLS-1$
-        sb.append("5. Если `Code.md` уже существует, сохрани полезные пользовательские разделы и обнови устаревшие факты.\n"); //$NON-NLS-1$
-        sb.append("6. Запиши результат через write_file(path=\"Code.md\", content=<полный Markdown>, overwrite=true); этот tool создает Code.md в корне текущего проекта, если файла еще нет.\n"); //$NON-NLS-1$
-        sb.append("7. В финальном ответе кратко перечисли, какие источники были использованы.\n\n"); //$NON-NLS-1$
+        sb.append("3. Используй не больше 8 поисковых/читающих вызовов перед записью; не сканируй весь проект подряд.\n"); //$NON-NLS-1$
+        sb.append("4. Прочитай только 2-5 наиболее информативных файлов.\n"); //$NON-NLS-1$
+        sb.append("5. Составь `Code.md` в Markdown с секциями: Project Overview, Architecture, Development Conventions, AI Added Memories.\n"); //$NON-NLS-1$
+        sb.append("6. Если `Code.md` уже существует, сохрани полезные пользовательские разделы и обнови устаревшие факты.\n"); //$NON-NLS-1$
+        sb.append("7. Обязательно вызови write_file(path=\"Code.md\", content=<полный Markdown>, overwrite=true) до финального ответа; этот tool создает Code.md в корне текущего проекта, если файла еще нет.\n"); //$NON-NLS-1$
+        sb.append("8. Если контекста недостаточно, все равно создай краткий Code.md с проверенными фактами и ограничениями анализа.\n"); //$NON-NLS-1$
+        sb.append("9. В финальном ответе кратко перечисли, какие источники были использованы.\n\n"); //$NON-NLS-1$
 
         sb.append("## Ограничения\n"); //$NON-NLS-1$
         sb.append("- Не изменяй никакие файлы кроме Code.md.\n"); //$NON-NLS-1$

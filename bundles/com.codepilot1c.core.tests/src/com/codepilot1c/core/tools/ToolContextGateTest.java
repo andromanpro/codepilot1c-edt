@@ -32,6 +32,14 @@ public class ToolContextGateTest {
     }
 
     @Test
+    public void dcsManageStaysVisibleForBootstrapWhenProjectHasNoSchemaYet() {
+        Set<String> excluded = ToolContextGate.computeExcludedToolsForState(true, false, false);
+
+        assertFalse("dcs_manage must stay visible so create_schema can bootstrap a new DCS schema", //$NON-NLS-1$
+                excluded.contains("dcs_manage")); //$NON-NLS-1$
+    }
+
+    @Test
     public void qaGenerateNeverExcluded() {
         // qa_generate must stay available so init_config can bootstrap QA config.
         ToolContextGate gate = new ToolContextGate();

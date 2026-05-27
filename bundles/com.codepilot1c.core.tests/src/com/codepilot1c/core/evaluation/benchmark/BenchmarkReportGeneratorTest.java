@@ -18,8 +18,8 @@ public class BenchmarkReportGeneratorTest {
     public void generatesValidHtmlWithMultipleProviders() {
         BenchmarkRun runA = BenchmarkRun.builder()
                 .scenarioId("S-001") //$NON-NLS-1$
-                .providerId("qwen-coder") //$NON-NLS-1$
-                .providerDisplayName("Qwen Coder 2.5") //$NON-NLS-1$
+                .providerId("provider-a") //$NON-NLS-1$
+                .providerDisplayName("CodePilot Backend Coder") //$NON-NLS-1$
                 .success(true)
                 .agentSteps(8)
                 .totalToolCalls(12)
@@ -62,7 +62,7 @@ public class BenchmarkReportGeneratorTest {
                 List.of(runA, runB));
 
         BenchmarkSuiteResult suiteResult = new BenchmarkSuiteResult(
-                List.of("qwen-coder", "glm-5"), //$NON-NLS-1$ //$NON-NLS-2$
+                List.of("provider-a", "glm-5"), //$NON-NLS-1$ //$NON-NLS-2$
                 List.of(comparison),
                 Instant.now());
 
@@ -74,7 +74,7 @@ public class BenchmarkReportGeneratorTest {
         assertTrue(html.contains("</html>")); //$NON-NLS-1$
 
         // Provider names present
-        assertTrue(html.contains("Qwen Coder 2.5")); //$NON-NLS-1$
+        assertTrue(html.contains("CodePilot Backend Coder")); //$NON-NLS-1$
         assertTrue(html.contains("GLM-5")); //$NON-NLS-1$
 
         // Scenario info present

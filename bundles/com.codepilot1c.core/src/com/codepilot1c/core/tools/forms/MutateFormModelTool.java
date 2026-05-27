@@ -48,17 +48,29 @@ public class MutateFormModelTool extends AbstractTool {
                       "op": {
                         "type": "string",
                         "enum": ["set_form_props", "add_group", "add_field", "add_command", "add_button", "set_item", "remove_item", "move_item"],
-                        "description": "Операция. set_form_props=свойства формы; add_group/add_field/add_command/add_button=добавить элемент; set_item=изменить любые свойства существующего элемента (включая смену типа виджета); remove_item=удалить; move_item=переместить."
+                        "description": "Visual form operation. add_field creates a UI item, not a form attribute; create attributes with apply_form_recipe first."
+                      },
+                      "data_path": {
+                        "type": "string",
+                        "description": "For add_field/set_item, data_path must reference an existing form attribute. Use inspect_form_layout to confirm names."
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Visual item type, e.g. INPUT_FIELD or LABEL_FIELD. Do not guess SpreadsheetDocument/ТабличныйДокумент as attribute type."
+                      },
+                      "set": {
+                        "type": "object",
+                        "description": "Properties for the existing form, item, or attribute patch. type here changes visual widget type unless patching form attributes."
                       }
                     },
                     "required": ["op"],
                     "additionalProperties": true
                   },
-                  "description": "Список операций над моделью формы. Форматы: set_form_props{set:{...}}; add_group{parent_item_id,name,type:USUAL_GROUP|PAGES|PAGE|COLUMN_GROUP|BUTTON_GROUP|COMMAND_BAR|POPUP}; add_field{parent_item_id,name,data_path,type:INPUT_FIELD|LABEL_FIELD|CHECK_BOX_FIELD|RADIO_BUTTON_FIELD|PICTURE_FIELD|CALENDAR_FIELD|PERIOD_FIELD|PROGRESS_BAR_FIELD|TRACK_BAR_FIELD|SPREADSHEET_DOCUMENT_FIELD|TEXT_DOCUMENT_FIELD|HTML_DOCUMENT_FIELD|FORMATTED_DOCUMENT_FIELD|PDF_DOCUMENT_FIELD|CHART_FIELD|GANTT_CHART_FIELD|DENDROGRAM_FIELD|GEOGRAPHICAL_SCHEMA_FIELD|GRAPHICAL_SCHEMA_FIELD|PLANNER_FIELD}; add_command{name,action(имя процедуры-обработчика)}; add_button{name,command_name,parent_item_id}; set_item{id,set:{...}} — set принимает EMF feature имена case-insensitive: type (меняет виджет существующего FormField/FormGroup на другой литерал ManagedFormFieldType/ManagedFormGroupType), title, visible, enabled, readOnly, dataPath, userVisible, valueType (для FormAttribute через set_form_props.attributes); remove_item{id}; move_item{id,parent_item_id,index}. Примеры смены типа: {op:set_item,id:MyField,set:{type:LABEL_FIELD}}; {op:set_item,id:MyGroup,set:{type:PAGES}}."
+                  "description": "Visual form items only: groups, fields, commands, buttons. Precondition: call inspect_form_layout when item ids or form attributes are unknown. add_field{parent_item_id,name,data_path,type} binds a UI field to an existing form attribute; it does not create that attribute. Use apply_form_recipe attributes[] action create/update/upsert/remove for data attributes. Supported field widgets include INPUT_FIELD, LABEL_FIELD, CHECK_BOX_FIELD, SPREADSHEET_DOCUMENT_FIELD, TEXT_DOCUMENT_FIELD, HTML_DOCUMENT_FIELD, PDF_DOCUMENT_FIELD, CHART_FIELD. Do not guess SpreadsheetDocument/ТабличныйДокумент as a form attribute data type; inspect type candidates or use a supported alias already accepted by EDT."
                 },
                 "validation_token": {
                   "type": "string",
-                  "description": "Одноразовый токен из edt_validate_request for this form-mutation request."
+                  "description": "Required unchanged token from edt_validate_request for this exact operations payload."
                 }
               },
               "required": ["project", "form_fqn", "operations", "validation_token"]
@@ -79,7 +91,7 @@ public class MutateFormModelTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Точечные изменения модели существующей управляемой формы через EDT BM API: свойства формы, группы/страницы, поля, команды, кнопки. set_item меняет тип виджета поля и группы."; //$NON-NLS-1$
+        return "Меняет visual items существующей формы; attributes создавайте отдельно."; //$NON-NLS-1$
     }
 
     @Override

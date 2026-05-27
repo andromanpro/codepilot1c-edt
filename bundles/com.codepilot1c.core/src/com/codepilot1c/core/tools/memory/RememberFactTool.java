@@ -9,9 +9,7 @@ package com.codepilot1c.core.tools.memory;
 
 import java.util.concurrent.CompletableFuture;
 
-import org.eclipse.core.runtime.ILog;
-import org.eclipse.core.runtime.Platform;
-
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.memory.MemoryCategory;
 import com.codepilot1c.core.memory.MemoryEntry;
 import com.codepilot1c.core.memory.MemoryService;
@@ -32,7 +30,7 @@ import com.google.gson.JsonObject;
  * or states an architecture decision, bug, or project-specific pattern.
  * Facts are saved immediately without waiting for session end.</p>
  *
- * <p>Flat parameter schema for Qwen tool call compatibility.</p>
+ * <p>Flat parameter schema for provider-neutral tool-call compatibility.</p>
  */
 @ToolMeta(
     name = "remember_fact",
@@ -42,7 +40,7 @@ import com.google.gson.JsonObject;
 )
 public class RememberFactTool extends AbstractTool {
 
-    private static final ILog LOG = Platform.getLog(RememberFactTool.class);
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(RememberFactTool.class);
 
     private static final String SCHEMA = """
             {

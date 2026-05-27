@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 import org.junit.After;
@@ -87,6 +88,25 @@ public class TaskToolTest {
 
         assertFalse(result.isSuccess());
         assertTrue(result.getErrorMessage().contains("Ошибка подагента: boom")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void taskToolFormatsNullMessageTimeoutWithExceptionClass() throws Exception {
+        TaskTool taskTool = new TaskTool(
+                placeholderRegistry(),
+                new ProfileRouter(),
+                (provider, toolRegistry, profile, prompt, config) -> {
+                    throw new TimeoutException();
+                });
+        previousRegistry = installRegistry(registryWithLegacyProvider(new BackendProvider()));
+
+        ToolResult result = taskTool.execute(Map.of(
+                "prompt", "Исследуй код", //$NON-NLS-1$ //$NON-NLS-2$
+                "profile", "explore")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getErrorMessage().contains("Ошибка подагента: TimeoutException")); //$NON-NLS-1$
+        assertFalse(result.getErrorMessage().contains("Ошибка подагента: null")); //$NON-NLS-1$
     }
 
     private static LlmProviderRegistry registryWithLegacyProvider(ILlmProvider provider) throws Exception {

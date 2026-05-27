@@ -179,6 +179,40 @@ public class DynamicLlmProviderStreamingTest {
     }
 
     @Test
+    public void nonStreamingToolCallAcceptsArgumentsObject() throws Exception {
+        String nonStreamBody = "{"
+                + "\"choices\":[{"
+                + "\"message\":{"
+                + "\"role\":\"assistant\","
+                + "\"content\":null,"
+                + "\"tool_calls\":[{"
+                + "\"id\":\"call_object\","
+                + "\"type\":\"function\","
+                + "\"function\":{"
+                + "\"name\":\"git_inspect\","
+                + "\"arguments\":{\"operation\":\"status\"}"
+                + "}"
+                + "}]"
+                + "},"
+                + "\"finish_reason\":\"tool_calls\""
+                + "}]"
+                + "}";
+
+        HttpServer server = startServer(new DualModeHandler("data: [DONE]\n", nonStreamBody)); //$NON-NLS-1$
+        try {
+            DynamicLlmProvider provider = createProvider(server);
+
+            LlmResponse response = provider.complete(createToolRequest()).join();
+
+            assertTrue(response.hasToolCalls());
+            assertEquals("git_inspect", response.getToolCalls().get(0).getName()); //$NON-NLS-1$
+            assertEquals("{\"operation\":\"status\"}", response.getToolCalls().get(0).getArguments()); //$NON-NLS-1$
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     public void nonStreamingReplayEmitsUsageBeforeCompletion() throws Exception {
         String nonStreamBody = "{"
                 + "\"usage\":{"
@@ -228,7 +262,7 @@ public class DynamicLlmProviderStreamingTest {
     }
 
     @Test
-    public void kimiToolRequestsSetEnableThinkingFalse() throws Exception {
+    public void kimiToolRequestsUseMoonshotThinkingDisabled() throws Exception {
         RecordingDualModeHandler handler = new RecordingDualModeHandler("data: [DONE]\n", nonStreamingTextResponse("ok")); //$NON-NLS-1$ //$NON-NLS-2$
         HttpServer server = startServer(handler);
         try {
@@ -238,7 +272,8 @@ public class DynamicLlmProviderStreamingTest {
 
             assertEquals(1, handler.getRequestBodies().size());
             String requestBody = handler.getRequestBodies().get(0);
-            assertTrue(requestBody.contains("\"enable_thinking\":false")); //$NON-NLS-1$
+            assertTrue(requestBody.contains("\"thinking\":{\"type\":\"disabled\"}")); //$NON-NLS-1$
+            assertFalse(requestBody.contains("\"enable_thinking\"")); //$NON-NLS-1$
         } finally {
             server.stop(0);
         }
@@ -263,7 +298,7 @@ public class DynamicLlmProviderStreamingTest {
     @Test
     public void completeParsesResolvedModelAndUsageFromOpenAiResponse() throws Exception {
         String response = "{"
-                + "\"model\":\"qwen3-coder-plus\","
+                + "\"model\":\"backend-coder-plus\","
                 + "\"usage\":{"
                 + "\"prompt_tokens\":12,"
                 + "\"completion_tokens\":5,"
@@ -282,7 +317,7 @@ public class DynamicLlmProviderStreamingTest {
             LlmResponse llmResponse = provider.complete(createPlainRequest()).join();
 
             assertEquals("auto", llmResponse.getModel()); //$NON-NLS-1$
-            assertEquals("qwen3-coder-plus", llmResponse.getResolvedModel()); //$NON-NLS-1$
+            assertEquals("backend-coder-plus", llmResponse.getResolvedModel()); //$NON-NLS-1$
             assertNotNull(llmResponse.getUsage());
             assertEquals(12, llmResponse.getUsage().getPromptTokens());
             assertEquals(4, llmResponse.getUsage().getCachedPromptTokens());
@@ -304,7 +339,7 @@ public class DynamicLlmProviderStreamingTest {
         RecordingDualModeHandler handler = new RecordingDualModeHandler(streamBody, nonStreamingTextResponse("unused")); //$NON-NLS-1$
         HttpServer server = startServer(handler);
         try {
-            DynamicLlmProvider provider = createProvider(server, "qwen3-coder-next"); //$NON-NLS-1$
+            DynamicLlmProvider provider = createProvider(server, "backend-coder-next"); //$NON-NLS-1$
             List<LlmStreamChunk> chunks = new ArrayList<>();
 
             provider.streamComplete(createToolRequest(), chunks::add);
@@ -318,7 +353,7 @@ public class DynamicLlmProviderStreamingTest {
     }
 
     @Test
-    public void qwenStreamingXmlContentFallbackProducesToolCallChunk() throws Exception {
+    public void backendTextContentFallbackProducesToolCallChunk() throws Exception {
         String streamBody = ""
                 + "data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>\\n<function=git_inspect>\\n\"},\"finish_reason\":null}]}\n"
                 + "data: {\"choices\":[{\"delta\":{\"content\":\"<parameter=operation>status</parameter>\\n</function>\\n</tool_call>\"},\"finish_reason\":\"stop\"}]}\n"
@@ -326,7 +361,7 @@ public class DynamicLlmProviderStreamingTest {
 
         HttpServer server = startServer(new DualModeHandler(streamBody, nonStreamingTextResponse("unused"))); //$NON-NLS-1$
         try {
-            DynamicLlmProvider provider = createProvider(server, "qwen3-coder-next", ProviderType.CODEPILOT_BACKEND); //$NON-NLS-1$
+            DynamicLlmProvider provider = createProvider(server, "backend-coder-next", ProviderType.CODEPILOT_BACKEND); //$NON-NLS-1$
             List<LlmStreamChunk> chunks = new ArrayList<>();
 
             provider.streamComplete(createToolRequest(), chunks::add);
@@ -378,7 +413,8 @@ public class DynamicLlmProviderStreamingTest {
             assertEquals(1, handler.getRequestBodies().size());
             String requestBody = handler.getRequestBodies().get(0);
             assertTrue(requestBody.contains("\"stream\":false")); //$NON-NLS-1$
-            assertTrue(requestBody.contains("\"enable_thinking\":false")); //$NON-NLS-1$
+            assertTrue(requestBody.contains("\"thinking\":{\"type\":\"disabled\"}")); //$NON-NLS-1$
+            assertFalse(requestBody.contains("\"enable_thinking\"")); //$NON-NLS-1$
         } finally {
             server.stop(0);
         }
@@ -389,7 +425,7 @@ public class DynamicLlmProviderStreamingTest {
         RecordingDualModeHandler handler = new RecordingDualModeHandler("data: [DONE]\n", nonStreamingTextResponse("ok")); //$NON-NLS-1$ //$NON-NLS-2$
         HttpServer server = startServer(handler);
         try {
-            DynamicLlmProvider provider = createProvider(server, "qwen3-coder-next"); //$NON-NLS-1$
+            DynamicLlmProvider provider = createProvider(server, "backend-coder-next"); //$NON-NLS-1$
             String largeToolResult = "Y".repeat(80_000); //$NON-NLS-1$
 
             provider.complete(LlmRequest.builder()

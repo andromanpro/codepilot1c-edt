@@ -36,6 +36,7 @@ public class DCSBuildProfile implements AgentProfile {
             "list_files",
             // DCS composite tool
             "dcs_manage",
+            "edt_validate_request",
             // Context
             "scan_metadata_index",
             "edt_metadata_details",
@@ -80,6 +81,7 @@ public class DCSBuildProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(),
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("dcs_manage").forAllResources(),
+                PermissionRule.allow("edt_validate_request").forAllResources(),
                 PermissionRule.allow("scan_metadata_index").forAllResources(),
                 PermissionRule.allow("edt_metadata_details").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),

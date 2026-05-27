@@ -77,6 +77,13 @@ public final class ProfileRouter {
                 "форма", //$NON-NLS-1$
                 "реквизит", //$NON-NLS-1$
                 "команда", //$NON-NLS-1$
+                "учет", //$NON-NLS-1$
+                "учёт", //$NON-NLS-1$
+                "товар", //$NON-NLS-1$
+                "склад", //$NON-NLS-1$
+                "номенклатур", //$NON-NLS-1$
+                "поступлен", //$NON-NLS-1$
+                "продаж", //$NON-NLS-1$
                 "metadata", //$NON-NLS-1$
                 "конфигурац")); //$NON-NLS-1$
         DOMAIN_KEYWORDS.put(QABuildProfile.ID, Set.of(
@@ -90,6 +97,9 @@ public final class ProfileRouter {
         DOMAIN_KEYWORDS.put(DCSBuildProfile.ID, Set.of(
                 "скд", //$NON-NLS-1$
                 "компоновк", //$NON-NLS-1$
+                "отчет", //$NON-NLS-1$
+                "отчёт", //$NON-NLS-1$
+                "остатк", //$NON-NLS-1$
                 "dataset", //$NON-NLS-1$
                 "schema", //$NON-NLS-1$
                 "набор данных")); //$NON-NLS-1$
@@ -97,9 +107,7 @@ public final class ProfileRouter {
                 "расширени", //$NON-NLS-1$
                 "extension", //$NON-NLS-1$
                 "внешн", //$NON-NLS-1$
-                "обработк", //$NON-NLS-1$
-                "отчет", //$NON-NLS-1$
-                "отчёт")); //$NON-NLS-1$
+                "обработк")); //$NON-NLS-1$
         DOMAIN_KEYWORDS.put(RecoveryProfile.ID, Set.of(
                 "диагност", //$NON-NLS-1$
                 "smoke", //$NON-NLS-1$

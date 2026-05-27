@@ -191,7 +191,7 @@ public class AgentResult {
      * @return true если успешно
      */
     public boolean isSuccess() {
-        return finalState == AgentState.COMPLETED;
+        return finalState == AgentState.COMPLETED && errorMessage == null;
     }
 
     /**

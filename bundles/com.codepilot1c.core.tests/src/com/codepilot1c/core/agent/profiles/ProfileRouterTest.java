@@ -15,6 +15,12 @@ public class ProfileRouterTest {
     }
 
     @Test
+    public void routesTypicalGoodsAccountingFeatureToOrchestrator() {
+        assertEquals(OrchestratorProfile.ID,
+                router.route("Заказчик просит разработать конфигурацию для учета товаров: поступление, продажа, остатки и отчет")); //$NON-NLS-1$
+    }
+
+    @Test
     public void routesCrossDomainPromptToOrchestrator() {
         assertEquals(OrchestratorProfile.ID,
                 router.route("Создай справочник Товары и напиши QA сценарий для Vanessa")); //$NON-NLS-1$

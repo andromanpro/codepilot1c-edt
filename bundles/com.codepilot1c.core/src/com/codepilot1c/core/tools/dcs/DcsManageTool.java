@@ -206,7 +206,7 @@ public class DcsManageTool extends AbstractTool {
                     default -> ToolResult.failure("Unknown command: " + command); //$NON-NLS-1$
                 };
             } catch (MetadataOperationException e) {
-                return ToolResult.failure(toErrorJson(e));
+                return ToolResult.failure(toErrorJson(e, command, p));
             } catch (Exception e) {
                 return ToolResult.failure("INTERNAL_ERROR: " + e.getMessage()); //$NON-NLS-1$
             }
@@ -344,12 +344,51 @@ public class DcsManageTool extends AbstractTool {
 
     // --- Helpers ---
 
-    private String toErrorJson(MetadataOperationException e) {
+    private String toErrorJson(MetadataOperationException e, String command, Map<String, Object> parameters) {
         JsonObject obj = new JsonObject();
         obj.addProperty("error", e.getCode().name()); //$NON-NLS-1$
         obj.addProperty("message", e.getMessage()); //$NON-NLS-1$
         obj.addProperty("recoverable", e.isRecoverable()); //$NON-NLS-1$
+        obj.addProperty("command", command); //$NON-NLS-1$
+        obj.addProperty("project", asString(parameters.get("project"))); //$NON-NLS-1$ //$NON-NLS-2$
+        obj.addProperty("owner_fqn", asString(parameters.get("owner_fqn"))); //$NON-NLS-1$ //$NON-NLS-2$
+        obj.addProperty("stage", inferStage(e)); //$NON-NLS-1$
+
+        boolean mutating = command != null && !READ_COMMANDS.contains(command);
+        boolean hasToken = asOptionalString(parameters.get("validation_token")) != null; //$NON-NLS-1$
+        boolean invalidToken = e.getCode() == com.codepilot1c.core.edt.metadata.MetadataOperationCode.INVALID_VALIDATION_TOKEN;
+        boolean tokenConsumed = mutating && hasToken && !invalidToken
+                && e.getCode() != com.codepilot1c.core.edt.metadata.MetadataOperationCode.INVALID_PROPERTY_VALUE
+                && e.getCode() != com.codepilot1c.core.edt.metadata.MetadataOperationCode.INVALID_METADATA_CHANGE;
+        boolean requiresNewToken = invalidToken || tokenConsumed;
+        obj.addProperty("validation_token_consumed", tokenConsumed); //$NON-NLS-1$
+        obj.addProperty("requires_new_validation_token", requiresNewToken); //$NON-NLS-1$
+        obj.addProperty("next_action", nextAction(e, requiresNewToken)); //$NON-NLS-1$
         return GSON.toJson(obj);
+    }
+
+    private String inferStage(MetadataOperationException e) {
+        return switch (e.getCode()) {
+            case PROJECT_NOT_FOUND, PROJECT_NOT_READY -> "readiness"; //$NON-NLS-1$
+            case INVALID_VALIDATION_TOKEN -> "token"; //$NON-NLS-1$
+            case METADATA_NOT_FOUND, DCS_OWNER_KIND_UNSUPPORTED -> "owner_resolution"; //$NON-NLS-1$
+            case DCS_SCHEMA_NOT_FOUND -> "schema_resolution"; //$NON-NLS-1$
+            case EDT_TRANSACTION_FAILED -> "mutation"; //$NON-NLS-1$
+            default -> "validation"; //$NON-NLS-1$
+        };
+    }
+
+    private String nextAction(MetadataOperationException e, boolean requiresNewToken) {
+        if (e.getCode() == com.codepilot1c.core.edt.metadata.MetadataOperationCode.INVALID_VALIDATION_TOKEN) {
+            return "Call edt_validate_request again with the exact dcs_manage payload, then retry with the new validation_token."; //$NON-NLS-1$
+        }
+        if (requiresNewToken) {
+            return "Request a new validation_token with edt_validate_request before retrying this mutating dcs_manage command."; //$NON-NLS-1$
+        }
+        if (e.getCode() == com.codepilot1c.core.edt.metadata.MetadataOperationCode.METADATA_NOT_FOUND) {
+            return "Verify owner_fqn with scan_metadata_index or edt_metadata_details, then retry dcs_manage after the owner is visible."; //$NON-NLS-1$
+        }
+        return "Inspect the structured error fields and adjust the dcs_manage payload before retrying."; //$NON-NLS-1$
     }
 
     private String asString(Object value) {

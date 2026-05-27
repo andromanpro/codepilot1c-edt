@@ -22,13 +22,10 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
-import org.eclipse.core.runtime.IStatus;
-import org.eclipse.core.runtime.Platform;
-import org.eclipse.core.runtime.Status;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.model.LlmContentPart;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -52,8 +49,7 @@ import com.google.gson.stream.JsonWriter;
  */
 public class FileSessionStore implements ISessionStore {
 
-    private static final String PLUGIN_ID = "com.codepilot1c.core";
-    private static final ILog LOG = Platform.getLog(FileSessionStore.class);
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(FileSessionStore.class);
     private static final String SESSIONS_DIR = "sessions";
     private static final String SESSION_EXTENSION = ".json";
 
@@ -314,15 +310,15 @@ public class FileSessionStore implements ISessionStore {
     // --- Logging helpers ---
 
     private void logInfo(String message) {
-        LOG.log(new Status(IStatus.INFO, PLUGIN_ID, message));
+        LOG.info(message);
     }
 
     private void logWarning(String message, Throwable error) {
-        LOG.log(new Status(IStatus.WARNING, PLUGIN_ID, message, error));
+        LOG.warn(message, error);
     }
 
     private void logError(String message, Throwable error) {
-        LOG.log(new Status(IStatus.ERROR, PLUGIN_ID, message, error));
+        LOG.error(message, error);
     }
 
     // --- Inner classes for JSON serialization ---

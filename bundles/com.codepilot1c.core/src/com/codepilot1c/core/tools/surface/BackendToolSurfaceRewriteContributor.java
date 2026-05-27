@@ -10,9 +10,9 @@ package com.codepilot1c.core.tools.surface;
 import com.codepilot1c.core.model.ToolDefinition;
 
 /**
- * Rewrites the model-facing backend tool surface with Qwen-specific descriptions.
+ * Rewrites the model-facing backend tool surface with compact, provider-neutral descriptions.
  */
-public final class QwenToolSurfaceRewriteContributor implements ToolSurfaceContributor {
+public final class BackendToolSurfaceRewriteContributor implements ToolSurfaceContributor {
 
     @Override
     public boolean supports(ToolSurfaceContext context) {
@@ -40,8 +40,8 @@ public final class QwenToolSurfaceRewriteContributor implements ToolSurfaceContr
             case "list_files" -> "List projects or directory contents in the workspace. Use it for pathname discovery, not for text search or semantic symbol lookup."; //$NON-NLS-1$
             case "glob" -> "Find files by glob pattern under the workspace or a subdirectory. Use it for pathname discovery before read_file."; //$NON-NLS-1$
             case "grep" -> "Search plain text or regex across workspace files. Use it for string occurrences only; prefer EDT semantic tools for symbols, metadata, and platform behavior."; //$NON-NLS-1$
-            case "edit_file" -> "Edit a workspace file via full replace, targeted search/replace, or SEARCH/REPLACE blocks; create only project-root Code.md. Do not mutate EDT metadata descriptors without emergency override."; //$NON-NLS-1$
-            case "write_file" -> "Overwrite a workspace file with full content; can create project-root Code.md. Prefer edit_file for narrow patches."; //$NON-NLS-1$
+            case "edit_file" -> "Edit existing workspace text files; create only project-root Code.md. Never edit .mdo/.form/.mxl/DCS artifacts directly; use metadata/form/dcs/template tools."; //$NON-NLS-1$
+            case "write_file" -> "Overwrite existing workspace text files; can create project-root Code.md. Never write .mdo/.form/.mxl/DCS artifacts directly; use semantic EDT tools."; //$NON-NLS-1$
             case "workspace_import_project" -> "Import an existing Eclipse/EDT project directory into the current workspace. Inspect repository and project state first, then import only when a .project-based project already exists."; //$NON-NLS-1$
             case "git_inspect" -> "Показывает состояние git-репозитория через безопасные read-only операции. Для EDT проекта предпочитай project_name; repo_path используй только как явный override."; //$NON-NLS-1$
             case "git_mutate" -> "Выполняет разрешённые git-изменения. Для существующего EDT проекта передавай project_name, а для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$
@@ -64,7 +64,7 @@ public final class QwenToolSurfaceRewriteContributor implements ToolSurfaceContr
             case "edt_validate_request" -> "Проверяет запрос на изменение метаданных и выдаёт ОДНОРАЗОВЫЙ validation_token. Каждый токен может быть использован ТОЛЬКО ОДИН РАЗ — для каждой новой мутации запрашивай НОВЫЙ токен. Обязателен перед metadata/forms/DCS/extension/external мутациями."; //$NON-NLS-1$
             case "create_form" -> "Создаёт управляемую форму через BM API. owner_fqn: ПОЛНЫЙ FQN с типом (Document.ПоступлениеТоваров, ExternalDataProcessor.МояОбработка). НЕ используй короткое имя. После создания запусти диагностику."; //$NON-NLS-1$
             case "create_metadata" -> "Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику."; //$NON-NLS-1$
-            case "add_metadata_child" -> "Создаёт дочерний объект (реквизит, табличную часть, команду, макет). Тип: {types:[xs:string]} или {types:[CatalogRef.Склады]}. НЕ используй v8:STRING. Для макетов: child_kind=Template, template_type=spreadsheet (по умолч.) — .mxl файл создаётся автоматически."; //$NON-NLS-1$
+            case "add_metadata_child" -> "Создаёт дочерний объект через BM API. Для batch передай properties.children=[{name,type,...}] и не передавай top-level name. Для Number(15,3) используй scale=3. Для макетов: child_kind=Template, template_type=spreadsheet — .mxl создаётся автоматически."; //$NON-NLS-1$
             case "ensure_module_artifact" -> "Ensure that a metadata-owned BSL module artifact exists and return its path. Use it after edt_validate_request and before edit_file or write_file when changing object-owned module code."; //$NON-NLS-1$
             case "update_metadata" -> "Применяет изменения свойств через BM API. Формат changes: {\"set\":{\"field\":\"value\"}} — обёртка set ОБЯЗАТЕЛЬНА. Enum-поля: строки (Allow/Deny). НЕ используй: subsystems, name. После изменений запусти диагностику."; //$NON-NLS-1$
             case "mutate_form_model" -> "Изменяет форму через operations:[{op:...}]. " //$NON-NLS-1$
@@ -95,7 +95,7 @@ public final class QwenToolSurfaceRewriteContributor implements ToolSurfaceContr
             case "edt_extension_smoke" -> "Run smoke verification focused on EDT extension workflows and report the exact failing stage."; //$NON-NLS-1$
             case "edt_external_smoke" -> "Run smoke verification focused on EDT external-object workflows and report the exact failing stage."; //$NON-NLS-1$
             // Composite tools
-            case "dcs_manage" -> "Управляет СКД: читает состояние, создаёт основную схему, обновляет наборы данных, параметры и поля. ВАЖНО: owner-объект ДОЛЖЕН существовать — сначала создай через create_metadata."; //$NON-NLS-1$
+            case "dcs_manage" -> "Управляет СКД: get_summary/list_nodes/create_schema/upsert datasets/params/fields. Никогда не пиши DCS XML/MXL через file tools. Для мутаций сначала edt_validate_request; при INVALID_VALIDATION_TOKEN запроси новый токен."; //$NON-NLS-1$
             case "extension_manage" -> "Управляет расширениями EDT: показывает проекты и объекты, создаёт расширение, заимствует объект из базы и меняет состояние свойства."; //$NON-NLS-1$
             case "external_manage" -> "Управляет внешними обработками/отчётами. object_fqn: ПОЛНЫЙ FQN (ExternalDataProcessor.МояОбработка, ExternalReport.МойОтчёт). НЕ используй короткое имя без типа."; //$NON-NLS-1$
             case "edt_diagnostics" -> "Запускает EDT диагностику и runtime-команды: smoke, trace export, разбор ошибок, обновление инфобазы и запуск приложения."; //$NON-NLS-1$

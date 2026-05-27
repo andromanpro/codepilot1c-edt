@@ -15,7 +15,7 @@ import com.google.gson.JsonParser;
 /**
  * Stateless utility for repairing truncated JSON from streaming LLM responses.
  *
- * <p>Qwen/DashScope (and some other providers) may truncate JSON arguments
+ * <p>Some OpenAI-compatible providers may truncate JSON arguments
  * mid-stream, produce trailing commas, or leave containers unclosed. This
  * utility attempts best-effort repair to salvage usable tool call arguments.</p>
  */

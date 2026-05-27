@@ -66,6 +66,7 @@ public class PlatformKnowledgeContributor implements IPromptContextContributor {
         // Always include core knowledge (budget-critical: ~490 tokens total)
         addResource(sections, "bsl-best-practices.md"); //$NON-NLS-1$
         addResource(sections, "edt-gotchas.md"); //$NON-NLS-1$
+        addResource(sections, "feature-recipes.md"); //$NON-NLS-1$
 
         // Conditional knowledge (loaded only when project context warrants it)
         addResource(sections, "bsl-code-review-checklist.md"); //$NON-NLS-1$

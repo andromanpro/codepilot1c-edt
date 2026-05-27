@@ -62,6 +62,36 @@ public class AgentRunnerBuildRequestTest {
     }
 
     @Test
+    public void buildRequestRendersToolPromptFromFinalVisibleToolSurface() throws Exception {
+        ToolRegistry registry = isolatedRegistry(Map.of(
+                "read_file", tool("read_file"),
+                "glob", tool("glob"),
+                "edit_file", tool("edit_file")));
+
+        AgentRunner runner = new AgentRunner(new NoopProvider(), registry, "system"); //$NON-NLS-1$
+        primeHistory(runner,
+                LlmMessage.system("BASE PROMPT"), //$NON-NLS-1$
+                LlmMessage.user("test")); //$NON-NLS-1$
+        primeContextGate(runner, Set.of());
+
+        AgentConfig config = AgentConfig.builder()
+                .profileName("explore") //$NON-NLS-1$
+                .disableTool("glob") //$NON-NLS-1$
+                .build();
+
+        LlmRequest request = invokeBuildRequest(runner, config);
+        String systemPrompt = request.getMessages().get(0).getContent();
+
+        assertTrue(systemPrompt.contains("BASE PROMPT")); //$NON-NLS-1$
+        assertTrue(systemPrompt.contains("Runtime Tool Surface")); //$NON-NLS-1$
+        assertTrue(systemPrompt.contains("`read_file`")); //$NON-NLS-1$
+        assertFalse("Prompt must not advertise profile-hidden mutating tools", //$NON-NLS-1$
+                systemPrompt.contains("`edit_file`")); //$NON-NLS-1$
+        assertFalse("Prompt must not advertise config-disabled tools", //$NON-NLS-1$
+                systemPrompt.contains("`glob`")); //$NON-NLS-1$
+    }
+
+    @Test
     public void extensionProfileKeepsBootstrapExtensionToolVisible() throws Exception {
         ToolRegistry registry = isolatedRegistry(Map.of(
                 "read_file", tool("read_file"),
@@ -106,9 +136,13 @@ public class AgentRunnerBuildRequestTest {
     }
 
     private static void primeHistory(AgentRunner runner) throws Exception {
+        primeHistory(runner, LlmMessage.user("test")); //$NON-NLS-1$
+    }
+
+    private static void primeHistory(AgentRunner runner, LlmMessage... messages) throws Exception {
         Field field = AgentRunner.class.getDeclaredField("conversationHistory"); //$NON-NLS-1$
         field.setAccessible(true);
-        field.set(runner, List.of(LlmMessage.user("test"))); //$NON-NLS-1$
+        field.set(runner, List.of(messages));
     }
 
     private static ToolRegistry isolatedRegistry(Map<String, ITool> tools) throws Exception {

@@ -45,6 +45,7 @@ import com.codepilot1c.core.agent.graph.ToolGraphToolFilter;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
+import com.codepilot1c.core.agent.prompts.ToolPromptRenderer;
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.evaluation.trace.TracingLlmProvider;
@@ -130,6 +131,7 @@ public class AgentRunner implements IAgentRunner {
     private final ToolRepetitionDetector toolRepetitionDetector = new ToolRepetitionDetector();
     private volatile AgentTraceSession traceSession;
     private volatile String agentStartedTraceEventId;
+    private volatile int maxToolResultHistoryChars = AgentConfig.DEFAULT_MAX_TOOL_OUTPUT_SIZE;
     private final Map<Integer, String> stepTraceEventIds = new ConcurrentHashMap<>();
     private final Map<String, String> toolTraceEventIds = new ConcurrentHashMap<>();
 
@@ -174,6 +176,7 @@ public class AgentRunner implements IAgentRunner {
 
         // Reset state for reuse
         resetState();
+        maxToolResultHistoryChars = config.getMaxToolOutputSize();
         AtomicReference<String> appliedSystemPrompt = new AtomicReference<>(""); //$NON-NLS-1$
 
         // Initialize conversation history
@@ -609,9 +612,7 @@ public class AgentRunner implements IAgentRunner {
      * Добавляет результат инструмента в историю.
      */
     private void addToolResult(String callId, ToolResult result) {
-        String content = result.isSuccess()
-                ? result.getContent()
-                : "Ошибка: " + result.getErrorMessage();
+        String content = result.getContentForLlm(maxToolResultHistoryChars);
         synchronized (historyLock) {
             conversationHistory.add(LlmMessage.toolResult(callId, content));
         }
@@ -694,6 +695,7 @@ public class AgentRunner implements IAgentRunner {
         synchronized (historyLock) {
             messagesCopy = new ArrayList<>(conversationHistory);
         }
+        messagesCopy = ToolPromptRenderer.applyToMessages(messagesCopy, tools);
 
         return LlmRequest.builder()
                 .messages(messagesCopy)
@@ -875,14 +877,14 @@ public class AgentRunner implements IAgentRunner {
             historyCopy = new ArrayList<>(conversationHistory);
         }
         AgentResult result = AgentResult.builder()
-                .finalState(AgentState.COMPLETED)
+                .finalState(AgentState.ERROR)
                 .errorMessage("Достигнут лимит шагов: " + config.getMaxSteps())
                 .conversationHistory(historyCopy)
                 .stepsExecuted(currentStep.get())
                 .toolCallsExecuted(toolCallsCount.get())
                 .executionTimeMs(executionTime)
                 .build();
-        state.set(AgentState.COMPLETED);
+        state.set(AgentState.ERROR);
         return CompletableFuture.completedFuture(result);
     }
 

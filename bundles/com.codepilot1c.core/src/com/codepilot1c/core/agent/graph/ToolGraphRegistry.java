@@ -16,6 +16,8 @@ public final class ToolGraphRegistry {
     public static final String BSL_GRAPH_ID = "bsl"; //$NON-NLS-1$
     public static final String METADATA_GRAPH_ID = "metadata"; //$NON-NLS-1$
     public static final String FORMS_GRAPH_ID = "forms"; //$NON-NLS-1$
+    public static final String DCS_GRAPH_ID = "dcs"; //$NON-NLS-1$
+    public static final String FEATURE_GRAPH_ID = "feature"; //$NON-NLS-1$
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(ToolGraphRegistry.class);
 
@@ -57,6 +59,8 @@ public final class ToolGraphRegistry {
         register(ToolGraphDefinitions.createBslGraph());
         register(ToolGraphDefinitions.createMetadataGraph());
         register(ToolGraphDefinitions.createFormsGraph());
+        register(ToolGraphDefinitions.createDcsGraph());
+        register(ToolGraphDefinitions.createFeatureGraph());
         LOG.debug("ToolGraphRegistry initialized with %d graphs", graphs.size()); //$NON-NLS-1$
     }
 }

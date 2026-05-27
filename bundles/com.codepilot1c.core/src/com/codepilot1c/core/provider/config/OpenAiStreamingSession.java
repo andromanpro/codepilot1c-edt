@@ -17,7 +17,7 @@ final class OpenAiStreamingSession {
     private final OpenAiChunkAdapter chunkAdapter;
     private final OpenAiStreamingToolCallParser toolCallParser;
     private final ProviderStreamProcessingSummary summary;
-    private final boolean qwenContentFallbackEnabled;
+    private final boolean contentToolCallFallbackEnabled;
     private final boolean delayContentStreaming;
     private final StringBuilder bufferedContent = new StringBuilder();
     /**
@@ -36,12 +36,12 @@ final class OpenAiStreamingSession {
 
     OpenAiStreamingSession(String correlationId, boolean requestHasTools,
             OpenAiStreamingToolCallParser toolCallParser,
-            boolean qwenContentFallbackEnabled) {
+            boolean contentToolCallFallbackEnabled) {
         this.toolCallParser = toolCallParser;
         this.summary = new ProviderStreamProcessingSummary(correlationId, requestHasTools);
         this.chunkAdapter = new OpenAiChunkAdapter(toolCallParser);
-        this.qwenContentFallbackEnabled = qwenContentFallbackEnabled;
-        this.delayContentStreaming = qwenContentFallbackEnabled && requestHasTools;
+        this.contentToolCallFallbackEnabled = contentToolCallFallbackEnabled;
+        this.delayContentStreaming = contentToolCallFallbackEnabled && requestHasTools;
     }
 
     ProviderStreamProcessingSummary getSummary() {
@@ -160,13 +160,13 @@ final class OpenAiStreamingSession {
         }
 
         String delayedContent = flushBufferedContent(consumer, emittedToolUse);
-        if (!emittedToolUse && qwenContentFallbackEnabled
-                && QwenContentToolCallParser.hasToolCallMarkers(delayedContent)) {
+        if (!emittedToolUse && contentToolCallFallbackEnabled
+                && ContentToolCallFallbackParser.hasToolCallMarkers(delayedContent)) {
             java.util.List<com.codepilot1c.core.model.ToolCall> fallbackCalls =
-                    QwenContentToolCallParser.extractFromContent(delayedContent);
+                    ContentToolCallFallbackParser.extractFromContent(delayedContent);
             if (!fallbackCalls.isEmpty()) {
                 summary.getCompletedToolCalls().addAndGet(fallbackCalls.size());
-                String stripped = QwenContentToolCallParser.stripToolCallBlocks(delayedContent);
+                String stripped = ContentToolCallFallbackParser.stripToolCallBlocks(delayedContent);
                 if (stripped != null && !stripped.isBlank()) {
                     consumer.accept(LlmStreamChunk.content(stripped));
                 }
@@ -177,8 +177,8 @@ final class OpenAiStreamingSession {
 
         if (delayedContent != null && !delayedContent.isBlank()) {
             String flushedContent = delayedContent;
-            if (qwenContentFallbackEnabled && QwenContentToolCallParser.hasToolCallMarkers(flushedContent)) {
-                flushedContent = QwenContentToolCallParser.stripToolCallBlocks(flushedContent);
+            if (contentToolCallFallbackEnabled && ContentToolCallFallbackParser.hasToolCallMarkers(flushedContent)) {
+                flushedContent = ContentToolCallFallbackParser.stripToolCallBlocks(flushedContent);
             }
             if (flushedContent != null && !flushedContent.isBlank()) {
                 consumer.accept(LlmStreamChunk.content(flushedContent));
@@ -195,8 +195,8 @@ final class OpenAiStreamingSession {
         bufferedContent.setLength(0);
         if (emittedToolUse && delayedContent != null && !delayedContent.isBlank()) {
             String stripped = delayedContent;
-            if (qwenContentFallbackEnabled && QwenContentToolCallParser.hasToolCallMarkers(stripped)) {
-                stripped = QwenContentToolCallParser.stripToolCallBlocks(stripped);
+            if (contentToolCallFallbackEnabled && ContentToolCallFallbackParser.hasToolCallMarkers(stripped)) {
+                stripped = ContentToolCallFallbackParser.stripToolCallBlocks(stripped);
             }
             if (stripped != null && !stripped.isBlank()) {
                 consumer.accept(LlmStreamChunk.content(stripped));

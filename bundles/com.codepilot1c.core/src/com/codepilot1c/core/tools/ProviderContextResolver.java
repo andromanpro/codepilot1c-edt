@@ -9,7 +9,6 @@ package com.codepilot1c.core.tools;
 
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.provider.ProviderSelectionGate;
-import com.codepilot1c.core.provider.ProviderUtils;
 import com.codepilot1c.core.provider.config.DynamicLlmProvider;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
@@ -38,7 +37,6 @@ public class ProviderContextResolver {
         LlmProviderConfig providerConfig = resolveActiveProviderConfig();
         if (providerConfig != null) {
             builder.providerConfig(providerConfig);
-            builder.qwenNative(ProviderUtils.capabilitiesFor(providerConfig).isQwenNative());
         }
         return builder.build();
     }
@@ -85,9 +83,19 @@ public class ProviderContextResolver {
                     return backend.getConfig().copy();
                 }
                 if (store != null) {
-                    return store.getProvider(activeProviderId)
-                            .map(LlmProviderConfig::copy)
-                            .orElseGet(LlmProviderConfig::new);
+                    java.util.Optional<LlmProviderConfig> config = store.getProvider(activeProviderId);
+                    if (config.isPresent()) {
+                        return config.get().copy();
+                    }
+                    // Provider ID exists in preferences but not in registry - likely stale config
+                    // Log warning and fall back to first available provider
+                    System.err.println("[ProviderContextResolver] Provider '" + activeProviderId + "' not found in registry; using fallback"); //$NON-NLS-1$ //$NON-NLS-2$
+                    java.util.Optional<LlmProviderConfig> fallback = store.getProviders().stream()
+                            .filter(LlmProviderConfig::isConfigured)
+                            .findFirst();
+                    if (fallback.isPresent()) {
+                        return fallback.get().copy();
+                    }
                 }
             }
         } catch (Exception e) {

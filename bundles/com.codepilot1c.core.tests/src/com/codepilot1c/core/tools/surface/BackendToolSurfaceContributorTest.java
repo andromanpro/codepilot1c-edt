@@ -12,7 +12,7 @@ import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolResult;
 
-public class QwenToolSurfaceRewriteContributorTest {
+public class BackendToolSurfaceContributorTest {
 
     @Test
     public void backendRewriteOverridesDescriptionAndSchemaForPriorityTools() {
@@ -21,13 +21,12 @@ public class QwenToolSurfaceRewriteContributorTest {
                 ToolSurfaceContext.builder()
                         .builtIn(true)
                         .backendSelectedInUi(true)
-                        .qwenNative(true)
                         .category(ToolCategory.METADATA_MUTATION)
                         .profile(ToolSurfaceContext.defaultProfile())
                         .build());
 
         assertTrue(definition.getDescription().contains("validation_token")); //$NON-NLS-1$
-        assertTrue(definition.getDescription().contains("Qwen routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics.")); //$NON-NLS-1$
+        assertTrue(definition.getDescription().contains("Tool routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics.")); //$NON-NLS-1$
         assertTrue(definition.getParametersSchema().contains("\"ensure_module_artifact\"")); //$NON-NLS-1$
     }
 
@@ -45,6 +44,47 @@ public class QwenToolSurfaceRewriteContributorTest {
         ToolDefinition definition = builder.build();
         assertEquals("dynamic_tool", definition.getName()); //$NON-NLS-1$
         assertTrue(definition.getParametersSchema().contains("\"additionalProperties\":false")); //$NON-NLS-1$
+        assertTrue(definition.getParametersSchema().contains("\"required\":[]")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void backendRewriteKeepsExplicitEmptyRequiredArrayForOptionalOnlySchemas() {
+        ToolDefinition definition = ToolSurfaceAugmentor.defaultAugmentor().augment(
+                new StubTool("list_files", "raw", "{\"type\":\"object\"}"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                ToolSurfaceContext.builder()
+                        .builtIn(true)
+                        .backendSelectedInUi(true)
+                        .category(ToolCategory.FILES_READ_SEARCH)
+                        .profile(ToolSurfaceContext.defaultProfile())
+                        .build());
+
+        assertTrue(definition.getParametersSchema().contains("\"required\": []") //$NON-NLS-1$
+                || definition.getParametersSchema().contains("\"required\":[]")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void backendRewriteWarnsAgainstDirectStructuredEdtArtifactWrites() {
+        ToolDefinition writeFile = ToolSurfaceAugmentor.defaultAugmentor().augment(
+                new StubTool("write_file", "raw", "{\"type\":\"object\"}"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                ToolSurfaceContext.builder()
+                        .builtIn(true)
+                        .backendSelectedInUi(true)
+                        .category(ToolCategory.FILES_WRITE_EDIT)
+                        .profile(ToolSurfaceContext.defaultProfile())
+                        .build());
+        ToolDefinition dcsManage = ToolSurfaceAugmentor.defaultAugmentor().augment(
+                new StubTool("dcs_manage", "raw", "{\"type\":\"object\"}"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                ToolSurfaceContext.builder()
+                        .builtIn(true)
+                        .backendSelectedInUi(true)
+                        .category(ToolCategory.METADATA_MUTATION)
+                        .profile(ToolSurfaceContext.defaultProfile())
+                        .build());
+
+        assertTrue(writeFile.getDescription().contains(".mxl")); //$NON-NLS-1$
+        assertTrue(writeFile.getDescription().contains("semantic EDT tools")); //$NON-NLS-1$
+        assertTrue(dcsManage.getDescription().contains("Никогда не пиши DCS XML/MXL")); //$NON-NLS-1$
+        assertTrue(dcsManage.getDescription().contains("edt_validate_request")); //$NON-NLS-1$
     }
 
     private static final class StubTool implements ITool {

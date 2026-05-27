@@ -148,13 +148,14 @@ public class EditFileTool extends AbstractTool {
                     LOG.warn("edit_file: аварийный override .mdo включен для %s", normalizedPath); //$NON-NLS-1$
                 }
 
-                // QWEN-308: Прямое редактирование .form/.form.xml файлов запрещено — ломает XML-структуру формы.
-                if (isFormFilePath(normalizedPath)) {
-                    LOG.warn("edit_file: заблокирована попытка редактирования .form файла: %s", normalizedPath); //$NON-NLS-1$
+                // FORM/DCS/TEMPLATE artifacts are structured EDT files and must be changed through semantic tools.
+                if (isStructuredEdtArtifactPath(normalizedPath)) {
+                    LOG.warn("edit_file: заблокирована попытка редактирования структурного EDT artifact: %s", normalizedPath); //$NON-NLS-1$
                     return ToolResult.failure(
-                            "Writing .form files is blocked. Use create_form/apply_form_recipe/mutate_form_model to manage forms.\n" + //$NON-NLS-1$
-                            "Прямое редактирование .form/.form.xml ломает XML-структуру формы EDT.\n" + //$NON-NLS-1$
-                            "Используйте штатные инструменты управления формами."); //$NON-NLS-1$
+                            "Writing structured EDT artifacts is blocked. Use semantic EDT tools instead.\n" + //$NON-NLS-1$
+                            "Для форм используйте create_form/apply_form_recipe/mutate_form_model.\n" + //$NON-NLS-1$
+                            "Для СКД используйте dcs_manage.\n" + //$NON-NLS-1$
+                            "Для .mxl макетов используйте add_metadata_child(child_kind=Template) и render_template."); //$NON-NLS-1$
                 }
 
                 // Find or create file in workspace
@@ -357,12 +358,17 @@ public class EditFileTool extends AbstractTool {
         return lower.endsWith(".mdo"); //$NON-NLS-1$
     }
 
-    private boolean isFormFilePath(String normalizedPath) {
+    static boolean isStructuredEdtArtifactPath(String normalizedPath) {
         if (normalizedPath == null) {
             return false;
         }
         String lower = normalizedPath.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".form") || lower.endsWith(".form.xml"); //$NON-NLS-1$ //$NON-NLS-2$
+        return lower.endsWith(".form") //$NON-NLS-1$
+                || lower.endsWith(".form.xml") //$NON-NLS-1$
+                || lower.endsWith(".mxl") //$NON-NLS-1$
+                || lower.endsWith("/main@datacompositionschema.xml") //$NON-NLS-1$
+                || lower.endsWith("/maindatacompositionschema.xml") //$NON-NLS-1$
+                || lower.contains("/ext/maindatacompositionschema."); //$NON-NLS-1$
     }
 
     private ToolResult replaceContent(IFile file, String content) throws CoreException {

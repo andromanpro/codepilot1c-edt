@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -69,7 +70,6 @@ public class DynamicLlmProvider implements ILlmProvider {
     private final LlmProviderConfig config;
     private final OpenAiModelCompatibilityPolicy openAiCompatibilityPolicy;
     private final OpenAiStreamingToolCallParser streamingToolCallParser;
-    private final QwenFunctionCallingTransport qwenTransport;
     private final ProviderHttpTransport httpTransport;
     private final Gson gson;
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -83,18 +83,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         this.config = config;
         this.openAiCompatibilityPolicy = new OpenAiModelCompatibilityPolicy();
         this.gson = new Gson();
-
-        // Select parser based on provider capabilities:
-        // Qwen backend gets enhanced parser with DashScope quirk handling
-        ProviderCapabilities caps = ProviderUtils.capabilitiesFor(config);
-        if (caps.isQwenNative()) {
-            this.streamingToolCallParser = new QwenStreamingToolCallParser();
-            this.qwenTransport = new QwenFunctionCallingTransport(gson);
-            LOG.info("Qwen transport activated: family=%s", caps.getResolvedModelFamily()); //$NON-NLS-1$
-        } else {
-            this.streamingToolCallParser = new OpenAiStreamingToolCallParser();
-            this.qwenTransport = null;
-        }
+        this.streamingToolCallParser = new OpenAiStreamingToolCallParser();
 
         HttpClient client = HttpClient.newBuilder()
                 // vLLM/uvicorn deployments are commonly exposed over plain HTTP and can fail
@@ -181,7 +170,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                         correlationId,
                         request.hasTools(),
                         streamingToolCallParser,
-                        getCapabilities().needsContentToolCallFallback() && request.hasTools())
+                        getCapabilities().supportsTextToolCallFallback() && request.hasTools())
                 : null;
         ProviderStreamProcessingSummary summary = openAiSession != null
                 ? openAiSession.getSummary()
@@ -233,13 +222,6 @@ public class DynamicLlmProvider implements ILlmProvider {
                 String completionFinishReason = openAiSession.completePendingToolCalls(consumer);
                 if (completionFinishReason != null) {
                     streamFinishReason[0] = completionFinishReason;
-                }
-                // Qwen finish_reason override: DashScope may report "stop" when tool calls are pending
-                if (streamingToolCallParser instanceof QwenStreamingToolCallParser) {
-                    QwenStreamingToolCallParser qwenParser = (QwenStreamingToolCallParser) streamingToolCallParser;
-                    if (qwenParser.shouldOverrideFinishReason(streamFinishReason[0])) {
-                        streamFinishReason[0] = LlmResponse.FINISH_REASON_TOOL_USE;
-                    }
                 }
             }
 
@@ -599,12 +581,6 @@ public class DynamicLlmProvider implements ILlmProvider {
             case OLLAMA:
                 return buildOllamaRequestBody(request, executionPlan.isStreaming());
             case CODEPILOT_BACKEND:
-                // Route through Qwen transport if available (CodePilot Account with Qwen model)
-                if (qwenTransport != null) {
-                    ProviderCapabilities caps = getCapabilities();
-                    return qwenTransport.buildRequestBody(request, executionPlan, config, caps);
-                }
-                // Fall through to standard OpenAI path if not Qwen native
                 return buildOpenAiRequestBody(request, executionPlan);
             case OPENAI_COMPATIBLE:
             default:
@@ -618,7 +594,8 @@ public class DynamicLlmProvider implements ILlmProvider {
     private String buildOpenAiRequestBody(LlmRequest request, ProviderExecutionPlan executionPlan) {
         JsonObject body = new JsonObject();
         body.addProperty("model", resolveModelName(request)); //$NON-NLS-1$
-        body.addProperty("max_tokens", request.getMaxTokens() > 0 ? request.getMaxTokens() : config.getMaxTokens()); //$NON-NLS-1$
+        body.addProperty(executionPlan.getMaxTokensParameterName(),
+                request.getMaxTokens() > 0 ? request.getMaxTokens() : config.getMaxTokens());
         body.addProperty("stream", executionPlan.isStreaming()); //$NON-NLS-1$
         ProviderCapabilities caps = getCapabilities();
 
@@ -1007,7 +984,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
 
         // Content tool call fallback: if no structured tool_calls were found but content
-        // or reasoning_content contains tool call markers (Qwen XML or Kimi special tokens),
+        // or reasoning_content contains text-form tool call markers,
         // extract them. This is a safety net for when the model emits tool calls as text
         // instead of using the structured API.
         // Check both content and reasoning_content — kimi-k2.5 may place tool calls in reasoning.
@@ -1016,9 +993,9 @@ public class DynamicLlmProvider implements ILlmProvider {
             contentToCheck = reasoningContent;
         }
         if ((toolCalls == null || toolCalls.isEmpty())
-                && getCapabilities().needsContentToolCallFallback()
-                && QwenContentToolCallParser.hasToolCallMarkers(contentToCheck)) {
-            List<ToolCall> fallbackCalls = QwenContentToolCallParser.extractFromContent(contentToCheck);
+                && getCapabilities().supportsTextToolCallFallback()
+                && ContentToolCallFallbackParser.hasToolCallMarkers(contentToCheck)) {
+            List<ToolCall> fallbackCalls = ContentToolCallFallbackParser.extractFromContent(contentToCheck);
             if (!fallbackCalls.isEmpty()) {
                 LOG.info("Content fallback: extracted %d tool call(s) from %s", //$NON-NLS-1$
                         fallbackCalls.size(),
@@ -1027,7 +1004,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
                 // Strip tool call blocks from whichever field contained them
                 if (contentToCheck == content) {
-                    content = QwenContentToolCallParser.stripToolCallBlocks(content);
+                    content = ContentToolCallFallbackParser.stripToolCallBlocks(content);
                 }
                 // Don't strip reasoning_content — it should be preserved as-is for history
             }
@@ -1077,11 +1054,15 @@ public class DynamicLlmProvider implements ILlmProvider {
                 continue;
             }
             String name = getString(function, "name"); //$NON-NLS-1$
-            String arguments = getString(function, "arguments"); //$NON-NLS-1$
             if (name == null || name.isBlank()) {
                 continue;
             }
-            toolCalls.add(new ToolCall(id, name, arguments != null ? arguments : "{}")); //$NON-NLS-1$
+            Optional<String> arguments = ToolCallArguments.normalize(function.get("arguments")); //$NON-NLS-1$
+            if (arguments.isEmpty()) {
+                LOG.warn("Dropping tool call %s (%s): arguments is not a JSON object", id, name); //$NON-NLS-1$
+                continue;
+            }
+            toolCalls.add(new ToolCall(id, name, arguments.get()));
         }
         return toolCalls;
     }

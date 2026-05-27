@@ -9,6 +9,8 @@ import java.util.Set;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.permissions.PermissionDecision;
+
 /**
  * Tests for {@link AgentProfileRegistry} and profile gate enforcement.
  */
@@ -143,6 +145,15 @@ public class AgentProfileRegistryTest {
     }
 
     @Test
+    public void dcsProfileCanPerformRequiredValidationFlow() {
+        Set<String> tools = new DCSBuildProfile().getAllowedTools();
+
+        assertTrue("DCS profile must expose edt_validate_request before mutating dcs_manage", //$NON-NLS-1$
+                tools.contains("edt_validate_request")); //$NON-NLS-1$
+        assertTrue("DCS profile must expose dcs_manage", tools.contains("dcs_manage")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void allProfilesRegisteredInRegistry() {
         AgentProfileRegistry registry = AgentProfileRegistry.getInstance();
 
@@ -173,6 +184,11 @@ public class AgentProfileRegistryTest {
         assertFalse("Init must not include edit_file", tools.contains("edit_file")); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse("Init must not include create_metadata", tools.contains("create_metadata")); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse("Init must not include remember_fact", tools.contains("remember_fact")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Init should have enough budget to write Code.md after representative scan", 40, init.getMaxSteps()); //$NON-NLS-1$
+        assertTrue("Init write_file should be allowed after explicit user action", //$NON-NLS-1$
+                init.getDefaultPermissions().stream()
+                        .anyMatch(rule -> "write_file".equals(rule.getToolName()) //$NON-NLS-1$
+                                && rule.getDecision() == PermissionDecision.ALLOW));
     }
 
     @Test

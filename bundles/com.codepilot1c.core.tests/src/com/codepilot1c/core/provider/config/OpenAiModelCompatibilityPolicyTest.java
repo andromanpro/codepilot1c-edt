@@ -123,8 +123,8 @@ public class OpenAiModelCompatibilityPolicyTest {
     // --- Guard tests: other families must keep their previous behavior. ---
 
     @Test
-    public void qwenBackendKeepsStreamingWithTools() {
-        LlmProviderConfig config = configured(ProviderType.CODEPILOT_BACKEND, "qwen3-coder-plus"); //$NON-NLS-1$
+    public void standardBackendProfileKeepsStreamingWithTools() {
+        LlmProviderConfig config = configured(ProviderType.CODEPILOT_BACKEND, "backend-coder-plus"); //$NON-NLS-1$
         LlmRequest request = requestWithTool();
 
         ProviderExecutionPlan plan = policy.plan(config, request, true);
@@ -188,13 +188,15 @@ public class OpenAiModelCompatibilityPolicyTest {
     }
 
     @Test
-    public void unknownBackendModelKeepsStreamingWithTools() {
+    public void unknownBackendModelUsesStandardProfileAndKeepsStreamingWithTools() {
         LlmProviderConfig config = configured(ProviderType.CODEPILOT_BACKEND, "some-new-model"); //$NON-NLS-1$
         LlmRequest request = requestWithTool();
 
         ProviderExecutionPlan plan = policy.plan(config, request, true);
 
         assertTrue(plan.isStreaming());
+        assertEquals(0.3, plan.getRequestOverrides().get("temperature").getAsDouble(), 0.0001); //$NON-NLS-1$
+        assertFalse(plan.getRequestOverrides().get("enable_thinking").getAsBoolean()); //$NON-NLS-1$
     }
 
     /**

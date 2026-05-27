@@ -28,12 +28,12 @@ public class PromptSnapshotTest {
                 backend=false
                 build_has_code_md=false
                 build_has_skill_section=false
-                build_has_task=false
+                build_has_task=true
                 orchestrator_has_delegate=false
                 plan_has_goal=true
-                plan_has_task=false
+                plan_has_task=true
                 explore_has_output=true
-                explore_has_task=false
+                explore_has_task=true
                 subagent_has_role=true
                 """, snapshotFor(false));
 
@@ -112,6 +112,17 @@ public class PromptSnapshotTest {
         String build = AgentPromptTemplates.buildBuildPrompt();
         assertTrue(build.contains("не вызывай bsl_analyze_method повторно")); //$NON-NLS-1$
         assertTrue(build.contains("заверши ответ после первого успешного анализа")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void buildPromptUsesGeneric1cHarnessInsteadOfGoodsOnlyRecipe() {
+        String build = AgentPromptTemplates.buildBuildPrompt();
+        assertTrue(build.contains("## 1C development harness workflow")); //$NON-NLS-1$
+        assertTrue(build.contains("классифицируй задачу по фреймам 1С")); //$NON-NLS-1$
+        assertTrue(build.contains("FeatureBlueprint")); //$NON-NLS-1$
+        assertTrue(build.contains("Конкретные recipes применяй только после классификации")); //$NON-NLS-1$
+        assertTrue(!build.contains("## Рецепт типовой 1С-функциональности: учет товаров")); //$NON-NLS-1$
+        assertTrue(!build.contains("ПоступлениеТовара и ПродажаТовара")); //$NON-NLS-1$
     }
 
     private void setStoreState(List<LlmProviderConfig> configs, String activeProviderId) throws Exception {

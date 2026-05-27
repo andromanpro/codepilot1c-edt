@@ -2,8 +2,12 @@ package com.codepilot1c.core.remote;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -13,10 +17,15 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import com.codepilot1c.core.agent.profiles.InitAgentProfile;
+import com.codepilot1c.core.model.LlmMessage;
+import com.codepilot1c.core.provider.LlmProviderRegistry;
+
 public class AgentSessionControllerTest {
 
     private AgentSessionController controller;
     private String cleanupClientId;
+    private LlmProviderRegistry previousRegistry;
 
     @Before
     public void setUp() {
@@ -28,10 +37,14 @@ public class AgentSessionControllerTest {
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
         controller.claimControllerLease(cleanupClientId, true);
         controller.releaseControllerLease(cleanupClientId);
         controller.resetSession("test_teardown"); //$NON-NLS-1$
+        if (previousRegistry != null) {
+            installRegistry(previousRegistry);
+            previousRegistry = null;
+        }
     }
 
     @Test
@@ -125,5 +138,52 @@ public class AgentSessionControllerTest {
 
         List<RemoteEvent> emitted = controller.getEventsAfter(baseline);
         assertTrue(emitted.stream().noneMatch(event -> "confirmation_required".equals(event.getType()))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void freshDesktopSubmitResetsHistoryAndStoresRequestedProfileBeforeLaunch() throws Exception {
+        previousRegistry = installRegistry(emptyInitializedRegistry());
+        setControllerField("conversationHistory", new ArrayList<>(List.of(LlmMessage.user("old chat")))); //$NON-NLS-1$ //$NON-NLS-2$
+        String beforeSessionId = controller.getSessionId();
+        long baseline = controller.getEventsAfter(0).stream()
+                .mapToLong(RemoteEvent::getSequence)
+                .max()
+                .orElse(0L);
+
+        controller.submitFromDesktopFresh("refresh project memory", InitAgentProfile.ID); //$NON-NLS-1$
+
+        RemoteBootstrapResponse bootstrap = controller.buildBootstrap(
+                "test-client", IdeSnapshot.unavailable("test")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotEquals(beforeSessionId, bootstrap.getSessionId());
+        assertEquals(InitAgentProfile.ID, bootstrap.getAgent().get("profileId")); //$NON-NLS-1$
+        assertEquals(Integer.valueOf(0), bootstrap.getAgent().get("historySize")); //$NON-NLS-1$
+        assertTrue(controller.getEventsAfter(baseline).stream()
+                .anyMatch(event -> "session_reset".equals(event.getType()) //$NON-NLS-1$
+                        && "desktop_fresh".equals(event.getPayload().get("reason")))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private void setControllerField(String name, Object value) throws Exception {
+        Field field = AgentSessionController.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(controller, value);
+    }
+
+    private static LlmProviderRegistry emptyInitializedRegistry() throws Exception {
+        Constructor<LlmProviderRegistry> constructor = LlmProviderRegistry.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        LlmProviderRegistry registry = constructor.newInstance();
+
+        Field initializedField = LlmProviderRegistry.class.getDeclaredField("initialized"); //$NON-NLS-1$
+        initializedField.setAccessible(true);
+        initializedField.set(registry, true);
+        return registry;
+    }
+
+    private static LlmProviderRegistry installRegistry(LlmProviderRegistry registry) throws Exception {
+        Field instanceField = LlmProviderRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
+        instanceField.setAccessible(true);
+        LlmProviderRegistry previous = (LlmProviderRegistry) instanceField.get(null);
+        instanceField.set(null, registry);
+        return previous;
     }
 }

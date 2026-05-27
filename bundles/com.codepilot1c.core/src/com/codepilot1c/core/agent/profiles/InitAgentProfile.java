@@ -62,7 +62,7 @@ public class InitAgentProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("scan_metadata_index").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("discover_tools").forAllResources(), //$NON-NLS-1$
-                PermissionRule.ask("write_file") //$NON-NLS-1$
+                PermissionRule.allow("write_file") //$NON-NLS-1$
                         .withDescription("Создание или обновление Code.md") //$NON-NLS-1$
                         .forAllResources()
         );
@@ -76,12 +76,12 @@ public class InitAgentProfile implements AgentProfile {
 
     @Override
     public int getMaxSteps() {
-        return 20;
+        return 40;
     }
 
     @Override
     public long getTimeoutMs() {
-        return 5 * 60 * 1000L;
+        return 8 * 60 * 1000L;
     }
 
     @Override

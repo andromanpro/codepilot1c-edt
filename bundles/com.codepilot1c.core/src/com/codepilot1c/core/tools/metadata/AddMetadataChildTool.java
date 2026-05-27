@@ -47,7 +47,7 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "name": {
                   "type": "string",
-                  "description": "Name of the new child object."
+                  "description": "Name of the new child object. Optional when properties.children contains a batch."
                 },
                 "synonym": {
                   "type": "string",
@@ -88,7 +88,7 @@ public class AddMetadataChildTool extends AbstractTool {
                   "description": "Одноразовый токен из edt_validate_request for this exact child-creation request."
                 }
               },
-              "required": ["project", "parent_fqn", "child_kind", "name", "validation_token"]
+              "required": ["project", "parent_fqn", "child_kind", "validation_token"]
             }
             """; //$NON-NLS-1$
 
@@ -161,7 +161,7 @@ public class AddMetadataChildTool extends AbstractTool {
                 }
                 MetadataChildKind childKind = MetadataChildKind.fromString(asRequiredString(validatedPayload, "child_kind")); //$NON-NLS-1$
                 String validatedParentFqn = asRequiredString(validatedPayload, "parent_fqn"); //$NON-NLS-1$
-                String validatedName = asRequiredString(validatedPayload, "name"); //$NON-NLS-1$
+                String validatedName = asOptionalString(validatedPayload, "name"); //$NON-NLS-1$
                 String validatedSynonym = asOptionalString(validatedPayload, "synonym"); //$NON-NLS-1$
                 String validatedComment = asOptionalString(validatedPayload, "comment"); //$NON-NLS-1$
                 Map<String, Object> validatedProperties = parameterMap(validatedPayload.get("properties")); //$NON-NLS-1$

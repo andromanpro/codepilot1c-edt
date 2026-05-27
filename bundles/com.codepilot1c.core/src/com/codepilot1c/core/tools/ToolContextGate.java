@@ -108,16 +108,7 @@ public class ToolContextGate {
             return Set.of();
         }
 
-        if (projects == null || projects.length == 0) {
-            // No open projects — exclude all EDT-specific tools
-            excluded.addAll(EDT_PROJECT_TOOLS);
-            excluded.addAll(DCS_TOOLS);
-            excluded.addAll(EXTENSION_TOOLS);
-            excluded.addAll(EXTERNAL_TOOLS);
-            excluded.addAll(QA_TOOLS_EXCLUDING_INIT);
-            return excluded;
-        }
-
+        boolean hasOpenProject = false;
         boolean hasDcs = false;
         boolean hasQaConfig = false;
 
@@ -125,6 +116,7 @@ public class ToolContextGate {
             if (!project.isOpen()) {
                 continue;
             }
+            hasOpenProject = true;
             // DCS detection: look for DataCompositionSchema in src/
             if (!hasDcs) {
                 hasDcs = hasDcsSchema(project);
@@ -139,17 +131,27 @@ public class ToolContextGate {
             }
         }
 
-        if (!hasDcs) {
+        return computeExcludedToolsForState(hasOpenProject, hasDcs, hasQaConfig);
+    }
+
+    static Set<String> computeExcludedToolsForState(boolean hasOpenProject, boolean hasDcs, boolean hasQaConfig) {
+        Set<String> excluded = new HashSet<>();
+        if (!hasOpenProject) {
+            // No open projects — exclude all EDT-specific tools.
+            excluded.addAll(EDT_PROJECT_TOOLS);
             excluded.addAll(DCS_TOOLS);
+            excluded.addAll(EXTENSION_TOOLS);
+            excluded.addAll(EXTERNAL_TOOLS);
+            excluded.addAll(QA_TOOLS_EXCLUDING_INIT);
+            return excluded;
         }
-        // extension_manage and external_manage are bootstrap composite tools:
-        // list/create commands must stay visible when only a base EDT project exists.
-        // Command-specific validation inside the tools reports missing extension/external
+        // dcs_manage is a bootstrap composite tool: create_schema must stay visible
+        // before an existing MainDataCompositionSchema.xml appears in the workspace.
+        // Command-specific validation inside dcs_manage reports missing owner/schema
         // context for operations that actually require it.
         if (!hasQaConfig) {
             excluded.addAll(QA_TOOLS_EXCLUDING_INIT);
         }
-
         return excluded;
     }
 

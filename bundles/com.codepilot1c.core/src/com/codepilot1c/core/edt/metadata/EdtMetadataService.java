@@ -171,6 +171,10 @@ public class EdtMetadataService {
     private static final Map<String, Set<String>> RESERVED_ATTRIBUTE_FALLBACK = createReservedAttributeFallback();
     private static final Set<String> FORBIDDEN_FORM_ATTRIBUTE_TYPE_PREFIXES = Set.of(
             "array", "map", "массив", "соответствие"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+    private static final String FORM_ATTRIBUTE_NOT_FOUND_RECOVERY =
+            "recovery_hint={inspect_form_layout:true, next_step:'create_or_upsert_form_attribute_first_or_use_correct_name', tool:'apply_form_recipe.attributes'}"; //$NON-NLS-1$
+    private static final String FORM_ATTRIBUTE_TYPE_RECOVERY =
+            "recovery_hint={inspect_type_candidates:true, avoid_blind_guess:'SpreadsheetDocument/ТабличныйДокумент', next_step:'use_supported_attribute_type_or_visual_field_widget'}"; //$NON-NLS-1$
     private static final Set<String> FORM_MUTATION_META_KEYS = Set.of(
             "op", //$NON-NLS-1$
             "name", //$NON-NLS-1$
@@ -1698,7 +1702,12 @@ public class EdtMetadataService {
         }
         throw new MetadataOperationException(
                 MetadataOperationCode.METADATA_NOT_FOUND,
-                "Form attribute not found: id=" + id + ", name=" + name, false); //$NON-NLS-1$ //$NON-NLS-2$
+                formAttributeNotFoundMessage(id, name), false);
+    }
+
+    private static String formAttributeNotFoundMessage(Integer id, String name) {
+        return "Form attribute not found: id=" + id + ", name=" + name + ". " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                + FORM_ATTRIBUTE_NOT_FOUND_RECOVERY;
     }
 
     private void applyFormAttributePatch(FormAttribute attribute, Map<String, Object> patch) {
@@ -1877,7 +1886,7 @@ public class EdtMetadataService {
                 if (mode == FormRecipeMode.UPDATE || isUpdate) {
                     throw new MetadataOperationException(
                             MetadataOperationCode.METADATA_NOT_FOUND,
-                            "Form attribute not found: " + (name != null ? name : id), false); //$NON-NLS-1$
+                            formAttributeNotFoundMessage(id, name), false);
                 }
                 if (!MetadataNameValidator.isValidName(name)) {
                     throw new MetadataOperationException(
@@ -2022,7 +2031,8 @@ public class EdtMetadataService {
         if (txTypeItem == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "Type value cannot be resolved for form attribute: " + typeQuery, false); //$NON-NLS-1$
+                    "Type value cannot be resolved for form attribute: " + typeQuery //$NON-NLS-1$
+                            + ". " + FORM_ATTRIBUTE_TYPE_RECOVERY, false); //$NON-NLS-1$
         }
 
         TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
@@ -2087,7 +2097,8 @@ public class EdtMetadataService {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_PROPERTY_VALUE,
                         "Form attribute type is not supported: " + typeQuery
-                                + ". Use FixedArray/FixedMap or a supported scalar type.", false); //$NON-NLS-1$
+                                + ". Use FixedArray/FixedMap or a supported scalar type. " //$NON-NLS-1$
+                                + FORM_ATTRIBUTE_TYPE_RECOVERY, false);
             }
         }
     }
@@ -2155,7 +2166,8 @@ public class EdtMetadataService {
                 if (item == null && !isSimpleTypeQuery(typeString)) {
                     throw new MetadataOperationException(
                             MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
+                            "Type not found in BM: " + typeString + ". " //$NON-NLS-1$ //$NON-NLS-2$
+                                    + FORM_ATTRIBUTE_TYPE_RECOVERY, false);
                 }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
@@ -3918,7 +3930,7 @@ public class EdtMetadataService {
         }
         IFile ownerMdoFile = project.getFile(ownerMdoPath);
 
-        // QWEN-307: trigger BM-to-disk export for the owner before polling,
+        // EDT-EXPORT-307: trigger BM-to-disk export for the owner before polling,
         // otherwise the form entry may exist only in BM and never appear on disk.
         try {
             String topLevelFqn = extractTopLevelFqn(ownerFqn);
@@ -6990,14 +7002,20 @@ public class EdtMetadataService {
 
         Integer numberPrecision = firstParsedInteger(
                 getMapValueIgnoreCase(numberQualifiers, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(numberQualifiers, "digits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(numberQualifiers, "length"), //$NON-NLS-1$
                 getMapValueIgnoreCase(root, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(root, "digits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(nestedTypeMap, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(nestedTypeMap, "digits"), //$NON-NLS-1$
                 inline == null ? null : inline.numberPrecision());
         Integer numberScale = firstParsedInteger(
                 getMapValueIgnoreCase(numberQualifiers, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(numberQualifiers, "fractionDigits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(root, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(root, "fractionDigits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(nestedTypeMap, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(nestedTypeMap, "fractionDigits"), //$NON-NLS-1$
                 inline == null ? null : inline.numberScale());
         Boolean numberNonNegative = firstParsedBoolean(
                 getMapValueIgnoreCase(numberQualifiers, "nonNegative"), //$NON-NLS-1$
@@ -7526,7 +7544,7 @@ public class EdtMetadataService {
 
     /**
      * EMap-safe variant of {@link #applyStringMapPatch} that avoids casting
-     * {@code EBmStoreEcoreEMap} to {@code java.util.Map} (QWEN-305).
+     * {@code EBmStoreEcoreEMap} to {@code java.util.Map} (EDT-EMAP-305).
      * The EMap interface provides its own {@code put}/{@code removeKey} methods
      * that work across OSGi classloader boundaries.
      */

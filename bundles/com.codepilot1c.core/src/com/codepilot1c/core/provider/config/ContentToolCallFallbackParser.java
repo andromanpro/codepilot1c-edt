@@ -10,6 +10,7 @@ package com.codepilot1c.core.provider.config;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -18,38 +19,43 @@ import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.model.ToolCall;
 
 /**
- * Safety-net fallback parser for Qwen tool calls emitted as XML in text content.
+ * Safety-net fallback parser for tool calls emitted as text content.
  *
  * <p>This parser is invoked <b>only</b> when all of the following are true:</p>
  * <ol>
- *   <li>{@code ProviderCapabilities.isQwenNative() == true}</li>
+ *   <li>the provider declares text-form tool-call fallback support</li>
  *   <li>The structured API returned <b>no</b> tool_calls</li>
- *   <li>The response content contains {@code <tool_call>} tags</li>
+ *   <li>The response content contains known tool-call markers</li>
  * </ol>
  *
- * <p>In 95%+ of cases, Qwen uses the structured API correctly. But if the XML
- * priming in the system prompt triggers the model to output tool calls as XML
- * in its text response, this parser ensures they are still executed.</p>
+ * <p>Structured tool calls are the primary path. This parser is only a safety net
+ * for compatible providers that sometimes emit tool calls as visible text or
+ * reasoning text.</p>
  *
- * <p>Supports both Qwen-coder and Qwen-VL formats:</p>
+ * <p>Supports these fallback formats:</p>
  * <ul>
- *   <li>Format A (qwen-coder): {@code <function=NAME><parameter=KEY>value</parameter></function>}</li>
- *   <li>Format B (qwen-vl): {@code {"name": "...", "arguments": {...}}}</li>
+ *   <li>XML function blocks: {@code <function=NAME><parameter=KEY>value</parameter></function>}</li>
+ *   <li>JSON-in-tool-call blocks: {@code {"name": "...", "arguments": {...}}}</li>
+ *   <li>Kimi/Moonshot tool-call marker sections.</li>
  * </ul>
  */
-final class QwenContentToolCallParser {
+final class ContentToolCallFallbackParser {
 
-    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(QwenContentToolCallParser.class);
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(ContentToolCallFallbackParser.class);
 
     /** Pattern to extract &lt;tool_call&gt;...&lt;/tool_call&gt; blocks. */
     private static final Pattern TOOL_CALL_BLOCK_PATTERN =
             Pattern.compile("<tool_call>\\s*(.*?)\\s*</tool_call>", Pattern.DOTALL); //$NON-NLS-1$
 
-    /** Pattern for qwen-coder format: &lt;function=NAME&gt; */
+    /** Pattern to extract bare &lt;function=NAME&gt;...&lt;/function&gt; blocks. */
+    private static final Pattern FUNCTION_BLOCK_PATTERN =
+            Pattern.compile("<function=[^>]+>.*?</function>", Pattern.DOTALL); //$NON-NLS-1$
+
+    /** Pattern for XML function format: &lt;function=NAME&gt; */
     private static final Pattern FUNCTION_NAME_PATTERN =
             Pattern.compile("<function=([^>]+)>", Pattern.DOTALL); //$NON-NLS-1$
 
-    /** Pattern for qwen-coder parameter: &lt;parameter=KEY&gt;value&lt;/parameter&gt; */
+    /** Pattern for XML function parameter: &lt;parameter=KEY&gt;value&lt;/parameter&gt; */
     private static final Pattern PARAMETER_PATTERN =
             Pattern.compile("<parameter=([^>]+)>(.*?)</parameter>", Pattern.DOTALL); //$NON-NLS-1$
 
@@ -69,11 +75,11 @@ final class QwenContentToolCallParser {
     private static final Pattern KIMI_FUNCTION_PATTERN =
             Pattern.compile("functions\\.([\\w_]+):\\d+", Pattern.DOTALL); //$NON-NLS-1$
 
-    private QwenContentToolCallParser() {
+    private ContentToolCallFallbackParser() {
     }
 
     /**
-     * Extracts tool calls from XML content.
+     * Extracts tool calls from content.
      *
      * @param content the response text content
      * @return list of parsed tool calls (empty if none found)
@@ -92,16 +98,21 @@ final class QwenContentToolCallParser {
             }
         }
 
-        // Try Qwen XML format
-        if (!content.contains(TOOL_CALL_MARKER)) {
+        // Try tool_call blocks first; if a gateway omits the opening marker, accept
+        // a complete bare <function=...> block as a compatibility fallback.
+        if (!content.contains(TOOL_CALL_MARKER) && !hasXmlToolCall(content)) {
             return Collections.emptyList();
         }
 
         List<ToolCall> results = new ArrayList<>();
-        Matcher blockMatcher = TOOL_CALL_BLOCK_PATTERN.matcher(content);
+        Matcher blockMatcher = content.contains(TOOL_CALL_MARKER)
+                ? TOOL_CALL_BLOCK_PATTERN.matcher(content)
+                : FUNCTION_BLOCK_PATTERN.matcher(content);
 
         while (blockMatcher.find()) {
-            String block = blockMatcher.group(1).trim();
+            String block = content.contains(TOOL_CALL_MARKER)
+                    ? blockMatcher.group(1).trim()
+                    : blockMatcher.group().trim();
             ToolCall call = parseBlock(block);
             if (call != null) {
                 results.add(call);
@@ -139,19 +150,27 @@ final class QwenContentToolCallParser {
             }
             result = result.trim();
         }
-        // Strip Qwen XML format
+        // Strip XML function format
         if (result.contains(TOOL_CALL_MARKER)) {
             result = TOOL_CALL_BLOCK_PATTERN.matcher(result).replaceAll("").trim(); //$NON-NLS-1$
+        } else if (hasXmlToolCall(result)) {
+            result = FUNCTION_BLOCK_PATTERN.matcher(result).replaceAll("").trim(); //$NON-NLS-1$
+            result = result.replace("</tool_call>", "").trim(); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return result;
     }
 
     /**
-     * Checks if content contains tool call markers (Qwen XML or Kimi format).
+     * Checks if content contains supported text-form tool call markers.
      */
     static boolean hasToolCallMarkers(String content) {
         return content != null
-                && (content.contains(TOOL_CALL_MARKER) || content.contains(KIMI_SECTION_BEGIN));
+                && (content.contains(TOOL_CALL_MARKER) || content.contains(KIMI_SECTION_BEGIN)
+                        || hasXmlToolCall(content));
+    }
+
+    private static boolean hasXmlToolCall(String content) {
+        return content != null && FUNCTION_BLOCK_PATTERN.matcher(content).find();
     }
 
     /**
@@ -162,12 +181,12 @@ final class QwenContentToolCallParser {
             return null;
         }
 
-        // Try Format A: qwen-coder XML format
+        // Try XML function format
         if (block.contains("<function=")) { //$NON-NLS-1$
-            return parseQwenCoderFormat(block);
+            return parseXmlFunctionFormat(block);
         }
 
-        // Try Format B: qwen-vl JSON format
+        // Try JSON-in-tool-call format
         if (block.startsWith("{")) { //$NON-NLS-1$
             return parseJsonFormat(block);
         }
@@ -178,7 +197,7 @@ final class QwenContentToolCallParser {
     }
 
     /**
-     * Parses qwen-coder XML format:
+     * Parses XML function format:
      * <pre>
      * &lt;function=tool_name&gt;
      * &lt;parameter=key1&gt;value1&lt;/parameter&gt;
@@ -186,10 +205,10 @@ final class QwenContentToolCallParser {
      * &lt;/function&gt;
      * </pre>
      */
-    private static ToolCall parseQwenCoderFormat(String block) {
+    private static ToolCall parseXmlFunctionFormat(String block) {
         Matcher nameMatcher = FUNCTION_NAME_PATTERN.matcher(block);
         if (!nameMatcher.find()) {
-            LOG.debug("Content fallback: could not extract function name from qwen-coder format"); //$NON-NLS-1$
+            LOG.debug("Content fallback: could not extract function name from XML function format"); //$NON-NLS-1$
             return null;
         }
 
@@ -217,12 +236,12 @@ final class QwenContentToolCallParser {
 
         argsJson.append('}');
 
-        String id = "qwen_content_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
+        String id = "content_fallback_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
         return new ToolCall(id, functionName, argsJson.toString());
     }
 
     /**
-     * Parses qwen-vl JSON format:
+     * Parses JSON-in-tool-call format:
      * <pre>
      * {"name": "tool_name", "arguments": {"key": "value"}}
      * </pre>
@@ -244,19 +263,14 @@ final class QwenContentToolCallParser {
                 return null;
             }
 
-            String arguments = "{}"; //$NON-NLS-1$
-            if (obj.has("arguments") && !obj.get("arguments").isJsonNull()) { //$NON-NLS-1$ //$NON-NLS-2$
-                com.google.gson.JsonElement argsEl = obj.get("arguments"); //$NON-NLS-1$
-                if (argsEl.isJsonObject()) {
-                    arguments = argsEl.toString();
-                } else if (argsEl.isJsonPrimitive()) {
-                    // Sometimes arguments are serialized as a JSON string
-                    arguments = argsEl.getAsString();
-                }
+            Optional<String> arguments = ToolCallArguments.normalize(obj.get("arguments")); //$NON-NLS-1$
+            if (arguments.isEmpty()) {
+                LOG.debug("Content fallback: arguments is not a JSON object"); //$NON-NLS-1$
+                return null;
             }
 
-            String id = "qwen_content_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
-            return new ToolCall(id, name, arguments);
+            String id = "content_fallback_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
+            return new ToolCall(id, name, arguments.get());
 
         } catch (Exception e) {
             LOG.debug("Content fallback: failed to parse JSON tool call: %s", e.getMessage()); //$NON-NLS-1$
@@ -315,19 +329,19 @@ final class QwenContentToolCallParser {
             }
             argsPart = argsPart.trim();
 
-            // Parse or repair JSON arguments
+            // Parse or repair JSON object arguments
             if (!argsPart.startsWith("{")) { //$NON-NLS-1$
                 LOG.debug("Kimi fallback: arguments not JSON: %s", argsPart); //$NON-NLS-1$
                 continue;
             }
-            String json = JsonRepairUtil.isComplete(argsPart) ? argsPart : JsonRepairUtil.repair(argsPart);
-            if (!JsonRepairUtil.isComplete(json)) {
+            Optional<String> arguments = ToolCallArguments.normalize(argsPart);
+            if (arguments.isEmpty()) {
                 LOG.debug("Kimi fallback: could not repair JSON args"); //$NON-NLS-1$
                 continue;
             }
 
             String id = "kimi_content_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
-            results.add(new ToolCall(id, functionName, json));
+            results.add(new ToolCall(id, functionName, arguments.get()));
         }
 
         return results;

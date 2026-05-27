@@ -8,7 +8,9 @@
 package com.codepilot1c.core.tools;
 
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -82,7 +84,6 @@ public class TaskTool extends AbstractTool {
             """;
 
     private static final int MAX_DEPTH = 3;
-    private static final int DEFAULT_TIMEOUT_SECONDS = 180; // 3 minutes
 
     // Thread-local depth counter to prevent infinite recursion
     private static final ThreadLocal<AtomicInteger> currentDepth =
@@ -168,8 +169,6 @@ public class TaskTool extends AbstractTool {
         // Create config from profile (applies user overrides via ProfileConfigStore)
         AgentConfig baseConfig = AgentProfileRegistry.getInstance().createConfig(profile);
         AgentConfig.Builder configBuilder = AgentConfig.builder().from(baseConfig)
-                .maxSteps(Math.min(baseConfig.getMaxSteps(), 15)) // Limit subagent steps
-                .timeoutMs(DEFAULT_TIMEOUT_SECONDS * 1000L)
                 .systemPromptAddition(buildSubagentSystemPrompt(profile, description))
                 .profileName(profileId);
 
@@ -184,9 +183,31 @@ public class TaskTool extends AbstractTool {
             AgentResult result = subagentExecutor.run(provider, toolRegistry, profile, prompt, config);
             return formatResult(result, description, profileId);
         } catch (Exception e) {
-            logError("Ошибка выполнения подагента", e);
-            return ToolResult.failure("Ошибка подагента: " + e.getMessage());
+            Throwable root = unwrap(e);
+            logError("Ошибка выполнения подагента", root);
+            JsonObject structured = new JsonObject();
+            structured.addProperty("profile", profileId); //$NON-NLS-1$
+            structured.addProperty("error_type", root.getClass().getSimpleName()); //$NON-NLS-1$
+            structured.addProperty("error_message", describe(root)); //$NON-NLS-1$
+            return ToolResult.failure("Ошибка подагента: " + describe(root), structured); //$NON-NLS-1$
         }
+    }
+
+    private Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        while ((current instanceof CompletionException || current instanceof ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private String describe(Throwable error) {
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return error.getClass().getSimpleName();
+        }
+        return message;
     }
 
     /**
@@ -313,7 +334,8 @@ public class TaskTool extends AbstractTool {
                     profile.getSystemPromptAddition());
             try {
                 CompletableFuture<AgentResult> future = subagent.run(prompt, config);
-                return future.get(DEFAULT_TIMEOUT_SECONDS + 10L, TimeUnit.SECONDS);
+                long timeoutSeconds = Math.max(1L, TimeUnit.MILLISECONDS.toSeconds(config.getTimeoutMs()) + 10L);
+                return future.get(timeoutSeconds, TimeUnit.SECONDS);
             } finally {
                 subagent.dispose();
             }
