@@ -42,7 +42,6 @@ import org.eclipse.swt.widgets.Display;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.model.LlmAttachment;
 import com.codepilot1c.core.ui.TokenFooterRenderer;
-import com.codepilot1c.ui.internal.ToolDisplayNames;
 import com.codepilot1c.ui.internal.VibeUiPlugin;
 import com.codepilot1c.ui.markdown.FlexmarkParser;
 import com.codepilot1c.ui.theme.ThemeManager;
@@ -77,10 +76,12 @@ public class BrowserChatPanel extends Composite {
     private BrowserFunction applyCodeFunction;
 
     private boolean browserReady = false;
+    private boolean readinessToolCallFlushDone = false;
     private ApplyCodeCallback applyCodeCallback;
     private boolean typingIndicatorVisible = false;
     private String typingIndicatorStage;
     private final Map<String, ToolCallDisplayData> activeToolCalls = new HashMap<>();
+    private final List<ToolCallDisplayData> toolCallTimeline = new ArrayList<>();
 
     /**
      * Callback для применения кода.
@@ -109,6 +110,18 @@ public class BrowserChatPanel extends Composite {
     }
 
     /**
+     * Visual mode for a tool call card.
+     */
+    public enum ToolCallDisplayMode {
+        INLINE,
+        EXPANDED,
+        BATCH,
+        TERMINAL,
+        PERMISSION,
+        ERROR_RECOVERY
+    }
+
+    /**
      * Данные для отображения tool call.
      */
     public static class ToolCallDisplayData {
@@ -116,9 +129,17 @@ public class BrowserChatPanel extends Composite {
         private final String name;
         private final String argsSummary;
         private final String argsJson;
+        private String displayId;
         private ToolCallStatus status;
         private String resultSummary;
         private String resultPreview;
+        private ToolCallDisplayMode displayMode = ToolCallDisplayMode.EXPANDED;
+        private String displayName;
+        private String icon;
+        private String operationLabel;
+        private String resultKind;
+        private String durationLabel;
+        private boolean expanded = true;
 
         public ToolCallDisplayData(String id, String name, String argsJson) {
             this.id = id;
@@ -129,16 +150,32 @@ public class BrowserChatPanel extends Composite {
         }
 
         public String getId() { return id; }
+        public String getDisplayId() { return displayId != null ? displayId : id; }
         public String getName() { return name; }
         public String getArgsSummary() { return argsSummary; }
         public String getArgsJson() { return argsJson; }
         public ToolCallStatus getStatus() { return status; }
         public String getResultSummary() { return resultSummary; }
         public String getResultPreview() { return resultPreview; }
+        public ToolCallDisplayMode getDisplayMode() { return displayMode; }
+        public String getDisplayName() { return displayName; }
+        public String getIcon() { return icon; }
+        public String getOperationLabel() { return operationLabel; }
+        public String getResultKind() { return resultKind; }
+        public String getDurationLabel() { return durationLabel; }
+        public boolean isExpanded() { return expanded; }
 
         public void setStatus(ToolCallStatus status) { this.status = status; }
         public void setResultSummary(String resultSummary) { this.resultSummary = resultSummary; }
         public void setResultPreview(String resultPreview) { this.resultPreview = resultPreview; }
+        public void setDisplayMode(ToolCallDisplayMode displayMode) { this.displayMode = displayMode; }
+        public void setDisplayName(String displayName) { this.displayName = displayName; }
+        public void setIcon(String icon) { this.icon = icon; }
+        public void setOperationLabel(String operationLabel) { this.operationLabel = operationLabel; }
+        public void setResultKind(String resultKind) { this.resultKind = resultKind; }
+        public void setDurationLabel(String durationLabel) { this.durationLabel = durationLabel; }
+        public void setExpanded(boolean expanded) { this.expanded = expanded; }
+        void setDisplayId(String displayId) { this.displayId = displayId; }
 
         /**
          * Builds a short summary of key arguments.
@@ -241,7 +278,7 @@ public class BrowserChatPanel extends Composite {
 
         setLayout(new FillLayout());
 
-        // Create browser
+        // Prefer the modern browser backend; the chat surface owns its visual chrome.
         Browser tempBrowser = null;
         try {
             tempBrowser = new Browser(this, SWT.EDGE);
@@ -308,6 +345,11 @@ public class BrowserChatPanel extends Composite {
             @Override
             public void completed(org.eclipse.swt.browser.ProgressEvent event) {
                 browserReady = true;
+                if (!readinessToolCallFlushDone && !toolCallTimeline.isEmpty()) {
+                    readinessToolCallFlushDone = true;
+                    renderAllMessages();
+                    return;
+                }
                 applyTypingIndicatorState();
             }
         });
@@ -372,7 +414,11 @@ public class BrowserChatPanel extends Composite {
             String jsCode =
                 "var container = document.getElementById('messages');" + //$NON-NLS-1$
                 "if (container) {" + //$NON-NLS-1$
-                "  container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+                "  if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
+                "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+                "  } else {" + //$NON-NLS-1$
+                "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+                "  }" + //$NON-NLS-1$
                 "  scrollToBottom();" + //$NON-NLS-1$
                 "  if (typeof hljs !== 'undefined') { hljs.highlightAll(); }" + //$NON-NLS-1$
                 "}" + //$NON-NLS-1$
@@ -409,7 +455,8 @@ public class BrowserChatPanel extends Composite {
             String messageHtml = buildMessageContentHtml(content);
             String escapedHtml = escapeForJs(messageHtml);
             browser.execute(
-                "var lastMsg = document.querySelector('.message:last-child .message-content');" + //$NON-NLS-1$
+                "var msgs = document.querySelectorAll('#messages .message');" + //$NON-NLS-1$
+                "var lastMsg = msgs.length ? msgs[msgs.length - 1].querySelector('.message-content') : null;" + //$NON-NLS-1$
                 "if (lastMsg) {" + //$NON-NLS-1$
                 "  lastMsg.innerHTML = '" + escapedHtml + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "  scrollToBottom();" + //$NON-NLS-1$
@@ -495,11 +542,12 @@ public class BrowserChatPanel extends Composite {
             String stageText = (stage != null && !stage.isEmpty())
                     ? escapeForJs(stage)
                     : "AI обрабатывает запрос"; //$NON-NLS-1$
+            String display = isToolExecutionStage(stage) ? "none" : "flex"; //$NON-NLS-1$ //$NON-NLS-2$
             browser.execute(
                 "var indicator = document.getElementById('typing-indicator');" + //$NON-NLS-1$
                 "var stageText = document.getElementById('typing-stage');" + //$NON-NLS-1$
                 "if (indicator) {" + //$NON-NLS-1$
-                "  indicator.style.display = 'flex';" + //$NON-NLS-1$
+                "  indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "  if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "}" + //$NON-NLS-1$
                 "scrollToBottom();" //$NON-NLS-1$
@@ -526,9 +574,13 @@ public class BrowserChatPanel extends Composite {
         }
 
         String stageText = escapeForJs(stage);
+        String display = isToolExecutionStage(stage) ? "none" : "flex"; //$NON-NLS-1$ //$NON-NLS-2$
         browser.execute(
+            "var indicator = document.getElementById('typing-indicator');" + //$NON-NLS-1$
             "var stageText = document.getElementById('typing-stage');" + //$NON-NLS-1$
-            "if (stageText) stageText.textContent = '" + stageText + "';" //$NON-NLS-1$ //$NON-NLS-2$
+            "if (indicator && " + typingIndicatorVisible + ") indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
+            "scrollToBottom();" //$NON-NLS-1$
         );
     }
 
@@ -602,10 +654,12 @@ public class BrowserChatPanel extends Composite {
     public void clearChat() {
         messages.clear();
         activeToolCalls.clear();
+        toolCallTimeline.clear();
         if (browser != null && !browser.isDisposed()) {
             browser.execute(
                 "var container = document.getElementById('messages');" + //$NON-NLS-1$
-                "if (container) container.innerHTML = '';" //$NON-NLS-1$
+                "if (container && typeof clearMessageFlow === 'function') clearMessageFlow();" + //$NON-NLS-1$
+                "else if (container) container.innerHTML = '';" //$NON-NLS-1$
             );
         }
     }
@@ -616,13 +670,26 @@ public class BrowserChatPanel extends Composite {
     public void renderAllMessages() {
         if (browser == null || browser.isDisposed()) return;
 
+        int lastAssistantIndex = findLastAssistantMessageIndex();
+        String toolCallsHtml = buildToolCallsHtml(toolCallTimeline);
         StringBuilder messagesHtml = new StringBuilder();
-        for (ChatMessageData msg : messages) {
-            messagesHtml.append(buildMessageHtml(msg));
+        for (int i = 0; i < messages.size(); i++) {
+            ChatMessageData msg = messages.get(i);
+            messagesHtml.append(buildMessageHtml(msg, i == lastAssistantIndex ? toolCallsHtml : "")); //$NON-NLS-1$
         }
 
         String html = buildHtmlDocument(messagesHtml.toString());
         browser.setText(html);
+    }
+
+    private int findLastAssistantMessageIndex() {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessageData msg = messages.get(i);
+            if (msg.isAssistant && !msg.isSystem) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void applyTypingIndicatorState() {
@@ -631,11 +698,12 @@ public class BrowserChatPanel extends Composite {
             String stageText = (typingIndicatorStage != null && !typingIndicatorStage.isEmpty())
                     ? escapeForJs(typingIndicatorStage)
                     : "AI обрабатывает запрос"; //$NON-NLS-1$
+            String display = isToolExecutionStage(typingIndicatorStage) ? "none" : "flex"; //$NON-NLS-1$ //$NON-NLS-2$
             browser.execute(
                 "var indicator = document.getElementById('typing-indicator');" + //$NON-NLS-1$
                 "var stageText = document.getElementById('typing-stage');" + //$NON-NLS-1$
                 "if (indicator) {" + //$NON-NLS-1$
-                "  indicator.style.display = 'flex';" + //$NON-NLS-1$
+                "  indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "  if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "}" + //$NON-NLS-1$
                 "scrollToBottom();" //$NON-NLS-1$
@@ -677,18 +745,32 @@ public class BrowserChatPanel extends Composite {
         return browser != null && !browser.isDisposed() && browserReady;
     }
 
+    Object evaluateScript(String script) {
+        if (!isBrowserAvailable()) {
+            return null;
+        }
+        return browser.evaluate(script);
+    }
+
     /**
      * Добавляет карточку tool call в UI.
      *
      * @param toolCall данные tool call
      */
     public void addToolCallCard(ToolCallDisplayData toolCall) {
+        boolean inserted = addToolCallToModel(toolCall);
         if (browser == null || browser.isDisposed() || !browserReady) {
-            LOG.warn("addToolCallCard: browser not ready"); //$NON-NLS-1$
+            LOG.debug("addToolCallCard: browser not ready, inserted=%b, total=%d, status=%s", //$NON-NLS-1$
+                    inserted, toolCallTimeline.size(), toolCall != null ? toolCall.getStatus().cssClass : "null"); //$NON-NLS-1$
             return;
         }
 
-        activeToolCalls.put(toolCall.getId(), toolCall);
+        if (!inserted) {
+            LOG.debug("addToolCallCard: duplicate id=%s, total=%d, status=%s", //$NON-NLS-1$
+                    toolCall != null ? toolCall.getId() : "null", toolCallTimeline.size(), //$NON-NLS-1$
+                    toolCall != null ? toolCall.getStatus().cssClass : "null"); //$NON-NLS-1$
+            return;
+        }
 
         String cardHtml = buildToolCallCardHtml(toolCall);
         String escapedHtml = escapeForJs(cardHtml);
@@ -696,11 +778,20 @@ public class BrowserChatPanel extends Composite {
         String jsCode =
             "var container = document.getElementById('messages');" + //$NON-NLS-1$
             "if (container) {" + //$NON-NLS-1$
-            "  container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  var assistantContents = container.querySelectorAll('.message.assistant .message-content');" + //$NON-NLS-1$
+            "  if (assistantContents.length) {" + //$NON-NLS-1$
+            "    assistantContents[assistantContents.length - 1].insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
+            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else {" + //$NON-NLS-1$
+            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  }" + //$NON-NLS-1$
             "  scrollToBottom();" + //$NON-NLS-1$
             "}"; //$NON-NLS-1$
 
         boolean success = browser.execute(jsCode);
+        LOG.debug("addToolCallCard: inserted=%d, total=%d, status=%s, execute=%b", //$NON-NLS-1$
+                1, toolCallTimeline.size(), toolCall.getStatus().cssClass, success);
         if (!success) {
             LOG.warn("addToolCallCard: browser.execute failed"); //$NON-NLS-1$
         }
@@ -712,46 +803,51 @@ public class BrowserChatPanel extends Composite {
      * @param toolCalls список данных tool call
      */
     public void addToolCallCards(List<ToolCallDisplayData> toolCalls) {
+        List<ToolCallDisplayData> newToolCalls = new ArrayList<>();
+        if (toolCalls != null) {
+            for (ToolCallDisplayData toolCall : toolCalls) {
+                if (addToolCallToModel(toolCall)) {
+                    newToolCalls.add(toolCall);
+                }
+            }
+        }
+
         if (browser == null || browser.isDisposed() || !browserReady) {
-            LOG.warn("addToolCallCards: browser not ready"); //$NON-NLS-1$
+            LOG.debug("addToolCallCards: browser not ready, inserted=%d, requested=%d, total=%d", //$NON-NLS-1$
+                    newToolCalls.size(), toolCalls != null ? toolCalls.size() : 0, toolCallTimeline.size());
             return;
         }
 
-        StringBuilder allCardsHtml = new StringBuilder();
-        for (ToolCallDisplayData toolCall : toolCalls) {
-            activeToolCalls.put(toolCall.getId(), toolCall);
-            allCardsHtml.append(buildToolCallCardHtml(toolCall));
+        if (newToolCalls.isEmpty()) {
+            LOG.debug("addToolCallCards: no new cards, requested=%d, total=%d", //$NON-NLS-1$
+                    toolCalls != null ? toolCalls.size() : 0, toolCallTimeline.size());
+            return;
         }
 
-        // Wrap in collapsible group when multiple tool calls
-        String groupId = "tcg-" + System.currentTimeMillis(); //$NON-NLS-1$
-        String wrappedHtml;
-        if (toolCalls.size() > 1) {
-            wrappedHtml = "<div class=\"tool-calls-group\" id=\"" + groupId + "\">\n" + //$NON-NLS-1$ //$NON-NLS-2$
-                "  <div class=\"tool-calls-group-header\" onclick=\"toggleToolCallGroup(this)\">\n" + //$NON-NLS-1$
-                "    <span class=\"tool-calls-group-icon\">\uD83D\uDD27</span>\n" + //$NON-NLS-1$
-                "    <span class=\"tool-calls-group-label\">\u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u043E " + //$NON-NLS-1$
-                toolCalls.size() + " \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u043E\u0432</span>\n" + //$NON-NLS-1$
-                "    <span class=\"tool-calls-group-status\" data-group-id=\"" + groupId + "\"></span>\n" + //$NON-NLS-1$ //$NON-NLS-2$
-                "  </div>\n" + //$NON-NLS-1$
-                "  <div class=\"tool-calls-group-body\">\n" + //$NON-NLS-1$
-                allCardsHtml.toString() +
-                "  </div>\n" + //$NON-NLS-1$
-                "</div>\n"; //$NON-NLS-1$
-        } else {
-            wrappedHtml = allCardsHtml.toString();
-        }
+        String wrappedHtml = buildToolCallsHtml(newToolCalls);
 
         String escapedHtml = escapeForJs(wrappedHtml);
 
         String jsCode =
             "var container = document.getElementById('messages');" + //$NON-NLS-1$
             "if (container) {" + //$NON-NLS-1$
-            "  container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  var assistantContents = container.querySelectorAll('.message.assistant .message-content');" + //$NON-NLS-1$
+            "  if (assistantContents.length) {" + //$NON-NLS-1$
+            "    assistantContents[assistantContents.length - 1].insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
+            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else {" + //$NON-NLS-1$
+            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  }" + //$NON-NLS-1$
             "  scrollToBottom();" + //$NON-NLS-1$
             "}"; //$NON-NLS-1$
 
         boolean success = browser.execute(jsCode);
+        String statusSummary = newToolCalls.stream()
+                .map(toolCall -> toolCall.getStatus().cssClass)
+                .collect(Collectors.joining(",")); //$NON-NLS-1$
+        LOG.debug("addToolCallCards: inserted=%d, requested=%d, total=%d, status=%s, execute=%b", //$NON-NLS-1$
+                newToolCalls.size(), toolCalls != null ? toolCalls.size() : 0, toolCallTimeline.size(), statusSummary, success);
         if (!success) {
             LOG.warn("addToolCallCards: browser.execute failed"); //$NON-NLS-1$
         }
@@ -763,19 +859,21 @@ public class BrowserChatPanel extends Composite {
      * @param toolCallId ID tool call
      * @param status новый статус
      * @param resultSummary краткое описание результата
-     * @param resultPreview первые 200 символов результата
+     * @param resultPreview preview результата
      */
     public void updateToolCallResult(String toolCallId, ToolCallStatus status, String resultSummary, String resultPreview) {
-        if (browser == null || browser.isDisposed() || !browserReady) {
-            LOG.warn("updateToolCallResult: browser not ready"); //$NON-NLS-1$
-            return;
-        }
-
+        ToolCallStatus safeStatus = status != null ? status : ToolCallStatus.PENDING;
         ToolCallDisplayData toolCall = activeToolCalls.get(toolCallId);
         if (toolCall != null) {
-            toolCall.setStatus(status);
+            toolCall.setStatus(safeStatus);
             toolCall.setResultSummary(resultSummary);
             toolCall.setResultPreview(resultPreview);
+        }
+
+        if (browser == null || browser.isDisposed() || !browserReady) {
+            LOG.debug("updateToolCallResult: browser not ready, id=%s, status=%s, summary=%s, total=%d", //$NON-NLS-1$
+                    toolCallId, safeStatus.cssClass, resultSummary, toolCallTimeline.size());
+            return;
         }
 
         // Only JS-escape here, HTML escaping is done in JavaScript
@@ -785,13 +883,15 @@ public class BrowserChatPanel extends Composite {
         String jsCode = String.format(
             "updateToolCallCard('%s', '%s', '%s', '%s', '%s');", //$NON-NLS-1$
             escapeForJs(toolCallId),
-            status.cssClass,
-            escapeForJs(status.icon),
+            safeStatus.cssClass,
+            escapeForJs(safeStatus.icon),
             escapedSummary,
             escapedPreview
         );
 
         boolean success = browser.execute(jsCode);
+        LOG.debug("updateToolCallResult: id=%s, status=%s, summary=%s, total=%d, execute=%b", //$NON-NLS-1$
+                toolCallId, safeStatus.cssClass, resultSummary, toolCallTimeline.size(), success);
         if (!success) {
             LOG.warn("updateToolCallResult: browser.execute failed for %s", toolCallId); //$NON-NLS-1$
         }
@@ -816,7 +916,11 @@ public class BrowserChatPanel extends Composite {
         String jsCode =
             "var container = document.getElementById('messages');" + //$NON-NLS-1$
             "if (container) {" + //$NON-NLS-1$
-            "  container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
+            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else {" + //$NON-NLS-1$
+            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  }" + //$NON-NLS-1$
             "  scrollToBottom();" + //$NON-NLS-1$
             "}"; //$NON-NLS-1$
 
@@ -827,18 +931,27 @@ public class BrowserChatPanel extends Composite {
      * Строит HTML для карточки tool call.
      */
     private String buildToolCallCardHtml(ToolCallDisplayData toolCall) {
-        String displayName = getToolDisplayName(toolCall.getName());
+        applyToolCallDisplayDefaults(toolCall);
+        ToolCallStatus status = toolCall.getStatus() != null ? toolCall.getStatus() : ToolCallStatus.PENDING;
+        String displayName = toolCall.getDisplayName() != null ? toolCall.getDisplayName() : toolCall.getName();
+        String icon = toolCall.getIcon() != null ? toolCall.getIcon() : "\uD83D\uDD27"; //$NON-NLS-1$
         String argsSummary = toolCall.getArgsSummary();
         String argsJson = toolCall.getArgsJson();
+        String resultSummary = toolCall.getResultSummary();
+        String resultPreview = toolCall.getResultPreview();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("<div class=\"tool-call\" data-tool-call-id=\"") //$NON-NLS-1$
+        sb.append("<div class=\"tool-call") //$NON-NLS-1$
+          .append(toolCall.isExpanded() ? " expanded" : "") //$NON-NLS-1$ //$NON-NLS-2$
+          .append("\" data-tool-call-display-id=\"") //$NON-NLS-1$
+          .append(escapeHtml(toolCall.getDisplayId()))
+          .append("\" data-tool-call-id=\"") //$NON-NLS-1$
           .append(escapeHtml(toolCall.getId()))
           .append("\">\n"); //$NON-NLS-1$
 
         // Header
         sb.append("  <div class=\"tool-call-header\" onclick=\"toggleToolCall(this)\">\n"); //$NON-NLS-1$
-        sb.append("    <span class=\"tool-call-icon\">\uD83D\uDD27</span>\n"); // 🔧 //$NON-NLS-1$
+        sb.append("    <span class=\"tool-call-icon\">").append(escapeHtml(icon)).append("</span>\n"); //$NON-NLS-1$ //$NON-NLS-2$
         sb.append("    <span class=\"tool-call-name\">").append(escapeHtml(displayName)).append("</span>\n"); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Args summary (short)
@@ -849,8 +962,10 @@ public class BrowserChatPanel extends Composite {
         }
 
         // Status badge
-        sb.append("    <span class=\"tool-call-status ").append(toolCall.getStatus().cssClass).append("\">") //$NON-NLS-1$ //$NON-NLS-2$
-          .append(toolCall.getStatus().icon)
+        sb.append("    <span class=\"tool-call-status ").append(status.cssClass).append("\">") //$NON-NLS-1$ //$NON-NLS-2$
+          .append(escapeHtml(status.icon))
+          .append(" ") //$NON-NLS-1$
+          .append(escapeHtml(buildStatusLabel(status, resultSummary)))
           .append("</span>\n"); //$NON-NLS-1$
 
         sb.append("  </div>\n"); //$NON-NLS-1$
@@ -866,13 +981,129 @@ public class BrowserChatPanel extends Composite {
             sb.append("    </div>\n"); //$NON-NLS-1$
         }
 
-        // Result section (initially empty, filled by updateToolCallResult)
-        sb.append("    <div class=\"tool-call-result\" style=\"display:none;\"></div>\n"); //$NON-NLS-1$
+        // Result section, preserved across full re-renders once the Java model has it.
+        if (resultPreview != null && !resultPreview.isEmpty()
+                && (status == ToolCallStatus.SUCCESS || status == ToolCallStatus.ERROR)) {
+            String resultTitle = status == ToolCallStatus.SUCCESS ? "Результат" : "Ошибка"; //$NON-NLS-1$ //$NON-NLS-2$
+            sb.append("    <div class=\"tool-call-result\">\n"); //$NON-NLS-1$
+            sb.append("      <div class=\"tool-call-section-title\">") //$NON-NLS-1$
+              .append(escapeHtml(resultTitle))
+              .append("</div>\n"); //$NON-NLS-1$
+            sb.append("      <pre class=\"tool-call-result-preview\">").append(escapeHtml(resultPreview)).append("</pre>\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            sb.append("    </div>\n"); //$NON-NLS-1$
+        } else {
+            sb.append("    <div class=\"tool-call-result\" style=\"display:none;\"></div>\n"); //$NON-NLS-1$
+        }
 
         sb.append("  </div>\n"); //$NON-NLS-1$
         sb.append("</div>\n"); //$NON-NLS-1$
 
         return sb.toString();
+    }
+
+    private String buildToolCallsHtml(List<ToolCallDisplayData> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return ""; //$NON-NLS-1$
+        }
+        StringBuilder allCardsHtml = new StringBuilder();
+        for (ToolCallDisplayData toolCall : toolCalls) {
+            allCardsHtml.append(buildToolCallCardHtml(toolCall));
+        }
+        if (toolCalls.size() == 1) {
+            return allCardsHtml.toString();
+        }
+        String groupId = "tcg-" + System.currentTimeMillis() + "-" + Math.abs(toolCalls.hashCode()); //$NON-NLS-1$ //$NON-NLS-2$
+        return "<div class=\"tool-calls-group expanded\" id=\"" + groupId + "\">\n" + //$NON-NLS-1$ //$NON-NLS-2$
+                "  <div class=\"tool-calls-group-header\" onclick=\"toggleToolCallGroup(this)\">\n" + //$NON-NLS-1$
+                "    <span class=\"tool-calls-group-icon\">\uD83D\uDD27</span>\n" + //$NON-NLS-1$
+                "    <span class=\"tool-calls-group-label\">\u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u043E " + //$NON-NLS-1$
+                toolCalls.size() + " \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u043E\u0432</span>\n" + //$NON-NLS-1$
+                "    <span class=\"tool-calls-group-status\" data-group-id=\"" + groupId + "\"></span>\n" + //$NON-NLS-1$ //$NON-NLS-2$
+                "  </div>\n" + //$NON-NLS-1$
+                "  <div class=\"tool-calls-group-body\">\n" + //$NON-NLS-1$
+                allCardsHtml +
+                "  </div>\n" + //$NON-NLS-1$
+                "</div>\n"; //$NON-NLS-1$
+    }
+
+    private boolean addToolCallToModel(ToolCallDisplayData toolCall) {
+        if (toolCall == null || toolCall.getId() == null || toolCall.getId().isEmpty()) {
+            return false;
+        }
+
+        applyToolCallDisplayDefaults(toolCall);
+        toolCall.setDisplayId("tc-" + System.nanoTime() + "-" + toolCallTimeline.size()); //$NON-NLS-1$ //$NON-NLS-2$
+        activeToolCalls.put(toolCall.getId(), toolCall);
+        toolCallTimeline.add(toolCall);
+        return true;
+    }
+
+    private void applyToolCallDisplayDefaults(ToolCallDisplayData toolCall) {
+        if (toolCall == null) {
+            return;
+        }
+        if (toolCall.getDisplayMode() == null) {
+            toolCall.setDisplayMode(ToolCallDisplayMode.EXPANDED);
+        }
+
+        ToolPresentation presentation = resolveToolPresentation(toolCall.getName());
+        if (toolCall.getDisplayName() == null || toolCall.getDisplayName().isEmpty()) {
+            toolCall.setDisplayName(presentation.displayName);
+        }
+        if (toolCall.getIcon() == null || toolCall.getIcon().isEmpty()) {
+            toolCall.setIcon(presentation.icon);
+        }
+        if (toolCall.getOperationLabel() == null || toolCall.getOperationLabel().isEmpty()) {
+            toolCall.setOperationLabel(presentation.displayName);
+        }
+    }
+
+    private ToolPresentation resolveToolPresentation(String rawName) {
+        String name = rawName != null ? rawName : ""; //$NON-NLS-1$
+        String normalized = name.toLowerCase(java.util.Locale.ROOT);
+        if ("glob".equals(normalized) || "grep".equals(normalized) || "search".equals(normalized) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                || normalized.contains("search")) { //$NON-NLS-1$
+            return new ToolPresentation("Поиск по проекту", "\u2315"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if ("read_file".equals(normalized) || "readfile".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return new ToolPresentation("Чтение файла", "\uD83D\uDCC4"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if ("list_files".equals(normalized) || "listfiles".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return new ToolPresentation("Список файлов", "\uD83D\uDCC1"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if ("write_file".equals(normalized) || "writefile".equals(normalized) //$NON-NLS-1$ //$NON-NLS-2$
+                || "edit_file".equals(normalized) || "editfile".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return new ToolPresentation("Изменение файла", "\u270E"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return new ToolPresentation(name, "\uD83D\uDD27"); //$NON-NLS-1$
+    }
+
+    private String buildStatusLabel(ToolCallStatus status, String resultSummary) {
+        if (resultSummary != null && !resultSummary.isEmpty()
+                && (status == ToolCallStatus.SUCCESS || status == ToolCallStatus.ERROR)) {
+            return resultSummary;
+        }
+        switch (status) {
+        case RUNNING:
+            return "Выполняется"; //$NON-NLS-1$
+        case SUCCESS:
+            return "Готово"; //$NON-NLS-1$
+        case ERROR:
+            return "Ошибка"; //$NON-NLS-1$
+        case PENDING:
+        default:
+            return "Ожидает"; //$NON-NLS-1$
+        }
+    }
+
+    private static class ToolPresentation {
+        final String displayName;
+        final String icon;
+
+        ToolPresentation(String displayName, String icon) {
+            this.displayName = displayName;
+            this.icon = icon;
+        }
     }
 
     /**
@@ -892,13 +1123,6 @@ public class BrowserChatPanel extends Composite {
     }
 
     /**
-     * Возвращает человекопонятное имя инструмента.
-     */
-    private String getToolDisplayName(String name) {
-        return ToolDisplayNames.get(name);
-    }
-
-    /**
      * Строит полный HTML-документ.
      */
     private String buildHtmlDocument(String messagesHtml) {
@@ -907,16 +1131,16 @@ public class BrowserChatPanel extends Composite {
         String themeClass = ThemeManager.getInstance().isDarkTheme() ? "dark" : "light"; //$NON-NLS-1$ //$NON-NLS-2$
 
         return "<!DOCTYPE html>\n" + //$NON-NLS-1$
-               "<html>\n" + //$NON-NLS-1$
+               "<html lang=\"ru\">\n" + //$NON-NLS-1$
                "<head>\n" + //$NON-NLS-1$
                "    <meta charset=\"UTF-8\">\n" + //$NON-NLS-1$
+               "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" + //$NON-NLS-1$
                "    <style>\n" + css + "\n    </style>\n" + //$NON-NLS-1$ //$NON-NLS-2$
                "</head>\n" + //$NON-NLS-1$
                "<body class=\"" + themeClass + "\">\n" + //$NON-NLS-1$ //$NON-NLS-2$
                "    <div class=\"chat-root\">\n" + //$NON-NLS-1$
                "        <div class=\"message-container\" id=\"messages\">\n" + //$NON-NLS-1$
                messagesHtml +
-               "        </div>\n" + //$NON-NLS-1$
                "        <div class=\"typing-indicator\" id=\"typing-indicator\" style=\"display:none;\">\n" + //$NON-NLS-1$
                "            <div class=\"typing-content\">\n" + //$NON-NLS-1$
                "                <div class=\"typing-spinner\"></div>\n" + //$NON-NLS-1$
@@ -927,6 +1151,7 @@ public class BrowserChatPanel extends Composite {
                "                <span class=\"typing-dot\"></span>\n" + //$NON-NLS-1$
                "                <span class=\"typing-dot\"></span>\n" + //$NON-NLS-1$
                "            </div>\n" + //$NON-NLS-1$
+               "        </div>\n" + //$NON-NLS-1$
                "        </div>\n" + //$NON-NLS-1$
                // Plan 2.4: persistent token-usage footer. Initially hidden; the
                // Java side injects content on first registerUsage()/reset call.
@@ -941,9 +1166,14 @@ public class BrowserChatPanel extends Composite {
      * Строит HTML для одного сообщения.
      */
     private String buildMessageHtml(ChatMessageData msg) {
+        return buildMessageHtml(msg, ""); //$NON-NLS-1$
+    }
+
+    private String buildMessageHtml(ChatMessageData msg, String extraContentHtml) {
         String messageClass = msg.isSystem ? "system" : (msg.isAssistant ? "assistant" : "user"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         String contentHtml = buildMessageContentHtml(msg.content);
         String attachmentsHtml = buildAttachmentsHtml(msg.attachments);
+        String extraHtml = extraContentHtml != null ? extraContentHtml : ""; //$NON-NLS-1$
 
         // Include reasoning block if present (for thinking mode)
         String reasoningHtml = ""; //$NON-NLS-1$
@@ -969,7 +1199,7 @@ public class BrowserChatPanel extends Composite {
                copyResponseHtml +
                "    </div>\n" + //$NON-NLS-1$
                "    <div class=\"message-content\">\n" + //$NON-NLS-1$
-               reasoningHtml + contentHtml + attachmentsHtml + "\n" + //$NON-NLS-1$
+               reasoningHtml + contentHtml + attachmentsHtml + extraHtml + "\n" + //$NON-NLS-1$
                "    </div>\n" + //$NON-NLS-1$
                "</div>\n"; //$NON-NLS-1$
     }
@@ -1086,6 +1316,21 @@ public class BrowserChatPanel extends Composite {
                "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
                "  if (container) container.scrollTop = container.scrollHeight;\n" + //$NON-NLS-1$
                "}\n" + //$NON-NLS-1$
+               "function insertMessageFlowHtml(html) {\n" + //$NON-NLS-1$
+               "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
+               "  if (!container) return null;\n" + //$NON-NLS-1$
+               "  var typing = document.getElementById('typing-indicator');\n" + //$NON-NLS-1$
+               "  if (typing && typing.parentElement === container) typing.insertAdjacentHTML('beforebegin', html);\n" + //$NON-NLS-1$
+               "  else container.insertAdjacentHTML('beforeend', html);\n" + //$NON-NLS-1$
+               "  return container;\n" + //$NON-NLS-1$
+               "}\n" + //$NON-NLS-1$
+               "function clearMessageFlow() {\n" + //$NON-NLS-1$
+               "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
+               "  if (!container) return;\n" + //$NON-NLS-1$
+               "  Array.prototype.slice.call(container.children).forEach(function(child) {\n" + //$NON-NLS-1$
+               "    if (child.id !== 'typing-indicator') container.removeChild(child);\n" + //$NON-NLS-1$
+               "  });\n" + //$NON-NLS-1$
+               "}\n" + //$NON-NLS-1$
                "function setTheme(theme) { document.body.className = theme; }\n" + //$NON-NLS-1$
                "function copyCode(btn) {\n" + //$NON-NLS-1$
                "  var code = btn.closest('.code-block').querySelector('code');\n" + //$NON-NLS-1$
@@ -1109,6 +1354,10 @@ public class BrowserChatPanel extends Composite {
                    .replace("'", "\\'") //$NON-NLS-1$ //$NON-NLS-2$
                    .replace("\n", "\\n") //$NON-NLS-1$ //$NON-NLS-2$
                    .replace("\r", ""); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private boolean isToolExecutionStage(String stage) {
+        return stage != null && stage.startsWith("Выполнение:"); //$NON-NLS-1$
     }
 
     private void copyToClipboard(String text) {

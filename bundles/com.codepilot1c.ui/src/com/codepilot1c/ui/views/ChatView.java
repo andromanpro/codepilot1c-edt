@@ -64,9 +64,11 @@ import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.memory.project.ProjectMemoryContextService;
+import com.codepilot1c.core.memory.project.ProjectMemoryInitializationService;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.provider.ProviderCapabilities;
+import com.codepilot1c.core.remote.AgentSessionController;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
@@ -108,9 +110,20 @@ public class ChatView extends ViewPart {
 
     /** Whether to use Browser-based rendering for chat messages */
     private static final boolean USE_BROWSER_RENDERING = true;
-    private static final int MAX_TOOL_RESULT_PREVIEW_CHARS = 20_000;
     private static final String CORE_PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
+    private static final int CHAT_INPUT_HEIGHT = 92;
+    private static final int CHAT_ACTION_BUTTON_HEIGHT = 30;
+    private static final int CHAT_ICON_BUTTON_WIDTH = 36;
+    private static final int CHAT_NEW_CHAT_BUTTON_WIDTH = 42;
+    private static final int CHAT_COMPACT_BUTTON_WIDTH = 156;
+    private static final int CHAT_MODEL_BUTTON_WIDTH = 148;
+    private static final int CHAT_MODEL_LABEL_MAX_CHARS = 22;
+    private static final int CHAT_COMPOSER_MARGIN = 12;
+    private static final int CHAT_BUTTON_SPACING = 8;
+    private static final int MAX_TOOL_RESULT_HISTORY_CHARS = 40_000;
     private static final ProjectMemoryContextService PROJECT_MEMORY_SERVICE = new ProjectMemoryContextService();
+    private static final ProjectMemoryInitializationService PROJECT_MEMORY_INIT_SERVICE =
+            new ProjectMemoryInitializationService();
 
     private ScrolledComposite scrolledComposite;
     private Composite messagesContainer;
@@ -142,6 +155,7 @@ public class ChatView extends ViewPart {
     private final com.codepilot1c.core.agent.ToolRepetitionDetector toolRepetitionDetector =
             new com.codepilot1c.core.agent.ToolRepetitionDetector();
     private CompletableFuture<?> currentRequest;
+    private boolean currentRequestUsesDesktopController;
     private boolean isProcessing = false;
     /** Skill names extracted from the latest user input via $mention syntax. */
     private List<String> currentRequestedSkills = List.of();
@@ -224,7 +238,11 @@ public class ChatView extends ViewPart {
         VibeTheme theme = ThemeManager.getInstance().getTheme();
 
         Composite container = new Composite(parent, SWT.NONE);
-        container.setLayout(new GridLayout(1, false));
+        GridLayout containerLayout = new GridLayout(1, false);
+        containerLayout.marginWidth = 0;
+        containerLayout.marginHeight = 0;
+        containerLayout.verticalSpacing = 0;
+        container.setLayout(containerLayout);
         container.setBackground(theme.getBackground());
 
         createChatArea(container);
@@ -316,9 +334,9 @@ public class ChatView extends ViewPart {
         inputArea.setBackground(theme.getSurface());
         inputArea.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
         GridLayout inputAreaLayout = new GridLayout(1, false);
-        inputAreaLayout.marginWidth = theme.getMargin();
-        inputAreaLayout.marginHeight = theme.getMargin();
-        inputAreaLayout.verticalSpacing = theme.getMargin();
+        inputAreaLayout.marginWidth = CHAT_COMPOSER_MARGIN;
+        inputAreaLayout.marginHeight = 10;
+        inputAreaLayout.verticalSpacing = 8;
         inputArea.setLayout(inputAreaLayout);
 
         // Input field - full width
@@ -327,7 +345,7 @@ public class ChatView extends ViewPart {
         inputField.setForeground(theme.getText());
         inputField.setFont(theme.getFont());
         GridData inputData = new GridData(SWT.FILL, SWT.FILL, true, false);
-        inputData.heightHint = 80;
+        inputData.heightHint = CHAT_INPUT_HEIGHT;
         inputField.setLayoutData(inputData);
         inputField.setMessage(Messages.ChatView_InputPlaceholder);
 
@@ -371,54 +389,32 @@ public class ChatView extends ViewPart {
         GridLayout buttonLayout = new GridLayout(9, false);
         buttonLayout.marginWidth = 0;
         buttonLayout.marginHeight = 0;
-        buttonLayout.horizontalSpacing = 4; // Compact spacing
+        buttonLayout.horizontalSpacing = CHAT_BUTTON_SPACING;
         buttonBar.setLayout(buttonLayout);
 
-        attachButton = new Button(buttonBar, SWT.PUSH);
-        attachButton.setText("+"); //$NON-NLS-1$
-        attachButton.setToolTipText(Messages.ChatView_AttachButton);
-        attachButton.setFont(theme.getFont());
-        GridData attachData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        attachData.widthHint = 36;
-        attachData.heightHint = 28;
-        attachButton.setLayoutData(attachData);
+        attachButton = createChatActionButton(buttonBar, "+", Messages.ChatView_AttachButton, //$NON-NLS-1$
+                CHAT_ICON_BUTTON_WIDTH);
         attachButton.addListener(SWT.Selection, e -> openAttachmentDialog());
 
         // Send button with icon
-        sendButton = new Button(buttonBar, SWT.PUSH);
-        sendButton.setText("\u27A4"); // ➤ send icon //$NON-NLS-1$
-        sendButton.setToolTipText(Messages.ChatView_SendButton + " (Enter)"); //$NON-NLS-1$
-        sendButton.setFont(theme.getFont());
-        GridData sendData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        sendData.widthHint = 36;
-        sendData.heightHint = 28;
-        sendButton.setLayoutData(sendData);
+        sendButton = createChatActionButton(buttonBar, "\u27A4", //$NON-NLS-1$
+                Messages.ChatView_SendButton + " (Enter)", CHAT_ICON_BUTTON_WIDTH); //$NON-NLS-1$
         sendButton.addListener(SWT.Selection, e -> sendMessage());
 
-        initCodeMdButton = new Button(buttonBar, SWT.PUSH);
-        initCodeMdButton.setFont(theme.getFont());
-        initCodeMdButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        initCodeMdButton = createChatActionButton(buttonBar, "", //$NON-NLS-1$
+                Messages.ChatView_CodeMdNoProjectTooltip, SWT.DEFAULT);
         initCodeMdButton.addListener(SWT.Selection, e -> runCodeMdInitialization());
         updateInitCodeMdButton();
 
         // Apply code button with icon
-        applyCodeButton = new Button(buttonBar, SWT.PUSH);
-        applyCodeButton.setText("\u2913"); // ⤓ apply icon //$NON-NLS-1$
-        applyCodeButton.setToolTipText(Messages.ChatView_ApplyCodeTooltip);
-        applyCodeButton.setFont(theme.getFont());
+        applyCodeButton = createChatActionButton(buttonBar, "\u2913", //$NON-NLS-1$
+                Messages.ChatView_ApplyCodeTooltip, CHAT_ICON_BUTTON_WIDTH);
         applyCodeButton.setEnabled(false);
-        GridData applyData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        applyData.widthHint = 36;
-        applyData.heightHint = 28;
-        applyCodeButton.setLayoutData(applyData);
         applyCodeButton.addListener(SWT.Selection, e -> applyCodeToEditor());
 
         // Manual context compaction button
-        compactButton = new Button(buttonBar, SWT.PUSH);
-        compactButton.setText(Messages.ChatView_CompactContextButton);
-        compactButton.setToolTipText(Messages.ChatView_CompactContextTooltip);
-        compactButton.setFont(theme.getFont());
-        compactButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        compactButton = createChatActionButton(buttonBar, Messages.ChatView_CompactContextButton,
+                Messages.ChatView_CompactContextTooltip, CHAT_COMPACT_BUTTON_WIDTH);
         compactButton.addListener(SWT.Selection, e -> {
             if (!compactConversationHistory(false)) {
                 appendSystemMessage(Messages.ChatView_ContextCompactedSkippedNotice);
@@ -426,11 +422,8 @@ public class ChatView extends ViewPart {
         });
 
         // Model selector button — only visible when CodePilot is active
-        modelButton = new Button(buttonBar, SWT.PUSH);
-        modelButton.setText(Messages.ChatView_ModelButton);
-        modelButton.setToolTipText(Messages.ChatView_ModelButtonTooltip);
-        modelButton.setFont(theme.getFont());
-        modelButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        modelButton = createChatActionButton(buttonBar, Messages.ChatView_ModelButton,
+                Messages.ChatView_ModelButtonTooltip, CHAT_MODEL_BUTTON_WIDTH);
         modelButton.addListener(SWT.Selection, e -> openModelSelectionDialog());
         updateModelButtonVisibility();
 
@@ -450,42 +443,43 @@ public class ChatView extends ViewPart {
         spacer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
         // Stop button with icon
-        stopButton = new Button(buttonBar, SWT.PUSH);
-        stopButton.setText("\u25A0"); // ■ stop icon //$NON-NLS-1$
-        stopButton.setToolTipText(Messages.ChatView_StopButton);
-        stopButton.setFont(theme.getFont());
+        stopButton = createChatActionButton(buttonBar, "\u25A0", //$NON-NLS-1$
+                Messages.ChatView_StopButton, CHAT_ICON_BUTTON_WIDTH);
         stopButton.setEnabled(false);
-        GridData stopData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        stopData.widthHint = 36;
-        stopData.heightHint = 28;
-        stopButton.setLayoutData(stopData);
+        ((GridData) stopButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
         stopButton.addListener(SWT.Selection, e -> stopGeneration());
 
         // New Chat button — prominent action to start fresh conversation
-        newChatButton = new Button(buttonBar, SWT.PUSH);
-        newChatButton.setText("\uD83D\uDCC4+"); // 📄+ new chat icon //$NON-NLS-1$
-        newChatButton.setToolTipText(Messages.ChatView_NewChatTooltip);
-        newChatButton.setFont(theme.getFont());
-        GridData newChatData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        newChatData.widthHint = 42;
-        newChatData.heightHint = 28;
-        newChatButton.setLayoutData(newChatData);
+        newChatButton = createChatActionButton(buttonBar, "\uD83D\uDCC4+", //$NON-NLS-1$
+                Messages.ChatView_NewChatTooltip, CHAT_NEW_CHAT_BUTTON_WIDTH);
+        ((GridData) newChatButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
         newChatButton.addListener(SWT.Selection, e -> confirmAndClearChat());
 
         // Clear button with icon (legacy, kept for backward compat)
-        clearButton = new Button(buttonBar, SWT.PUSH);
-        clearButton.setText("\uD83D\uDDD1"); // 🗑 trash icon //$NON-NLS-1$
-        clearButton.setToolTipText(Messages.ChatView_ClearButton);
-        clearButton.setFont(theme.getFont());
+        clearButton = createChatActionButton(buttonBar, "\uD83D\uDDD1", //$NON-NLS-1$
+                Messages.ChatView_ClearButton, CHAT_ICON_BUTTON_WIDTH);
         clearButton.setVisible(false); // Hidden: replaced by newChatButton
-        GridData clearData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        clearData.widthHint = 36;
-        clearData.heightHint = 28;
+        GridData clearData = (GridData) clearButton.getLayoutData();
+        clearData.horizontalAlignment = SWT.RIGHT;
         clearData.exclude = true;
-        clearButton.setLayoutData(clearData);
         clearButton.addListener(SWT.Selection, e -> clearChat());
 
         refreshAttachmentPreview();
+    }
+
+    private Button createChatActionButton(Composite parent, String text, String tooltip, int widthHint) {
+        VibeTheme theme = ThemeManager.getInstance().getTheme();
+        Button button = new Button(parent, SWT.PUSH);
+        button.setText(text);
+        button.setToolTipText(tooltip);
+        button.setFont(theme.getFont());
+        GridData data = new GridData(SWT.LEFT, SWT.CENTER, false, false);
+        if (widthHint != SWT.DEFAULT) {
+            data.widthHint = widthHint;
+        }
+        data.heightHint = CHAT_ACTION_BUTTON_HEIGHT;
+        button.setLayoutData(data);
+        return button;
     }
 
     private void updateScrollSize() {
@@ -830,10 +824,75 @@ public class ChatView extends ViewPart {
             draftAttachments.clear();
             refreshAttachmentPreview();
         }
-        String prompt = MessageFormat.format(updateExisting
-                ? Messages.ChatView_UpdateCodeMdPrompt
-                : Messages.ChatView_CreateCodeMdPrompt, codeMdToolPath);
-        sendProgrammaticMessage(prompt);
+        IPath location = project.getLocation();
+        if (location == null) {
+            appendSystemMessage(Messages.CodeMdPreferencePage_NoProjectLocation);
+            updateInitCodeMdButton();
+            return;
+        }
+        ProjectMemoryInitializationService.Request request = new ProjectMemoryInitializationService.Request(
+                updateExisting
+                        ? ProjectMemoryInitializationService.Mode.UPDATE
+                        : ProjectMemoryInitializationService.Mode.CREATE,
+                Path.of(location.toOSString()),
+                project.getName(),
+                codeMdToolPath);
+        String startedMessage = updateExisting
+                ? Messages.ChatView_UpdateCodeMdStarted
+                : Messages.ChatView_CreateCodeMdStarted;
+        appendSystemMessage(startedMessage);
+        setProcessing(true, updateExisting
+                ? Messages.ChatView_UpdateCodeMdProcessingStage
+                : Messages.ChatView_CreateCodeMdProcessingStage);
+
+        CompletableFuture<ProjectMemoryInitializationService.Result> initRequest =
+                PROJECT_MEMORY_INIT_SERVICE.initialize(request);
+        currentRequest = initRequest;
+        currentRequestUsesDesktopController = true;
+        Display display = getDisplay();
+        initRequest.whenComplete((result, error) -> {
+            if (display == null || display.isDisposed()) {
+                return;
+            }
+            display.asyncExec(() -> {
+                if (isDisposed()) {
+                    return;
+                }
+                if (currentRequest == initRequest) {
+                    currentRequest = null;
+                    currentRequestUsesDesktopController = false;
+                }
+                setProcessing(false);
+                updateInitCodeMdButton();
+                appendSystemMessage(formatCodeMdInitializationResult(result, error));
+            });
+        });
+    }
+
+    private String formatCodeMdInitializationResult(ProjectMemoryInitializationService.Result result, Throwable error) {
+        if (error != null) {
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, error.getMessage());
+        }
+        if (result == null) {
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, "empty result"); //$NON-NLS-1$
+        }
+        switch (result.getStatus()) {
+        case SUCCESS:
+            return MessageFormat.format(Messages.ChatView_CodeMdInitSucceeded, sourcePathLabel(result.getSourcePath()));
+        case PROVIDER_UNAVAILABLE:
+            return Messages.ChatView_CodeMdInitProviderUnavailable;
+        case AGENT_BUSY:
+            return Messages.ChatView_CodeMdInitBusy;
+        case CODE_MD_NOT_WRITTEN:
+            return Messages.ChatView_CodeMdInitMissingFile;
+        case AGENT_FAILED:
+        default:
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, result.getMessage());
+        }
+    }
+
+    private String sourcePathLabel(Path sourcePath) {
+        return sourcePath != null ? sourcePath.toString() : ProjectMemoryContextService.CANONICAL_FILE_NAME;
     }
 
     private void updateInitCodeMdButton() {
@@ -1246,6 +1305,7 @@ public class ChatView extends ViewPart {
         requestCount++;
 
         // Send request
+        currentRequestUsesDesktopController = false;
         currentRequest = provider.complete(request)
                 .thenCompose(response -> {
                     registerUsage(response);
@@ -1344,13 +1404,14 @@ public class ChatView extends ViewPart {
 
         // Check if we hit max iterations limit
         if (response.hasToolCalls() && iteration >= maxToolIterations) {
-            LOG.warn("handleResponseWithTools: max iterations (%d) reached, stopping tool loop", maxToolIterations); //$NON-NLS-1$
+            LOG.warn("handleResponseWithTools: tool budget (%d iterations) exhausted", maxToolIterations); //$NON-NLS-1$
             // Show warning to user
             if (!display.isDisposed()) {
                 display.asyncExec(() -> {
                     if (!isDisposed()) {
                         appendSystemMessage(String.format(
-                            "⚠️ Достигнут лимит итераций (%d). Агент остановлен для предотвращения бесконечного цикла.", //$NON-NLS-1$
+                            "Исчерпан бюджет инструментов текущего ответа (%d шагов). " //$NON-NLS-1$
+                                    + "Если задача еще не завершена, отправьте короткое продолжение: \"продолжай с текущего места\".", //$NON-NLS-1$
                             maxToolIterations));
                     }
                 });
@@ -1433,7 +1494,7 @@ public class ChatView extends ViewPart {
                     setProcessingStage("Выполнение: " + toolNames.toString()); //$NON-NLS-1$
 
                     // Add rich tool call cards using browser panel
-                    if (USE_BROWSER_RENDERING && browserChatPanel != null && browserChatPanel.isBrowserAvailable()) {
+                    if (USE_BROWSER_RENDERING && browserChatPanel != null && !browserChatPanel.isDisposed()) {
                         // Show reasoning block if there's content between tool iterations
                         // (iteration > 0 means this is a follow-up after previous tool results)
                         if (currentIteration > 0 && reasoningContent != null && !reasoningContent.trim().isEmpty()) {
@@ -1686,10 +1747,9 @@ public class ChatView extends ViewPart {
             if (result == null) {
                 result = ToolResult.failure("Результат не найден"); //$NON-NLS-1$
             }
-            String resultContent = result.isSuccess()
-                    ? result.getContent()
-                    : "Error: " + result.getErrorMessage(); //$NON-NLS-1$
-            conversationHistory.add(LlmMessage.toolResult(call.getId(), resultContent));
+            conversationHistory.add(LlmMessage.toolResult(
+                    call.getId(),
+                    result.getContentForLlm(MAX_TOOL_RESULT_HISTORY_CHARS)));
         }
 
         // Plan 1.2: detect repetition loops only after all tool-result messages
@@ -1852,38 +1912,34 @@ public class ChatView extends ViewPart {
      * Updates a tool call card with the result (for browser-based rendering).
      */
     private void updateToolCallCardWithResult(ToolCall call, ToolResult result) {
-        if (USE_BROWSER_RENDERING && browserChatPanel != null && browserChatPanel.isBrowserAvailable()) {
+        if (USE_BROWSER_RENDERING && browserChatPanel != null && !browserChatPanel.isDisposed()) {
             // Determine status
             BrowserChatPanel.ToolCallStatus status = result.isSuccess()
                     ? BrowserChatPanel.ToolCallStatus.SUCCESS
                     : BrowserChatPanel.ToolCallStatus.ERROR;
 
-            // Build result summary (e.g., "1,240 chars" or error message)
+            // Build result summary (e.g., "Готово · 1,240 символов" or "Ошибка")
             String content = result.isSuccess() ? result.getContent() : result.getErrorMessage();
-            String resultSummary;
-            if (result.isSuccess() && content != null) {
-                int len = content.length();
-                if (len >= 1000) {
-                    resultSummary = String.format("%,d символов", len); //$NON-NLS-1$
-                } else {
-                    resultSummary = String.format("%d символов", len); //$NON-NLS-1$
-                }
-            } else if (!result.isSuccess()) {
-                resultSummary = "Ошибка"; //$NON-NLS-1$
-            } else {
-                resultSummary = "Выполнено"; //$NON-NLS-1$
+            int contentLength = content != null ? content.length() : 0;
+            String lengthLabel = ""; //$NON-NLS-1$
+            if (contentLength > 0) {
+                lengthLabel = contentLength >= 1000
+                        ? String.format("%,d символов", contentLength) //$NON-NLS-1$
+                        : String.format("%d символов", contentLength); //$NON-NLS-1$
             }
 
-            // Build result preview (full content with safety cap for UI responsiveness)
-            String resultPreview = ""; //$NON-NLS-1$
-            if (content != null && !content.isEmpty()) {
-                if (content.length() > MAX_TOOL_RESULT_PREVIEW_CHARS) {
-                    resultPreview = content.substring(0, MAX_TOOL_RESULT_PREVIEW_CHARS)
-                            + "\n... (обрезано в UI)"; //$NON-NLS-1$
-                } else {
-                    resultPreview = content;
-                }
+            String resultSummary;
+            if (result.isSuccess()) {
+                resultSummary = lengthLabel.isEmpty()
+                        ? "Готово" //$NON-NLS-1$
+                        : "Готово · " + lengthLabel; //$NON-NLS-1$
+            } else {
+                resultSummary = lengthLabel.isEmpty()
+                        ? "Ошибка" //$NON-NLS-1$
+                        : "Ошибка · " + lengthLabel; //$NON-NLS-1$
             }
+
+            String resultPreview = content != null ? content : ""; //$NON-NLS-1$
 
             browserChatPanel.updateToolCallResult(call.getId(), status, resultSummary, resultPreview);
         } else {
@@ -1906,10 +1962,6 @@ public class ChatView extends ViewPart {
 
         String content = result.isSuccess() ? result.getContent() : result.getErrorMessage();
         if (content != null && !content.isEmpty()) {
-            // Truncate very long results for display
-            if (content.length() > 1500) {
-                content = content.substring(0, 1500) + "\n... (обрезано)"; //$NON-NLS-1$
-            }
             sb.append(content);
         }
 
@@ -2307,7 +2359,11 @@ public class ChatView extends ViewPart {
             if (provider != null) {
                 provider.cancel();
             }
+            if (currentRequestUsesDesktopController) {
+                AgentSessionController.getInstance().stopFromDesktop();
+            }
         }
+        currentRequestUsesDesktopController = false;
         inflight.set(false);
         setProcessing(false);
     }
@@ -2858,8 +2914,19 @@ public class ChatView extends ViewPart {
             return;
         }
         String displayId = getEffectiveModelId();
-        modelButton.setText(displayId);
+        modelButton.setText(compactModelButtonLabel(displayId));
+        modelButton.setToolTipText(displayId);
         modelButton.getParent().layout(true, true);
+    }
+
+    private String compactModelButtonLabel(String modelId) {
+        if (modelId == null || modelId.length() <= CHAT_MODEL_LABEL_MAX_CHARS) {
+            return modelId;
+        }
+        int prefixLength = Math.max(8, CHAT_MODEL_LABEL_MAX_CHARS / 2 - 1);
+        int suffixLength = Math.max(8, CHAT_MODEL_LABEL_MAX_CHARS - prefixLength - 3);
+        return modelId.substring(0, prefixLength) + "..." //$NON-NLS-1$
+                + modelId.substring(modelId.length() - suffixLength);
     }
 
     /**
@@ -3063,7 +3130,11 @@ public class ChatView extends ViewPart {
     public void dispose() {
         if (currentRequest != null && !currentRequest.isDone()) {
             currentRequest.cancel(true);
+            if (currentRequestUsesDesktopController) {
+                AgentSessionController.getInstance().stopFromDesktop();
+            }
         }
+        currentRequestUsesDesktopController = false;
         conversationHistory.clear();
 
         // Dispose typing indicator

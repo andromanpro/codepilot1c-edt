@@ -134,10 +134,11 @@ function copyResponse(button) {
  * @param {string} status - CSS class for status (pending, running, success, error)
  * @param {string} statusIcon - Icon character for status
  * @param {string} summary - Result summary text (e.g., "1,240 chars")
- * @param {string} preview - Result preview text (first 200 chars)
+ * @param {string} preview - Result preview text
  */
 function updateToolCallCard(id, status, statusIcon, summary, preview) {
-    var card = document.querySelector('[data-tool-call-id="' + id + '"]');
+    var cards = document.querySelectorAll('[data-tool-call-id="' + id + '"]');
+    var card = cards.length ? cards[cards.length - 1] : null;
     if (!card) {
         console.warn('Tool call card not found:', id);
         return;
@@ -153,12 +154,20 @@ function updateToolCallCard(id, status, statusIcon, summary, preview) {
         statusEl.textContent = statusIcon + ' ' + summary;
     }
 
-    // Show result section with preview if present
     var resultEl = card.querySelector('.tool-call-result');
-    if (resultEl && preview && preview.trim()) {
-        resultEl.innerHTML = '<div class="tool-call-section-title">Результат</div>' +
-                             '<pre class="tool-call-result-preview">' + escapeHtml(preview) + '</pre>';
-        resultEl.style.display = 'block';
+    if (resultEl) {
+        if (status === 'success' && preview && preview.trim()) {
+            resultEl.innerHTML = '<div class="tool-call-section-title">Результат</div>' +
+                                 '<pre class="tool-call-result-preview">' + escapeHtml(preview) + '</pre>';
+            resultEl.style.display = 'block';
+        } else if (status === 'error' && preview && preview.trim()) {
+            resultEl.innerHTML = '<div class="tool-call-section-title">Ошибка</div>' +
+                                 '<pre class="tool-call-result-preview">' + escapeHtml(preview) + '</pre>';
+            resultEl.style.display = 'block';
+        } else {
+            resultEl.innerHTML = '';
+            resultEl.style.display = 'none';
+        }
     }
 
     // Auto-expand on error
@@ -192,6 +201,39 @@ function scrollToBottom() {
     if (container) {
         container.scrollTop = container.scrollHeight;
     }
+}
+
+/**
+ * Insert chat-flow HTML before the persistent typing indicator.
+ * The typing indicator lives inside the scroll container so it scrolls naturally,
+ * but it must remain after normal messages.
+ */
+function insertMessageFlowHtml(html) {
+    var container = document.getElementById('messages');
+    if (!container) return null;
+
+    var typing = document.getElementById('typing-indicator');
+    if (typing && typing.parentElement === container) {
+        typing.insertAdjacentHTML('beforebegin', html);
+    } else {
+        container.insertAdjacentHTML('beforeend', html);
+    }
+    return container;
+}
+
+/**
+ * Remove chat messages while preserving the persistent typing indicator node.
+ */
+function clearMessageFlow() {
+    var container = document.getElementById('messages');
+    if (!container) return;
+
+    var children = Array.prototype.slice.call(container.children);
+    children.forEach(function(child) {
+        if (child.id !== 'typing-indicator') {
+            container.removeChild(child);
+        }
+    });
 }
 
 /**

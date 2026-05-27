@@ -53,6 +53,15 @@ public class FlexmarkParser {
      * Создает новый экземпляр FlexmarkParser с настройками по умолчанию.
      */
     public FlexmarkParser() {
+        this(false);
+    }
+
+    /**
+     * Создает новый экземпляр FlexmarkParser.
+     *
+     * @param suppressHtml suppress raw HTML from markdown input
+     */
+    public FlexmarkParser(boolean suppressHtml) {
         MutableDataSet options = new MutableDataSet();
 
         // Включить расширения для GFM-совместимости
@@ -64,6 +73,13 @@ public class FlexmarkParser {
 
         // Настройки рендеринга
         options.set(HtmlRenderer.SOFT_BREAK, "<br />\n"); //$NON-NLS-1$
+        if (suppressHtml) {
+            options.set(HtmlRenderer.SUPPRESS_HTML, true);
+            options.set(HtmlRenderer.SUPPRESS_HTML_BLOCKS, true);
+            options.set(HtmlRenderer.SUPPRESS_HTML_COMMENT_BLOCKS, true);
+            options.set(HtmlRenderer.SUPPRESS_INLINE_HTML, true);
+            options.set(HtmlRenderer.SUPPRESS_INLINE_HTML_COMMENTS, true);
+        }
 
         // Настройки таблиц
         options.set(TablesExtension.COLUMN_SPANS, false);

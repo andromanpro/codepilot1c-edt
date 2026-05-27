@@ -31,8 +31,15 @@ public class Messages extends NLS {
     public static String ChatView_InitCodeMdConfirmTitle;
     public static String ChatView_CreateCodeMdConfirmMessage;
     public static String ChatView_UpdateCodeMdConfirmMessage;
-    public static String ChatView_CreateCodeMdPrompt;
-    public static String ChatView_UpdateCodeMdPrompt;
+    public static String ChatView_CreateCodeMdStarted;
+    public static String ChatView_UpdateCodeMdStarted;
+    public static String ChatView_CreateCodeMdProcessingStage;
+    public static String ChatView_UpdateCodeMdProcessingStage;
+    public static String ChatView_CodeMdInitSucceeded;
+    public static String ChatView_CodeMdInitProviderUnavailable;
+    public static String ChatView_CodeMdInitBusy;
+    public static String ChatView_CodeMdInitMissingFile;
+    public static String ChatView_CodeMdInitFailed;
     public static String ChatView_ApplyCodeTitle;
     public static String ChatView_ApplyCodeMessage;
     public static String ChatView_ReplaceSelection;
@@ -75,6 +82,10 @@ public class Messages extends NLS {
     public static String CodeMdPreferencePage_ProjectLabel;
     public static String CodeMdPreferencePage_FileLabel;
     public static String CodeMdPreferencePage_EditorLabel;
+    public static String CodeMdPreferencePage_EditTab;
+    public static String CodeMdPreferencePage_PreviewTab;
+    public static String CodeMdPreferencePage_PreviewEmpty;
+    public static String CodeMdPreferencePage_PreviewUnavailable;
     public static String CodeMdPreferencePage_Hint;
     public static String CodeMdPreferencePage_InsertTemplateButton;
     public static String CodeMdPreferencePage_ClearButton;
