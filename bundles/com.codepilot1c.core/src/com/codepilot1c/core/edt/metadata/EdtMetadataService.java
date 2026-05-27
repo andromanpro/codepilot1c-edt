@@ -6986,6 +6986,10 @@ public class EdtMetadataService {
                 queries.add("Boolean"); //$NON-NLS-1$
                 queries.add("Булево"); //$NON-NLS-1$
             }
+            case "valuestorage", "хранилищезначения" -> {
+                queries.add("ValueStorage"); //$NON-NLS-1$
+                queries.add("ХранилищеЗначения"); //$NON-NLS-1$
+            }
             default -> {
                 // no-op
             }
@@ -7591,6 +7595,7 @@ public class EdtMetadataService {
             case "number", "число" -> "Number"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "date", "дата" -> "Date"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "boolean", "bool", "булево" -> "Boolean"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            case "valuestorage", "хранилищезначения" -> "ValueStorage"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             default -> null;
         };
     }
