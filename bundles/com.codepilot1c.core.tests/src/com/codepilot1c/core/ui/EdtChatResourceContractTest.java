@@ -112,7 +112,7 @@ public class EdtChatResourceContractTest {
 
         int messagesContainer = buildHtmlDocument.indexOf("message-container\\\" id=\\\"messages"); //$NON-NLS-1$
         int typingIndicator = buildHtmlDocument.indexOf("typing-indicator\\\" id=\\\"typing-indicator"); //$NON-NLS-1$
-        int firstMessageContainerClose = buildHtmlDocument.indexOf("\\\"        </div>\\n\\\" +", messagesContainer); //$NON-NLS-1$
+        int firstMessageContainerClose = buildHtmlDocument.indexOf("\"        </div>\\n\" +", messagesContainer); //$NON-NLS-1$
         int tokenFooter = buildHtmlDocument.indexOf("id=\\\"token-footer"); //$NON-NLS-1$
         assertTrue(messagesContainer >= 0);
         assertTrue(typingIndicator > messagesContainer);
@@ -127,7 +127,8 @@ public class EdtChatResourceContractTest {
         String source = readRepoFile("bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/BrowserChatPanel.java"); //$NON-NLS-1$
         String js = readRepoFile("bundles/com.codepilot1c.ui/resources/chat.js"); //$NON-NLS-1$
         String addMessage = extractMethod(source,
-                "public void addMessage(String sender, String content, boolean isAssistant, boolean isSystem,"); //$NON-NLS-1$
+                "public void addMessage(String sender, String content, boolean isAssistant, boolean isSystem,\n" //$NON-NLS-1$
+                        + "            List<LlmAttachment> attachments, String modelName)"); //$NON-NLS-1$
         String updateLastMessage = extractMethod(source, "public void updateLastMessage(String content)"); //$NON-NLS-1$
 
         assertTrue(js.contains("function insertMessageFlowHtml(html)")); //$NON-NLS-1$
