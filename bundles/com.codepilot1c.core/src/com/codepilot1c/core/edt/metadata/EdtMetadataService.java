@@ -167,6 +167,7 @@ public class EdtMetadataService {
     private static final String VERSION_CLASS = "com._1c.g5.v8.dt.platform.version.Version"; //$NON-NLS-1$
     private static final String GUICE_INJECTOR_CLASS = "com.google.inject.Injector"; //$NON-NLS-1$
     private static final String DEFAULT_BASIC_FEATURE_TYPE = "String"; //$NON-NLS-1$
+    private static final String COMMON_MODULE_PREFIX = "CommonModule."; //$NON-NLS-1$
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtMetadataService.class);
     private static final Map<String, String> ATTRIBUTE_NAME_ALIASES = createAttributeNameAliases();
     private static final Map<String, String> TOP_LEVEL_PROPERTY_ALIASES = createTopLevelPropertyAliases();
@@ -6137,12 +6138,46 @@ public class EdtMetadataService {
                 && childFqn.charAt(targetFqn.length()) == '.';
     }
 
+    /**
+     * Normalize {@code ScheduledJob.methodName} to the canonical kind-qualified form
+     * {@code "CommonModule.<Module>.<Method>"}.
+     *
+     * <p>The 1C platform requires this format; without it, config load fails with
+     * "Ссылка на неизвестный метод" during {@code update_infobase}. CommonModule is the only
+     * valid kind for scheduled jobs.
+     *
+     * <p>Behavior:
+     * <ul>
+     *   <li>{@code "МойМодуль.МетодИмя"} → {@code "CommonModule.МойМодуль.МетодИмя"}</li>
+     *   <li>{@code "CommonModule.МойМодуль.МетодИмя"} → unchanged</li>
+     *   <li>{@code "commonmodule.МойМодуль.МетодИмя"} → {@code "CommonModule.МойМодуль.МетодИмя"}
+     *       (case canonicalized; the platform may treat the prefix as case-sensitive)</li>
+     * </ul>
+     */
+    private static String normalizeScheduledJobMethodName(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        String trimmed = value.trim();
+        if (trimmed.regionMatches(true, 0, COMMON_MODULE_PREFIX, 0, COMMON_MODULE_PREFIX.length())) {
+            return COMMON_MODULE_PREFIX + trimmed.substring(COMMON_MODULE_PREFIX.length());
+        }
+        return COMMON_MODULE_PREFIX + trimmed;
+    }
+
     private void setFeatureValue(Configuration configuration, MdObject target, String fieldName, Object value,
             IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Changing uuid is not supported", false); //$NON-NLS-1$
+        }
+        if ("methodName".equalsIgnoreCase(fieldName) //$NON-NLS-1$
+                && target != null
+                && "ScheduledJob".equals(target.eClass().getName()) //$NON-NLS-1$
+                && value instanceof String stringValue
+                && !stringValue.isBlank()) {
+            value = normalizeScheduledJobMethodName(stringValue);
         }
         // Special case: "type" on BasicFeature is a containment reference (TypeDescription),
         // which cannot be set via the generic applyReferenceValue path.
