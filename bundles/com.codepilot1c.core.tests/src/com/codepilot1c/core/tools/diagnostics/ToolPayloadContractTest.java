@@ -1,6 +1,7 @@
 package com.codepilot1c.core.tools.diagnostics;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Map;
@@ -19,6 +20,7 @@ public class ToolPayloadContractTest {
         ToolResult result = new GetInfobaseLocksTool(new InfobaseLockService(new FakeGateway(), new FakeRunner()))
                 .execute(Map.of()).join();
 
+        assertFalse(result.isSuccess());
         assertErrorEnvelope(json(result), "get_infobase_locks", "INVALID_ARGUMENT"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 

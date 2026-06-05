@@ -27,14 +27,17 @@ public class ToolResultTest {
 
     @Test
     public void payloadAccessorsPreserveFullJsonPayloads() {
-        String successPayload = "{\"status\":\"ok\"}"; //$NON-NLS-1$
-        String failurePayload = "{\"status\":\"error\"}"; //$NON-NLS-1$
+        String successPayload = "{\"status\":\"ok\",\"data\":\"" + repeat("S", 260) + "\"}"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        String failurePayload = "{\"status\":\"error\",\"message\":\"" + repeat("F", 260) + "\"}"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         ToolResult success = ToolResult.success(successPayload);
         ToolResult failure = ToolResult.failure(failurePayload);
+        int maxChars = 160;
 
         assertTrue(success.isSuccess());
+        assertTrue(success.getContentForLlm(maxChars).length() <= maxChars);
         assertEquals(successPayload, success.getContent());
         assertFalse(failure.isSuccess());
+        assertTrue(failure.getContentForLlm(maxChars).length() <= maxChars);
         assertEquals(failurePayload, failure.getErrorMessage());
     }
 
