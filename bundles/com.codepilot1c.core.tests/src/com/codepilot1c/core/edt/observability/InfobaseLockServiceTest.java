@@ -86,6 +86,24 @@ public class InfobaseLockServiceTest {
     }
 
     @Test
+    public void runtimeProcessWithDesignerPathSegmentIsSessionLock() {
+        RecordingRunner runner = new RecordingRunner();
+        runner.addStdout("ps -axo pid,ppid,user,command", //$NON-NLS-1$
+                "86155 1 alex /opt/1cv8/8.3.27.2170/1cv8 ENTERPRISE /F/tmp/designer/base"); //$NON-NLS-1$
+        runner.addStdout("lsof -nP /tmp/designer/base/1Cv8.1CD", //$NON-NLS-1$
+                """
+                COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+                1cv8    86155 alex   14u   REG   1,4        0  42 /tmp/designer/base/1Cv8.1CD
+                """);
+
+        InfobaseLockSnapshot snapshot = new InfobaseLockService(new EmptyGateway(), runner)
+                .inspect("/tmp/designer/base"); //$NON-NLS-1$
+
+        assertEquals("session", snapshot.lockKind()); //$NON-NLS-1$
+        assertTrue(snapshot.confidence() > 0.5d);
+    }
+
+    @Test
     public void ibcmdConfigWithoutImportIsSessionLock() {
         RecordingRunner runner = new RecordingRunner();
         runner.addStdout("ps -axo pid,ppid,user,command", //$NON-NLS-1$
@@ -101,6 +119,20 @@ public class InfobaseLockServiceTest {
 
         assertEquals("session", snapshot.lockKind()); //$NON-NLS-1$
         assertTrue(snapshot.confidence() > 0.5d);
+    }
+
+    @Test
+    public void malformedPathReturnsUnknownWithEvidence() {
+        RecordingRunner runner = new RecordingRunner();
+
+        InfobaseLockSnapshot snapshot = new InfobaseLockService(new EmptyGateway(), runner)
+                .inspect("bad\0path"); //$NON-NLS-1$
+
+        assertEquals("unknown", snapshot.lockKind()); //$NON-NLS-1$
+        assertEquals("", snapshot.normalizedPath()); //$NON-NLS-1$
+        assertTrue(snapshot.evidence().stream()
+                .anyMatch(line -> line.toLowerCase(java.util.Locale.ROOT).contains("invalid path"))); //$NON-NLS-1$
+        assertTrue(runner.commands().isEmpty());
     }
 
     private static class EmptyGateway extends EdtObservabilityGateway {

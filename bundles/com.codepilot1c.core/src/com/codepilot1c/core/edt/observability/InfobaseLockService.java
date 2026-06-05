@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.observability;
 
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -50,7 +51,13 @@ public class InfobaseLockService {
         }
 
         String normalized = normalizePathOrConnection(input);
-        Path normalizedPath = Path.of(normalized).normalize();
+        Path normalizedPath;
+        try {
+            normalizedPath = Path.of(normalized).normalize();
+        } catch (InvalidPathException e) {
+            evidence.add("invalid path: " + e.getMessage()); //$NON-NLS-1$
+            return new InfobaseLockSnapshot(input, "", List.of(), "unknown", 0.0d, evidence, List.of(), List.of()); //$NON-NLS-1$ //$NON-NLS-2$
+        }
         List<Path> candidates = candidatePaths(normalizedPath);
         Set<Long> lsofPids = new LinkedHashSet<>();
         List<String> inspectedPaths = new ArrayList<>();
@@ -134,9 +141,10 @@ public class InfobaseLockService {
 
     private static boolean isConfigurationEvidence(OneCProcessSnapshot process) {
         String type = process.processType();
-        String command = process.commandLine().toLowerCase(Locale.ROOT);
+        String commandLine = process.commandLine() == null ? "" : process.commandLine(); //$NON-NLS-1$
+        String command = commandLine.toLowerCase(Locale.ROOT);
         return "designer_session".equals(type) //$NON-NLS-1$
-                || command.contains(" designer") //$NON-NLS-1$
+                || OneCProcessInspectionService.hasCommandToken(commandLine, "DESIGNER") //$NON-NLS-1$
                 || CONFIG_COMMAND_WORD.matcher(command).find();
     }
 

@@ -188,7 +188,7 @@ public class OneCProcessInspectionService {
         }
         boolean oneCClient = name.equals("1cv8") || name.equals("1cv8.exe") //$NON-NLS-1$ //$NON-NLS-2$
                 || name.equals("1cv8c") || name.equals("1cv8c.exe"); //$NON-NLS-1$ //$NON-NLS-2$
-        if (oneCClient && commandLine != null && commandLine.toUpperCase(Locale.ROOT).contains("DESIGNER")) { //$NON-NLS-1$
+        if (oneCClient && hasCommandToken(commandLine, "DESIGNER")) { //$NON-NLS-1$
             return "designer_session"; //$NON-NLS-1$
         }
         if (oneCClient) {
@@ -263,6 +263,18 @@ public class OneCProcessInspectionService {
             return true;
         }
         return Character.isLetter(next) && nextIndex + 1 < text.length() && text.charAt(nextIndex + 1) == ':';
+    }
+
+    static boolean hasCommandToken(String commandLine, String expectedToken) {
+        if (expectedToken == null || expectedToken.isBlank()) {
+            return false;
+        }
+        for (String token : tokenize(commandLine)) {
+            if (stripQuotes(token).equalsIgnoreCase(expectedToken)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<String> tokenize(String commandLine) {

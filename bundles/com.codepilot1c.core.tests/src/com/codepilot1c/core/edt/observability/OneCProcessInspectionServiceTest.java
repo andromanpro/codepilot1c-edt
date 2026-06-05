@@ -27,6 +27,16 @@ public class OneCProcessInspectionServiceTest {
     }
 
     @Test
+    public void pathSegmentNamedDesignerDoesNotMakeRuntimeSessionDesigner() {
+        OneCProcessSnapshot session = OneCProcessInspectionService.classify(
+                86155L, 1L, "alex", //$NON-NLS-1$
+                "/opt/1cv8/8.3.27.2170/1cv8 ENTERPRISE /F/tmp/designer/base"); //$NON-NLS-1$
+
+        assertEquals("session", session.processType()); //$NON-NLS-1$
+        assertTrue(session.infobasePaths().contains("/tmp/designer/base")); //$NON-NLS-1$
+    }
+
+    @Test
     public void enrichesProcessRowsWithPortsAndChildren() {
         FakeRunner runner = new FakeRunner();
         runner.add("ps -axo pid,ppid,user,command", //$NON-NLS-1$
