@@ -8,6 +8,7 @@
 package com.codepilot1c.core.tools;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -22,6 +23,19 @@ public class ToolResultTest {
         ToolResult result = ToolResult.success("short result"); //$NON-NLS-1$
 
         assertEquals("short result", result.getContentForLlm(100)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void payloadAccessorsPreserveFullJsonPayloads() {
+        String successPayload = "{\"status\":\"ok\"}"; //$NON-NLS-1$
+        String failurePayload = "{\"status\":\"error\"}"; //$NON-NLS-1$
+        ToolResult success = ToolResult.success(successPayload);
+        ToolResult failure = ToolResult.failure(failurePayload);
+
+        assertTrue(success.isSuccess());
+        assertEquals(successPayload, success.getContent());
+        assertFalse(failure.isSuccess());
+        assertEquals(failurePayload, failure.getErrorMessage());
     }
 
     @Test
