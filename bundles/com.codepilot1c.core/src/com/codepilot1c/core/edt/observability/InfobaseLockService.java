@@ -137,8 +137,7 @@ public class InfobaseLockService {
         String command = process.commandLine().toLowerCase(Locale.ROOT);
         return "designer_session".equals(type) //$NON-NLS-1$
                 || command.contains(" designer") //$NON-NLS-1$
-                || CONFIG_COMMAND_WORD.matcher(command).find()
-                || ("ibcmd".equals(type) && command.contains("config")); //$NON-NLS-1$ //$NON-NLS-2$
+                || CONFIG_COMMAND_WORD.matcher(command).find();
     }
 
     private static Set<Long> parseLsofPids(String stdout) {

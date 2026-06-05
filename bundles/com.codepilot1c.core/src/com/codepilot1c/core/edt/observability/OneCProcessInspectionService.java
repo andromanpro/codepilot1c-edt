@@ -216,7 +216,7 @@ public class OneCProcessInspectionService {
         String upper = text.toUpperCase(Locale.ROOT);
         int start = -1;
         for (int index = upper.indexOf("/F"); index >= 0; index = upper.indexOf("/F", index + 2)) { //$NON-NLS-1$ //$NON-NLS-2$
-            if (index == 0 || Character.isWhitespace(text.charAt(index - 1)) || text.charAt(index - 1) == ';') {
+            if (isFileBaseFlag(text, index)) {
                 start = index + 2;
                 break;
             }
@@ -246,6 +246,23 @@ public class OneCProcessInspectionService {
         }
         String path = stripQuotes(text.substring(index, end).strip());
         return path.isBlank() ? Optional.empty() : Optional.of(path);
+    }
+
+    private static boolean isFileBaseFlag(String text, int index) {
+        boolean startsSegment = index == 0 || Character.isWhitespace(text.charAt(index - 1))
+                || text.charAt(index - 1) == ';';
+        if (!startsSegment) {
+            return false;
+        }
+        int nextIndex = index + 2;
+        if (nextIndex >= text.length()) {
+            return true;
+        }
+        char next = text.charAt(nextIndex);
+        if (Character.isWhitespace(next) || next == '"' || next == '\'' || next == '/' || next == '\\') {
+            return true;
+        }
+        return Character.isLetter(next) && nextIndex + 1 < text.length() && text.charAt(nextIndex + 1) == ':';
     }
 
     private static List<String> tokenize(String commandLine) {
