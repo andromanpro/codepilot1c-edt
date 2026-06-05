@@ -159,6 +159,10 @@ public class ToolRegistry {
         register(new InspectTemplateTool());
         register(new YaxunitAuthoringTool());
         register(new EdtDiagnosticsTool());
+        register(new GetOneCProcessesTool());
+        register(new GetInfobaseLocksTool());
+        register(new GetStandaloneServerStatusTool());
+        register(new TailEdtLogsTool());
         register(new ExtensionManageTool());
         register(new EdtExtensionSmokeTool());
         register(new DcsManageTool());

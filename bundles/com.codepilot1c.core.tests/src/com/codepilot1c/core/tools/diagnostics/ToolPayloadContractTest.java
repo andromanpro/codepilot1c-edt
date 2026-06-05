@@ -4,10 +4,15 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.edt.observability.CommandResult;
+import com.codepilot1c.core.edt.observability.CommandRunner;
+import com.codepilot1c.core.edt.observability.EdtObservabilityGateway;
 import com.codepilot1c.core.edt.observability.InfobaseLockService;
 import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.JsonObject;
@@ -37,5 +42,19 @@ public class ToolPayloadContractTest {
         assertTrue(json.has("message")); //$NON-NLS-1$
         assertTrue(json.has("recoverable")); //$NON-NLS-1$
         assertTrue(json.has("details")); //$NON-NLS-1$
+    }
+
+    private static class FakeGateway extends EdtObservabilityGateway {
+        @Override
+        public List<ProcessHandle> allProcesses() {
+            return List.of();
+        }
+    }
+
+    private static class FakeRunner implements CommandRunner {
+        @Override
+        public CommandResult run(List<String> command, Duration timeout) {
+            return new CommandResult(1, "", "", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
     }
 }
