@@ -5239,6 +5239,7 @@ public class EdtMetadataService {
             case "dataprocessor", "обработка" -> configuration.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
             case "constant", "константа" -> configuration.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
             case "subsystem", "subsystems", "подсистема" -> configuration.getSubsystems(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "httpservice", "httpсервис" -> configuration.getHttpServices(); //$NON-NLS-1$ //$NON-NLS-2$
             default -> Collections.emptyList();
         };
         for (MdObject object : topLevel) {
