@@ -41,6 +41,10 @@ import org.eclipse.emf.ecore.EEnumLiteral;
 import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
 import org.eclipse.emf.ecore.util.EcoreUtil;
+import org.eclipse.emf.ecore.resource.ResourceSet;
+import org.eclipse.xtext.resource.IEObjectDescription;
+import com._1c.g5.v8.dt.platform.IEObjectProvider;
+import com._1c.g5.v8.dt.platform.version.Version;
 
 import com._1c.g5.v8.bm.core.IBmCrossReference;
 import com._1c.g5.v8.bm.core.IBmEngine;
@@ -577,7 +581,7 @@ public class EdtMetadataService {
             Form formModel = resolveManagedFormModel(basicForm, applyFormFqn);
             applyFormRootPropertiesIfNeeded(basicForm, request);
             FormAttributeRecipeStats stats = hasAttributes
-                    ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
+                    ? applyFormAttributeRecipe(project, formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
                     : new FormAttributeRecipeStats();
             List<String> summaries = hasLayoutOps
                     ? applyFormModelOperations(formModel, request.layoutOperations())
@@ -1919,6 +1923,7 @@ public class EdtMetadataService {
     }
 
     private FormAttributeRecipeStats applyFormAttributeRecipe(
+            IProject project,
             Form formModel,
             List<Map<String, Object>> attributes,
             FormRecipeMode mode,
@@ -2002,12 +2007,12 @@ public class EdtMetadataService {
                 created.setName(name);
                 FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
                 if (patch.typeValue != null) {
-                    applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
+                    applyFormAttributeType(project, created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
                 applyFormAttributePatch(created, patch.patch);
                 formModel.getAttributes().add(created);
                 if (patch.columnsValue != null) {
-                    applyFormAttributeColumns(formModel, created, patch.columnsValue,
+                    applyFormAttributeColumns(project, formModel, created, patch.columnsValue,
                             transaction, preResolvedTypes, txConfiguration);
                 }
                 stats.created++;
@@ -2025,11 +2030,11 @@ public class EdtMetadataService {
             }
             FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
             if (patch.typeValue != null) {
-                applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
+                applyFormAttributeType(project, existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
             applyFormAttributePatch(existing, patch.patch);
             if (patch.columnsValue != null) {
-                applyFormAttributeColumns(formModel, existing, patch.columnsValue,
+                applyFormAttributeColumns(project, formModel, existing, patch.columnsValue,
                         transaction, preResolvedTypes, txConfiguration);
             }
             stats.updated++;
@@ -2100,6 +2105,7 @@ public class EdtMetadataService {
     }
 
     private void applyFormAttributeType(
+            IProject project,
             AbstractFormAttribute attribute,
             Object typeValue,
             IBmPlatformTransaction transaction,
@@ -2146,6 +2152,9 @@ public class EdtMetadataService {
                     txTypeItem = simple;
                 }
             }
+        }
+        if (txTypeItem == null) {
+            txTypeItem = resolveFormAttributeTypeFromPlatform(project, attribute, typeSpec, txConfiguration);
         }
         if (txTypeItem == null) {
             throw new MetadataOperationException(
@@ -2294,6 +2303,7 @@ public class EdtMetadataService {
      * for column value-type resolution.
      */
     private void applyFormAttributeColumns(
+            IProject project,
             Form formModel,
             FormAttribute attribute,
             Object columnsValue,
@@ -2352,8 +2362,97 @@ public class EdtMetadataService {
                 columnType = getMapValueIgnoreCase(spec, "fieldType"); //$NON-NLS-1$
             }
             if (columnType != null) {
-                applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
+                applyFormAttributeType(project, column, columnType, transaction, preResolvedTypes, txConfiguration);
             }
+        }
+    }
+
+    /**
+     * Resolves a platform value-type (ValueTable etc.) for a form attribute from
+     * the version-scoped platform type registry ({@link IEObjectProvider}). Used
+     * as a fallback when the BM/configuration resolvers cannot find the type
+     * (they only know metadata objects and primitives). This is the same
+     * mechanism {@code EdtPlatformDocumentationService} uses to enumerate
+     * built-in platform types; the configuration-scoped {@code TypeProviderService}
+     * does not expose platform value-types for a freshly created form attribute.
+     */
+    private TypeItem resolveFormAttributeTypeFromPlatform(
+            IProject project,
+            AbstractFormAttribute attribute,
+            TypeSpec typeSpec,
+            Configuration txConfiguration
+    ) {
+        if (attribute == null || typeSpec == null) {
+            return null;
+        }
+        Set<String> queries = expandTypeQueries(typeSpec.typeQuery());
+        if (queries.isEmpty()) {
+            return null;
+        }
+        Version version;
+        try {
+            version = gateway.resolvePlatformVersion(project);
+        } catch (RuntimeException e) {
+            LOG.debug("resolveFormAttributeTypeFromPlatform: no platform version: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
+        if (version == null) {
+            return null;
+        }
+        IEObjectProvider.Registry registry = IEObjectProvider.Registry.INSTANCE;
+        IEObjectProvider provider = registry.get(McorePackage.Literals.TYPE_ITEM, version);
+        Iterable<IEObjectDescription> descriptions =
+                provider == null ? null : provider.getEObjectDescriptions(null);
+        if (descriptions == null || !descriptions.iterator().hasNext()) {
+            // Some platform versions expose only the TYPE provider.
+            provider = registry.get(McorePackage.Literals.TYPE, version);
+            descriptions = provider == null ? null : provider.getEObjectDescriptions(null);
+        }
+        if (descriptions == null) {
+            return null;
+        }
+        ResourceSet resourceSet = resolveModelResourceSet(project, attribute, txConfiguration);
+        if (resourceSet == null) {
+            return null;
+        }
+        for (IEObjectDescription description : descriptions) {
+            if (description == null) {
+                continue;
+            }
+            EObject candidate = description.getEObjectOrProxy();
+            if (candidate == null) {
+                continue;
+            }
+            EObject resolved = EcoreUtil.resolve(candidate, resourceSet);
+            if (resolved == null || resolved.eIsProxy()) {
+                continue;
+            }
+            if (resolved instanceof TypeItem typeItem && matchesTypeRef(typeItem, queries)) {
+                // Platform TypeItem is NOT a BM object; TypeDescription.types is
+                // non-containment (cross-resource reference). Do NOT call
+                // transaction.toTransactionObject() on it.
+                return typeItem;
+            }
+        }
+        return null;
+    }
+
+    private ResourceSet resolveModelResourceSet(
+            IProject project,
+            AbstractFormAttribute attribute,
+            Configuration txConfiguration
+    ) {
+        if (attribute != null && attribute.eResource() != null) {
+            return attribute.eResource().getResourceSet();
+        }
+        if (txConfiguration != null && txConfiguration.eResource() != null) {
+            return txConfiguration.eResource().getResourceSet();
+        }
+        try {
+            return gateway.getResourceSetProvider().get(project);
+        } catch (RuntimeException e) {
+            LOG.debug("resolveModelResourceSet: no resource set for project: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
         }
     }
 
@@ -2369,14 +2468,13 @@ public class EdtMetadataService {
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
                 }
+                // BM miss for a non-simple type is not fatal here: it may be a platform
+                // value-type (ValueTable etc.) resolved later with form-attribute context
+                // by applyFormAttributeType's platform fallback. A genuinely invalid type
+                // still errors there ("Type value cannot be resolved for form attribute").
             }
             return null;
         });
