@@ -89,6 +89,7 @@ import com._1c.g5.v8.dt.form.model.UsualGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.UsualGroupRepresentation;
 import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.FormItemContainer;
+import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
@@ -854,20 +855,44 @@ public class EdtMetadataService {
                     rejectTableIncompatibleFieldType(parentContainer, operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
-                    FormField field = addFieldItem(
-                            formModel,
-                            parentContainer,
-                            operation,
-                            name,
-                            index,
-                            itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
-                    if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(field, effectiveSet);
+                    FormAttribute valueTableAttribute = findValueTableFormAttribute(formModel, name);
+                    if (valueTableAttribute != null && itemManagementService != null) {
+                        // A ValueTable attribute must be rendered as a Table item with
+                        // column fields, not a flat FormField (which 1C cannot display).
+                        Table table = addTableItem(
+                                formModel,
+                                parentContainer,
+                                operation,
+                                name,
+                                index,
+                                itemManagementService);
+                        // Table binding is set in addTableItem (setDataPath); the
+                        // data-path / field-type keys are not Table properties and
+                        // would fail applyFormPropertySet ("Unknown form property").
+                        Map<String, Object> tableSet = stripMapKeysIgnoreCase(effectiveSet,
+                                "data_path", "datapath", "path", "type", "field_type", "fieldType"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                        if (!tableSet.isEmpty()) {
+                            applyFormPropertySet(table, tableSet);
+                        }
+                        applyDefaultVisibility(table, tableSet);
+                        summaries.add("add_field[" + operationIndex + "]: name=" + table.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", id=" + safeItemId(table) + " (ValueTable -> Table)"); //$NON-NLS-1$ //$NON-NLS-2$
+                    } else {
+                        FormField field = addFieldItem(
+                                formModel,
+                                parentContainer,
+                                operation,
+                                name,
+                                index,
+                                itemManagementService);
+                        if (!effectiveSet.isEmpty()) {
+                            applyFormPropertySet(field, effectiveSet);
+                        }
+                        applyDefaultVisibility(field, effectiveSet);
+                        summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                                + safeItemId(field)); //$NON-NLS-1$
                     }
-                    applyDefaultVisibility(field, effectiveSet);
-                    summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
-                            + safeItemId(field)); //$NON-NLS-1$
                 }
                 case "setitemprops", "setitem", "updateitem", "set" -> {
                     FormItem item = resolveRequiredItem(formModel, operation);
@@ -1074,6 +1099,62 @@ public class EdtMetadataService {
         applyTitleValue(field, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
         insertItemIntoContainer(parentContainer, field, index);
         return field;
+    }
+
+    /**
+     * Finds a form attribute by name whose value type is the platform
+     * {@code ValueTable} type. Such an attribute must be placed on the form as
+     * a {@link Table} item (with column fields), not a flat {@link FormField}.
+     */
+    private FormAttribute findValueTableFormAttribute(Form formModel, String attributeName) {
+        if (formModel == null || attributeName == null || attributeName.isBlank()) {
+            return null;
+        }
+        String token = normalizeToken(attributeName);
+        Set<String> valueTableQueries = Set.of("ValueTable", "ТаблицаЗначений"); //$NON-NLS-1$ //$NON-NLS-2$
+        for (FormAttribute attribute : formModel.getAttributes()) {
+            if (attribute == null || attribute.getName() == null) {
+                continue;
+            }
+            if (!normalizeToken(attribute.getName()).equals(token)) {
+                continue;
+            }
+            TypeDescription valueType = attribute.getValueType();
+            if (valueType == null) {
+                return null;
+            }
+            for (TypeItem typeItem : valueType.getTypes()) {
+                if (typeItem != null && matchesTypeRef(typeItem, valueTableQueries)) {
+                    return attribute;
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /**
+     * Adds a {@link Table} item bound to a ValueTable form attribute via the
+     * EDT form item service, then materializes its column fields from the
+     * attribute's data path.
+     */
+    private Table addTableItem(
+            Form formModel,
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String name,
+            Integer index,
+            IFormItemManagementService itemManagementService) {
+        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        DataPath dataPath = toDataPath(name, "data_path"); //$NON-NLS-1$
+        int insertAt = (index != null && index.intValue() >= 0
+                && index.intValue() <= parentContainer.getItems().size())
+                ? index.intValue()
+                : parentContainer.getItems().size();
+        Table table = itemManagementService.addTable(parentContainer, insertAt, formModel, descriptor);
+        table.setDataPath(dataPath);
+        itemManagementService.addTableFieldsByDataPath(table, dataPath, formModel, descriptor);
+        return table;
     }
 
     private FormCommand addCommandToForm(
