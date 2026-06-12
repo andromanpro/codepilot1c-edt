@@ -88,6 +88,8 @@ import com._1c.g5.v8.dt.form.model.FormItemContainer;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.Event;
+import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
@@ -965,6 +967,55 @@ public class EdtMetadataService {
                     summaries.add("add_button[" + operationIndex + "]: name=" + button.getName() //$NON-NLS-1$ //$NON-NLS-2$
                             + ", id=" + safeItemId(button) //$NON-NLS-1$
                             + (commandRef != null ? ", command=" + commandRef : "")); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addhandler", "add_handler", "addeventhandler", "set_handler" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    String event = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+                    if (event == null || event.isBlank()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "add_handler requires 'event' (e.g. OnCreateAtServer)", false); //$NON-NLS-1$
+                    }
+                    String handlerName = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (handlerName == null || handlerName.isBlank()) {
+                        handlerName = event;
+                    }
+                    Event targetEvent = null;
+                    for (Event ev : formModel.getFormEvents()) {
+                        if (ev != null && event.equalsIgnoreCase(ev.getName())) {
+                            targetEvent = ev;
+                            break;
+                        }
+                    }
+                    if (targetEvent == null) {
+                        java.util.List<String> available = new java.util.ArrayList<>();
+                        for (Event ev : formModel.getFormEvents()) {
+                            if (ev != null) {
+                                available.add(ev.getName());
+                            }
+                        }
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.METADATA_NOT_FOUND,
+                                "Form event not found: " + event + ". Available: " + String.join(", ", available), false); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
+                    EventHandler existingHandler = null;
+                    for (EventHandler h : formModel.getHandlers()) {
+                        if (h != null && h.getEvent() == targetEvent) {
+                            existingHandler = h;
+                            break;
+                        }
+                    }
+                    if (existingHandler != null) {
+                        existingHandler.setName(handlerName);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName + " (updated)"); //$NON-NLS-1$ //$NON-NLS-2$
+                    } else {
+                        EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
+                        handler.setEvent(targetEvent);
+                        handler.setName(handlerName);
+                        formModel.getHandlers().add(handler);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
