@@ -861,6 +861,7 @@ public class EdtMetadataService {
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(field, effectiveSet);
                     }
+                    ensureFormFieldExtInfo(field);
                     applyDefaultVisibility(field, effectiveSet);
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
@@ -875,6 +876,9 @@ public class EdtMetadataService {
                     }
                     rejectTableAsSetItemType(operation, set, item);
                     applyFormPropertySet(item, set);
+                    if (item instanceof FormField) {
+                        ensureFormFieldExtInfo((FormField) item);
+                    }
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "removeitem", "deleteitem" -> {
@@ -1424,9 +1428,6 @@ public class EdtMetadataService {
             return null;
         }
         FieldExtInfo existing = field.getExtInfo();
-        if (existing != null) {
-            return existing;
-        }
         ManagedFormFieldType type = field.getType();
         FieldExtInfo created = switch (type == null ? ManagedFormFieldType.INPUT_FIELD : type) {
             case LABEL_FIELD -> FormFactory.eINSTANCE.createLabelFieldExtInfo();
@@ -1450,6 +1451,9 @@ public class EdtMetadataService {
             case GRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createFlowchartFieldExtInfo();
             default -> FormFactory.eINSTANCE.createInputFieldExtInfo();
         };
+        if (existing != null && existing.getClass() == created.getClass()) {
+            return existing;
+        }
         field.setExtInfo(created);
         return created;
     }
