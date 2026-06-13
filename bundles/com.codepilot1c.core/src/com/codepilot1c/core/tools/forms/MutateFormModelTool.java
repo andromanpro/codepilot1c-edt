@@ -47,12 +47,12 @@ public class MutateFormModelTool extends AbstractTool {
                     "properties": {
                       "op": {
                         "type": "string",
-                        "enum": ["set_form_props", "add_group", "add_field", "add_command", "add_button", "set_item", "remove_item", "move_item"],
-                        "description": "Visual form operation. add_field creates a UI item, not a form attribute; create attributes with apply_form_recipe first."
+                        "enum": ["set_form_props", "add_group", "add_field", "add_table", "add_command", "add_button", "set_item", "remove_item", "move_item"],
+                        "description": "Visual form operation. add_field creates a simple UI field; add_table creates a Table item and, with data_path to a ValueTable/ValueTree/tabular attribute, auto-generates its columns. Neither creates the form attribute — create attributes with apply_form_recipe first."
                       },
                       "data_path": {
                         "type": "string",
-                        "description": "For add_field/set_item, data_path must reference an existing form attribute. Use inspect_form_layout to confirm names."
+                        "description": "For add_field/add_table/set_item, data_path must reference an existing form attribute. For add_table point it at a ValueTable/ValueTree/tabular attribute to auto-generate columns. Use inspect_form_layout to confirm names."
                       },
                       "type": {
                         "type": "string",

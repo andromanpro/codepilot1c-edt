@@ -63,6 +63,7 @@ import com._1c.g5.v8.dt.form.model.DataPath;
 import com._1c.g5.v8.dt.form.model.DynamicListExtInfo;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttribute;
+import com._1c.g5.v8.dt.form.model.FormAttributeColumn;
 import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
@@ -81,6 +82,7 @@ import com._1c.g5.v8.dt.form.model.UsualGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.UsualGroupRepresentation;
 import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.FormItemContainer;
+import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
@@ -861,6 +863,37 @@ public class EdtMetadataService {
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
                 }
+                case "addtable", "createtable" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid table name: " + name, false); //$NON-NLS-1$
+                    }
+                    Object dataPathValue = getMapValueIgnoreCase(operation, "data_path"); //$NON-NLS-1$
+                    if (dataPathValue == null) {
+                        dataPathValue = getMapValueIgnoreCase(operation, "dataPath"); //$NON-NLS-1$
+                    }
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Table table = addTableItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            dataPathValue,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> set = extractAddFieldSet(operation);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(
+                            set, "name", "title", "type", "data_path", "datapath"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(table, effectiveSet);
+                    }
+                    applyDefaultVisibility(table, effectiveSet);
+                    summaries.add("add_table[" + operationIndex + "]: name=" + table.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(table)); //$NON-NLS-1$
+                }
                 case "setitemprops", "setitem", "updateitem", "set" -> {
                     FormItem item = resolveRequiredItem(formModel, operation);
                     Map<String, Object> set = extractOperationSet(operation);
@@ -1065,6 +1098,41 @@ public class EdtMetadataService {
         applyTitleValue(field, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
         insertItemIntoContainer(parentContainer, field, index);
         return field;
+    }
+
+    /**
+     * Adds a visual {@code Table} item via EDT's form item service. When {@code data_path} points to
+     * a collection attribute (ValueTable/ValueTree or a tabular section), {@code createColumns=true}
+     * makes EDT auto-generate the column fields from that attribute — the same result as dragging the
+     * attribute onto the form. A simple {@code add_field} cannot do this (a table is a distinct item
+     * kind, not a FormField type).
+     */
+    private Table addTableItem(
+            Form formModel,
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String name,
+            Object dataPathValue,
+            Integer index,
+            IFormItemManagementService itemManagementService) {
+        if (itemManagementService == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Form item management service is unavailable; cannot create a form table.", false); //$NON-NLS-1$
+        }
+        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        boolean atIndex = index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size();
+        if (dataPathValue != null) {
+            AbstractDataPath path = toDataPath(dataPathValue, "data_path"); //$NON-NLS-1$
+            if (atIndex) {
+                return itemManagementService.addTable(parentContainer, path, true, index.intValue(), formModel, descriptor);
+            }
+            return itemManagementService.addTable(parentContainer, path, true, formModel, descriptor);
+        }
+        if (atIndex) {
+            return itemManagementService.addTable(parentContainer, index.intValue(), formModel, descriptor);
+        }
+        return itemManagementService.addTable(parentContainer, formModel, descriptor);
     }
 
     private FormCommand addCommandToForm(
@@ -1896,12 +1964,17 @@ public class EdtMetadataService {
                 FormAttribute created = FormFactory.eINSTANCE.createFormAttribute();
                 created.setId(nextFormAttributeId(formModel));
                 created.setName(name);
+                // Attach the attribute to the form (and thus the project resource) BEFORE resolving
+                // its type: TypeProviderService requires the context object to be contained in the
+                // project to compute the available types, otherwise it raises
+                // "Object must be contained in project".
+                formModel.getAttributes().add(created);
                 FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
                 if (patch.typeValue != null) {
                     applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
                 applyFormAttributePatch(created, patch.patch);
-                formModel.getAttributes().add(created);
+                applyFormAttributeColumns(formModel, created, patch.columns, transaction, preResolvedTypes, txConfiguration);
                 stats.created++;
                 byId.put(created.getId(), created);
                 if (created.getName() != null) {
@@ -1920,6 +1993,7 @@ public class EdtMetadataService {
                 applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
             applyFormAttributePatch(existing, patch.patch);
+            applyFormAttributeColumns(formModel, existing, patch.columns, transaction, preResolvedTypes, txConfiguration);
             stats.updated++;
         }
 
@@ -1967,6 +2041,13 @@ public class EdtMetadataService {
             typeValue = setType != null ? setType : propsType;
         }
 
+        Object columnsValue = removeMapValueIgnoreCase(patch, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        Object setColumns = removeMapValueIgnoreCase(set, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        Object propsColumns = removeMapValueIgnoreCase(props, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (columnsValue == null) {
+            columnsValue = setColumns != null ? setColumns : propsColumns;
+        }
+
         if (!set.isEmpty()) {
             patch.put("set", set); //$NON-NLS-1$
         } else {
@@ -1977,11 +2058,11 @@ public class EdtMetadataService {
         } else {
             patch.remove("properties"); //$NON-NLS-1$
         }
-        return new FormAttributePatch(patch, typeValue);
+        return new FormAttributePatch(patch, typeValue, asListOfMaps(columnsValue));
     }
 
     private void applyFormAttributeType(
-            FormAttribute attribute,
+            AbstractFormAttribute attribute,
             Object typeValue,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
@@ -2027,6 +2108,13 @@ public class EdtMetadataService {
                     txTypeItem = simple;
                 }
             }
+        }
+        if (txTypeItem == null) {
+            // Last resort: resolve from the set EDT reports as available for this form-attribute
+            // context (TypeProviderService — the form Type Chooser engine). This is the authoritative
+            // list of valid form-attribute types and covers form-valid platform value types
+            // (ValueTable/ValueTree/Picture/Color/...) that the metadata lookups above cannot find.
+            txTypeItem = resolveFormAttributeTypeViaProvider(attribute, typeSpec, transaction);
         }
         if (txTypeItem == null) {
             throw new MetadataOperationException(
@@ -2076,6 +2164,83 @@ public class EdtMetadataService {
         }
 
         setTypeDescriptionOnEObject(attribute, typeDesc);
+    }
+
+    /**
+     * Resolves a form-attribute value type from the set EDT reports as available for this exact
+     * context, using {@code TypeProviderService} (the engine behind the form Type Chooser dialog).
+     * This is the authoritative set of valid form-attribute types — primitives, references and
+     * form-valid platform value types (ValueTable, ValueTree, Picture, Color, Font, ValueList, ...).
+     * Returns {@code null} when the requested type is not an available form type, so the caller
+     * fails with its standard message (which is correct: EDT itself does not offer that type for a
+     * form attribute).
+     */
+    private TypeItem resolveFormAttributeTypeViaProvider(
+            AbstractFormAttribute attribute,
+            TypeSpec typeSpec,
+            IBmPlatformTransaction transaction
+    ) {
+        if (attribute == null || typeSpec == null) {
+            return null;
+        }
+        String wanted = normalizeTypeRootToken(typeSpec.typeQuery());
+        if (wanted.isBlank()) {
+            return null;
+        }
+        EStructuralFeature valueTypeFeature = resolveStructuralFeatureIgnoreCase(attribute, "valueType"); //$NON-NLS-1$
+        if (!(valueTypeFeature instanceof EReference valueTypeReference)) {
+            return null;
+        }
+        TypeDescriptionInfoWithTypeInfo info;
+        try {
+            info = TypeProviderService.INSTANCE.getTypeDescriptionInfoWithTypeInfo(attribute, valueTypeReference, null);
+        } catch (RuntimeException e) {
+            LOG.debug("resolveFormAttributeTypeViaProvider: provider failed for type=%s: %s", //$NON-NLS-1$
+                    typeSpec.typeQuery(), e.getMessage());
+            return null;
+        }
+        if (info == null || info.getTypeInfos() == null) {
+            return null;
+        }
+        for (TypeInfo typeInfo : info.getTypeInfos()) {
+            if (typeInfo == null || typeInfo.getType() == null || !formTypeInfoMatches(wanted, typeInfo)) {
+                continue;
+            }
+            TypeItem type = typeInfo.getType();
+            try {
+                TypeItem txType = transaction.toTransactionObject(type);
+                if (txType != null) {
+                    return txType;
+                }
+            } catch (RuntimeException e) {
+                LOG.debug("resolveFormAttributeTypeViaProvider: toTransactionObject failed for type=%s: %s", //$NON-NLS-1$
+                        wanted, e.getMessage());
+            }
+            return type;
+        }
+        LOG.debug("resolveFormAttributeTypeViaProvider: '%s' is not an available form-attribute type", //$NON-NLS-1$
+                typeSpec.typeQuery());
+        return null;
+    }
+
+    private boolean formTypeInfoMatches(String wantedRootToken, TypeInfo typeInfo) {
+        TypeItem type = typeInfo.getType();
+        if (matchesFormTypeToken(wantedRootToken, type.getName())
+                || matchesFormTypeToken(wantedRootToken, type.getNameRu())) {
+            return true;
+        }
+        if (typeInfo.getCode() != null && matchesFormTypeToken(wantedRootToken, String.valueOf(typeInfo.getCode()))) {
+            return true;
+        }
+        return typeInfo.getCodeRu() != null
+                && matchesFormTypeToken(wantedRootToken, String.valueOf(typeInfo.getCodeRu()));
+    }
+
+    private boolean matchesFormTypeToken(String wantedRootToken, String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        return wantedRootToken.equals(normalizeTypeRootToken(candidate));
     }
 
     private void validateFormAttributeType(Object typeValue) {
@@ -2151,6 +2316,82 @@ public class EdtMetadataService {
         return maxId + 1;
     }
 
+    /**
+     * Creates/updates the columns of a composite form attribute (ValueTable/ValueTree). Each column
+     * is a {@link FormAttributeColumn} with its own name and value type, resolved through the same
+     * type pipeline as a scalar attribute. Columns are matched/upserted by name.
+     */
+    private void applyFormAttributeColumns(
+            Form formModel,
+            FormAttribute attribute,
+            List<Map<String, Object>> columns,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
+        if (attribute == null || columns == null || columns.isEmpty()) {
+            return;
+        }
+        Map<String, FormAttributeColumn> existingByName = new HashMap<>();
+        for (FormAttributeColumn column : attribute.getColumns()) {
+            if (column != null && column.getName() != null && !column.getName().isBlank()) {
+                existingByName.put(normalizeToken(column.getName()), column);
+            }
+        }
+        int nextId = nextFormElementId(formModel);
+        for (Map<String, Object> descriptor : columns) {
+            if (descriptor == null || descriptor.isEmpty()) {
+                continue;
+            }
+            String columnName = asString(getMapValueIgnoreCase(descriptor, "name")); //$NON-NLS-1$
+            if (columnName == null) {
+                columnName = asString(getMapValueIgnoreCase(descriptor, "column")); //$NON-NLS-1$
+            }
+            if (!MetadataNameValidator.isValidName(columnName)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_NAME,
+                        "Invalid form attribute column name: " + columnName, false); //$NON-NLS-1$
+            }
+            Object columnType = getMapValueIgnoreCase(descriptor, "type"); //$NON-NLS-1$
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(descriptor, "field_type"); //$NON-NLS-1$
+            }
+            FormAttributeColumn column = existingByName.get(normalizeToken(columnName));
+            if (column == null) {
+                column = FormFactory.eINSTANCE.createFormAttributeColumn();
+                column.setId(nextId++);
+                column.setName(columnName);
+                attribute.getColumns().add(column);
+                existingByName.put(normalizeToken(columnName), column);
+            }
+            if (columnType != null) {
+                applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
+            }
+        }
+    }
+
+    /**
+     * Next free numeric id across the form attribute tree (attributes and their columns), so newly
+     * created columns do not collide with existing attribute/column ids.
+     */
+    private int nextFormElementId(Form formModel) {
+        int maxId = 0;
+        if (formModel != null) {
+            for (FormAttribute attribute : formModel.getAttributes()) {
+                if (attribute == null) {
+                    continue;
+                }
+                maxId = Math.max(maxId, attribute.getId());
+                for (FormAttributeColumn column : attribute.getColumns()) {
+                    if (column != null) {
+                        maxId = Math.max(maxId, column.getId());
+                    }
+                }
+            }
+        }
+        return maxId + 1;
+    }
+
     private Map<String, TypeItem> preResolveFormAttributeTypes(
             IProject project,
             List<Map<String, Object>> attributes
@@ -2163,14 +2404,17 @@ public class EdtMetadataService {
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString + ". " //$NON-NLS-1$ //$NON-NLS-2$
-                                    + FORM_ATTRIBUTE_TYPE_RECOVERY, false);
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                } else {
+                    // Best-effort cache only: types not resolvable as BM/metadata types in the read
+                    // transaction (platform value types such as Font, ValueTable, ValueTree, ValueList,
+                    // ValueStorage, ...) are intentionally left unresolved here. They are resolved at
+                    // apply time by applyFormAttributeType from the form-available type set
+                    // (TypeProviderService), which raises a clear error if a type is genuinely
+                    // unsupported. Failing fast here previously blocked every such valid type.
+                    LOG.debug("preResolveFormAttributeTypes: '%s' not in BM; deferring to apply-time resolution", //$NON-NLS-1$
+                            typeString);
                 }
             }
             return null;
@@ -2317,7 +2561,7 @@ public class EdtMetadataService {
             }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
-                    "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
+                    "Operation requires \"op\" field. Valid values: add_field, add_table, add_group, add_command, " //$NON-NLS-1$
                             + "add_button, set_item, remove_item, move_item, set_form_props", false); //$NON-NLS-1$
         }
 
@@ -2353,7 +2597,7 @@ public class EdtMetadataService {
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
-                + "Valid ops: add_field, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
+                + "Valid ops: add_field, add_table, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
     }
 
     private Map<String, Object> collectFormRootProperties(
@@ -9254,7 +9498,7 @@ public class EdtMetadataService {
         }
     }
 
-    private record FormAttributePatch(Map<String, Object> patch, Object typeValue) {
+    private record FormAttributePatch(Map<String, Object> patch, Object typeValue, List<Map<String, Object>> columns) {
     }
 
     private record FormRecipeApplyResult(FormAttributeRecipeStats stats, List<String> layoutSummaries) {

@@ -97,7 +97,19 @@ public class ApplyFormRecipeTool extends AbstractTool {
                         "description": "Form attribute name, not a visual item id. Required for create/upsert unless id is used."
                       },
                       "type": {
-                        "description": "Data value type for the form attribute, e.g. String(150), Number(15,2), Date, Boolean, CatalogRef.Номенклатура. Do not guess SpreadsheetDocument/ТабличныйДокумент; inspect candidates or use a supported alias already accepted by EDT."
+                        "description": "Data value type for the form attribute, e.g. String(150), Number(15,2), Date, Boolean, CatalogRef.Номенклатура, ValueTable/ТаблицаЗначений, ValueTree/ДеревоЗначений. For ValueTable/ValueTree provide a 'columns' array. Do not guess SpreadsheetDocument/ТабличныйДокумент; inspect candidates or use a type accepted by EDT for this form."
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {"type": "string", "description": "Column identifier name."},
+                            "type": {"description": "Column value type, e.g. String(50), Number(15,3), Date, CatalogRef.Номенклатура."}
+                          },
+                          "additionalProperties": true
+                        },
+                        "description": "Columns for a ValueTable/ValueTree form attribute. Each column is a named sub-attribute with its own type. Ignored for scalar attribute types."
                       },
                       "data_path": {
                         "type": "string",
