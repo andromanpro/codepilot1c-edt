@@ -55,7 +55,9 @@ public final class SkillTool extends AbstractTool {
                 + "рефакторинг -> skill(name=refactor), " //$NON-NLS-1$
                 + "объяснение кода -> skill(name=explain), " //$NON-NLS-1$
                 + "архитектура/проектирование -> skill(name=architect), " //$NON-NLS-1$
-                + "валидация/аудит проекта -> skill(name=validator). " //$NON-NLS-1$
+                + "валидация/аудит проекта -> skill(name=validator), " //$NON-NLS-1$
+                + "проверка одного изменения в веб-клиенте -> skill(name=verify-web-client), " //$NON-NLS-1$
+                + "полный E2E + UX/UI аудит новых объектов в браузере -> skill(name=web-e2e-qa). " //$NON-NLS-1$
                 + "Без аргументов возвращает список доступных skills."; //$NON-NLS-1$
     }
 

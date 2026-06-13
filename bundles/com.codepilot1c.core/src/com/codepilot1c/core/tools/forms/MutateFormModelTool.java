@@ -61,6 +61,22 @@ public class MutateFormModelTool extends AbstractTool {
                       "set": {
                         "type": "object",
                         "description": "Properties for the existing form, item, or attribute patch. type here changes visual widget type unless patching form attributes."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Name of the new item for add_field/add_table/add_group/add_command/add_button."
+                      },
+                      "parent_item_id": {
+                        "type": "integer",
+                        "description": "Id of the parent container (group/table) from inspect_form_layout. Defaults to the form root."
+                      },
+                      "parent_item_name": {
+                        "type": "string",
+                        "description": "Parent container by name — alternative to parent_item_id. Use it to target an item created earlier in this SAME operations batch (e.g. a group from a prior add_group) whose id is not yet known."
+                      },
+                      "item_id": {
+                        "type": "integer",
+                        "description": "Target item id for set_item/remove_item/move_item (from inspect_form_layout)."
                       }
                     },
                     "required": ["op"],

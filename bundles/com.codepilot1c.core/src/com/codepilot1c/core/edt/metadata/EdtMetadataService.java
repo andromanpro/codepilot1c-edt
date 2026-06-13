@@ -2592,8 +2592,11 @@ public class EdtMetadataService {
         return "To mutate this form with mutate_form_model, use: " //$NON-NLS-1$
                 + "form_fqn=\"" + formFqn + "\", operations:[{op:\"add_field\", name:\"...\", " //$NON-NLS-1$ //$NON-NLS-2$
                 + "parent_item_id:<id from items above>, data_path:\"...\", field_type:\"LABEL_FIELD\"}]. " //$NON-NLS-1$
+                + "Parent may be parent_item_id:<id> OR parent_item_name:\"<name>\"; use parent_item_name to target an item " //$NON-NLS-1$
+                + "created earlier in this SAME operations batch (e.g. a group from a prior add_group) whose id is not known yet. " //$NON-NLS-1$
+                + "For a ValueTable/ValueTree attribute use {op:\"add_table\", name:\"...\", data_path:\"<attr>\"} to auto-generate its columns. " //$NON-NLS-1$
                 + "For set_item use item_id:<id> (NOT id). " //$NON-NLS-1$
-                + "For move_item use parent_item_id:<id> (NOT parent_id or parent). " //$NON-NLS-1$
+                + "For move_item use parent_item_id:<id> or parent_item_name:\"<name>\" (NOT parent_id or parent). " //$NON-NLS-1$
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$

@@ -241,6 +241,124 @@ public class EdtRuntimeService {
         return null;
     }
 
+    /**
+     * Web client (and designer) URLs of the project's standalone-server infobase, plus the server
+     * state. The web client URL ({@link #webClientUrl()}) is what a browser/Playwright session should
+     * navigate to in order to verify the running 1C interface. The URL already embeds host and port.
+     */
+    public record WebClientInfo(
+            boolean available,
+            String message,
+            String webClientUrl,
+            String designerUrl,
+            boolean serverRunning,
+            String serverState,
+            String serverName) {
+        static WebClientInfo unavailable(String message) {
+            return new WebClientInfo(false, message, null, null, false, null, null);
+        }
+    }
+
+    /**
+     * Resolves the web client URL of the standalone-server infobase bound to the given project,
+     * using {@code IStandaloneServerService.getInfobaseUrl(...)}. Never throws — returns an
+     * {@code available=false} {@link WebClientInfo} with a human-readable {@code message} instead.
+     */
+    public WebClientInfo resolveWebClientInfo(String projectName) {
+        IProject project;
+        try {
+            project = gateway.resolveProject(projectName);
+        } catch (RuntimeException e) {
+            return WebClientInfo.unavailable("Project not found: " + projectName); //$NON-NLS-1$
+        }
+        if (project == null) {
+            return WebClientInfo.unavailable("Project not found: " + projectName); //$NON-NLS-1$
+        }
+        IStandaloneServerService service = gateway.peekStandaloneServerService();
+        if (service == null) {
+            return WebClientInfo.unavailable("Standalone server service is not available in this EDT session."); //$NON-NLS-1$
+        }
+        java.util.List<IServer> servers;
+        try {
+            servers = service.getServers();
+        } catch (Exception | NoSuchMethodError e) {
+            if (e instanceof InterruptedException || Thread.interrupted()) {
+                Thread.currentThread().interrupt();
+            }
+            return WebClientInfo.unavailable("Failed to enumerate standalone servers: " + e.getMessage()); //$NON-NLS-1$
+        }
+        if (servers == null || servers.isEmpty()) {
+            return WebClientInfo.unavailable("No standalone server is registered in this EDT workspace."); //$NON-NLS-1$
+        }
+        for (IServer server : servers) {
+            if (server == null) {
+                continue;
+            }
+            IModule[] modules = server.getModules();
+            if (modules == null) {
+                continue;
+            }
+            for (IModule module : modules) {
+                if (!(module instanceof StandaloneServerInfobase standaloneInfobase)
+                        || !matchesProject(standaloneInfobase, project, project.getName())) {
+                    continue;
+                }
+                String webUrl = standaloneUrlString(() -> service.getInfobaseUrl(standaloneInfobase));
+                String designerUrl = standaloneUrlString(() -> service.getDesignerUrl(standaloneInfobase));
+                return new WebClientInfo(true, "", webUrl, designerUrl, //$NON-NLS-1$
+                        isServerRunning(server), serverStateName(server), safeServerName(server));
+            }
+        }
+        return WebClientInfo.unavailable(
+                "No standalone-server infobase is bound to project '" + project.getName() //$NON-NLS-1$
+                        + "'. Connect/create the infobase and start the server first."); //$NON-NLS-1$
+    }
+
+    @FunctionalInterface
+    private interface UrlSupplier {
+        Object get() throws Exception; // NOSONAR — wraps EDT's checked StandaloneServerException
+    }
+
+    private static String standaloneUrlString(UrlSupplier supplier) {
+        try {
+            Object uri = supplier.get();
+            return uri == null ? null : uri.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static boolean isServerRunning(IServer server) {
+        try {
+            return server.getServerState() == IServer.STATE_STARTED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String serverStateName(IServer server) {
+        try {
+            return switch (server.getServerState()) {
+                case IServer.STATE_STARTED -> "started"; //$NON-NLS-1$
+                case IServer.STATE_STARTING -> "starting"; //$NON-NLS-1$
+                case IServer.STATE_STOPPED -> "stopped"; //$NON-NLS-1$
+                case IServer.STATE_STOPPING -> "stopping"; //$NON-NLS-1$
+                default -> "unknown"; //$NON-NLS-1$
+            };
+        } catch (Exception e) {
+            return "unknown"; //$NON-NLS-1$
+        }
+    }
+
+    private static String safeServerName(IServer server) {
+        try {
+            String name = server.getName();
+            return name == null ? "" : name; //$NON-NLS-1$
+        } catch (Exception e) {
+            return ""; //$NON-NLS-1$
+        }
+    }
+
     public AccessSettings resolveAccessSettings(String projectName) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         return resolveAccessSettings(infobase);

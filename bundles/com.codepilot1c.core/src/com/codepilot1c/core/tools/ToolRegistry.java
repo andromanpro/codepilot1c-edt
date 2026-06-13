@@ -162,6 +162,8 @@ public class ToolRegistry {
         register(new GetOneCProcessesTool());
         register(new GetInfobaseLocksTool());
         register(new GetStandaloneServerStatusTool());
+        register(new ResolveWebClientUrlTool());
+        register(new GetInfobaseCredentialsTool());
         register(new TailEdtLogsTool());
         register(new ExtensionManageTool());
         register(new EdtExtensionSmokeTool());
