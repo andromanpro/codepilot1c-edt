@@ -74,6 +74,12 @@ public class ListFilesTool extends AbstractTool {
         return CompletableFuture.supplyAsync(() -> {
             String path = params.optString("path", null); //$NON-NLS-1$
             String pattern = params.optString("pattern", null); //$NON-NLS-1$
+            // Treat an empty/blank pattern as "no filter". LLMs routinely send "" for optional
+            // string params; without this an empty pattern compiled to the regex "" and matched no
+            // file name, so list_files silently hid every file and showed only sub-folders.
+            if (pattern != null && pattern.isBlank()) {
+                pattern = null;
+            }
             boolean recursive = params.optBoolean("recursive", false); //$NON-NLS-1$
 
             try {
@@ -161,6 +167,13 @@ public class ListFilesTool extends AbstractTool {
     }
 
     private ToolResult listContents(IContainer container, String pattern, boolean recursive) throws CoreException {
+        // Best-effort sync with the filesystem so files created/changed outside the Eclipse
+        // workbench (e.g. by git operations in the surrounding repo) are visible.
+        try {
+            container.refreshLocal(recursive ? IResource.DEPTH_INFINITE : IResource.DEPTH_ONE, null);
+        } catch (CoreException e) {
+            // Fall back to the cached resource tree if the refresh is rejected.
+        }
         List<String> files = new ArrayList<>();
         collectFiles(container, pattern, recursive, "", files); //$NON-NLS-1$
         String header = "**Contents of:** `" + container.getFullPath().toString() + "`\n\n"; //$NON-NLS-1$ //$NON-NLS-2$

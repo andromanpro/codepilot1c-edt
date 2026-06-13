@@ -2836,7 +2836,8 @@ public class EdtMetadataService {
             if (!(feature instanceof EReference typeReference)) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
-                        "Field is not a reference: " + fieldName, false); //$NON-NLS-1$
+                        buildFieldNotTypedMessage(request.targetFqn(), target, fieldName, feature == null),
+                        false);
             }
 
             LinkedHashMap<String, FieldTypeCandidate> unique = new LinkedHashMap<>();
@@ -2868,6 +2869,28 @@ public class EdtMetadataService {
                     total,
                     allCandidates);
         });
+    }
+
+    /**
+     * Builds an actionable error for {@code edt_field_type_candidates} when the requested field is
+     * not a typed reference. Owner objects (Document, Catalog, ...) have no {@code type} field of
+     * their own — types live on their child attributes/dimensions/resources — so the previous bare
+     * "Field is not a reference" message was misleading. This points the caller to the correct
+     * child FQN form instead.
+     */
+    private String buildFieldNotTypedMessage(String targetFqn, MdObject target, String fieldName, boolean missing) {
+        String ownerClass = target != null ? target.eClass().getName() : "?"; //$NON-NLS-1$
+        String sample = targetFqn + ".Attribute.<ИмяРеквизита>"; //$NON-NLS-1$
+        if (missing) {
+            return "Object '" + targetFqn + "' (" + ownerClass + ") has no field '" + fieldName //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    + "'. edt_field_type_candidates expects the FQN of an existing typed field " //$NON-NLS-1$
+                    + "(an Attribute, Dimension or Resource), for example '" + sample + "'. " //$NON-NLS-1$ //$NON-NLS-2$
+                    + "To choose a type for a new attribute, create it first via add_metadata_child, " //$NON-NLS-1$
+                    + "then request candidates on that child FQN."; //$NON-NLS-1$
+        }
+        return "Field '" + fieldName + "' of '" + targetFqn + "' (" + ownerClass //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                + ") is not a typed reference. Request edt_field_type_candidates on an existing typed " //$NON-NLS-1$
+                + "child FQN instead, for example '" + sample + "'."; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     public MetadataOperationResult deleteMetadata(DeleteMetadataRequest request) {
@@ -4145,6 +4168,7 @@ public class EdtMetadataService {
                 parent.eClass().getName(), parent.getName());
 
         MetadataChildKind effectiveKind = normalizeChildKind(parent, request.childKind());
+        rejectUnsupportedChildKind(parent, effectiveKind);
         return createGenericChildForResolvedParent(
                 configuration,
                 parent,
@@ -4152,6 +4176,35 @@ public class EdtMetadataService {
                 transaction,
                 preResolvedTypes,
                 effectiveKind);
+    }
+
+    /**
+     * Fails fast with an actionable message for parent kinds whose children are not modelled as
+     * plain containment children creatable via {@code add_metadata_child}. Without this guard a
+     * request such as {@code HTTPService.X.Template.Y} resolves the parent (so it is no longer a
+     * "parent not found"), then fails deep inside the EMF factory with a cryptic message. These
+     * objects (HTTP service URL templates and their methods, web service operations) require a
+     * dedicated child-kind that is not implemented yet.
+     */
+    private void rejectUnsupportedChildKind(MdObject parent, MetadataChildKind kind) {
+        if (parent == null) {
+            return;
+        }
+        String parentClass = normalizeToken(parent.eClass().getName());
+        if ("httpservice".equals(parentClass)) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "HTTPService children (URL templates and their methods) are not supported via " //$NON-NLS-1$
+                            + "add_metadata_child yet, so child_kind=" + kind + " cannot be created on an HTTP service. " //$NON-NLS-1$ //$NON-NLS-2$
+                            + "Create the HTTP service itself with create_metadata; URL templates must be added through a " //$NON-NLS-1$
+                            + "dedicated tool once available.", false); //$NON-NLS-1$
+        }
+        if ("webservice".equals(parentClass)) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "WebService children (operations) are not supported via add_metadata_child yet, so child_kind=" //$NON-NLS-1$
+                            + kind + " cannot be created on a web service.", false); //$NON-NLS-1$
+        }
     }
 
     private String createGenericChildInExternalProject(
@@ -4970,21 +5023,14 @@ public class EdtMetadataService {
     }
 
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
-        String normalized = normalizeToken(type);
-        List<? extends MdObject> topLevel = switch (normalized) {
-            case "catalog", "справочник" -> configuration.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "документ" -> configuration.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "регистрсведений" -> configuration.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "регистрнакопления" -> configuration.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonmodule", "общиймодуль" -> configuration.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "перечисление" -> configuration.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "отчет", "отчёт" -> configuration.getReports(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "dataprocessor", "обработка" -> configuration.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "константа" -> configuration.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "subsystem", "subsystems", "подсистема" -> configuration.getSubsystems(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            default -> Collections.emptyList();
-        };
-        for (MdObject object : topLevel) {
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(type);
+        } catch (MetadataOperationException e) {
+            LOG.debug("findTopLevel: unsupported top-level type token: %s", type); //$NON-NLS-1$
+            return null;
+        }
+        for (MdObject object : topLevelCollectionForKind(configuration, kind)) {
             if (name.equalsIgnoreCase(object.getName())) {
                 return object;
             }
@@ -8470,56 +8516,19 @@ public class EdtMetadataService {
     }
 
     private boolean existsTopLevel(Configuration configuration, MetadataKind kind, String name) {
-        return switch (kind) {
-            case CATALOG -> containsMdObjectName(configuration.getCatalogs(), name);
-            case DOCUMENT -> containsMdObjectName(configuration.getDocuments(), name);
-            case INFORMATION_REGISTER -> containsMdObjectName(configuration.getInformationRegisters(), name);
-            case ACCUMULATION_REGISTER -> containsMdObjectName(configuration.getAccumulationRegisters(), name);
-            case ACCOUNTING_REGISTER -> containsMdObjectName(configuration.getAccountingRegisters(), name);
-            case CALCULATION_REGISTER -> containsMdObjectName(configuration.getCalculationRegisters(), name);
-            case COMMON_MODULE -> containsMdObjectName(configuration.getCommonModules(), name);
-            case COMMON_ATTRIBUTE -> containsMdObjectName(configuration.getCommonAttributes(), name);
-            case ENUM -> containsMdObjectName(configuration.getEnums(), name);
-            case REPORT -> containsMdObjectName(configuration.getReports(), name);
-            case DATA_PROCESSOR -> containsMdObjectName(configuration.getDataProcessors(), name);
-            case CONSTANT -> containsMdObjectName(configuration.getConstants(), name);
-            case COMMAND_GROUP -> containsMdObjectName(configuration.getCommandGroups(), name);
-            case INTERFACE -> containsMdObjectName(configuration.getInterfaces(), name);
-            case LANGUAGE -> containsMdObjectName(configuration.getLanguages(), name);
-            case STYLE -> containsMdObjectName(configuration.getStyles(), name);
-            case STYLE_ITEM -> containsMdObjectName(configuration.getStyleItems(), name);
-            case SESSION_PARAMETER -> containsMdObjectName(configuration.getSessionParameters(), name);
-            case SETTINGS_STORAGE -> containsMdObjectName(configuration.getSettingsStorages(), name);
-            case XDTO_PACKAGE -> containsMdObjectName(configuration.getXDTOPackages(), name);
-            case WS_REFERENCE -> containsMdObjectName(configuration.getWsReferences(), name);
-            case ROLE -> containsMdObjectName(configuration.getRoles(), name);
-            case SUBSYSTEM -> containsMdObjectName(configuration.getSubsystems(), name);
-            case EXCHANGE_PLAN -> containsMdObjectName(configuration.getExchangePlans(), name);
-            case CHART_OF_ACCOUNTS -> containsMdObjectName(configuration.getChartsOfAccounts(), name);
-            case CHART_OF_CHARACTERISTIC_TYPES -> containsMdObjectName(configuration.getChartsOfCharacteristicTypes(), name);
-            case CHART_OF_CALCULATION_TYPES -> containsMdObjectName(configuration.getChartsOfCalculationTypes(), name);
-            case BUSINESS_PROCESS -> containsMdObjectName(configuration.getBusinessProcesses(), name);
-            case TASK -> containsMdObjectName(configuration.getTasks(), name);
-            case COMMON_FORM -> containsMdObjectName(configuration.getCommonForms(), name);
-            case COMMON_COMMAND -> containsMdObjectName(configuration.getCommonCommands(), name);
-            case COMMON_TEMPLATE -> containsMdObjectName(configuration.getCommonTemplates(), name);
-            case COMMON_PICTURE -> containsMdObjectName(configuration.getCommonPictures(), name);
-            case SCHEDULED_JOB -> containsMdObjectName(configuration.getScheduledJobs(), name);
-            case FILTER_CRITERION -> containsMdObjectName(configuration.getFilterCriteria(), name);
-            case DEFINED_TYPE -> containsMdObjectName(configuration.getDefinedTypes(), name);
-            case SEQUENCE -> containsMdObjectName(configuration.getSequences(), name);
-            case DOCUMENT_JOURNAL -> containsMdObjectName(configuration.getDocumentJournals(), name);
-            case DOCUMENT_NUMERATOR -> containsMdObjectName(configuration.getDocumentNumerators(), name);
-            case EVENT_SUBSCRIPTION -> containsMdObjectName(configuration.getEventSubscriptions(), name);
-            case FUNCTIONAL_OPTION -> containsMdObjectName(configuration.getFunctionalOptions(), name);
-            case FUNCTIONAL_OPTIONS_PARAMETER -> containsMdObjectName(configuration.getFunctionalOptionsParameters(), name);
-            case WEB_SERVICE -> containsMdObjectName(configuration.getWebServices(), name);
-            case HTTP_SERVICE -> containsMdObjectName(configuration.getHttpServices(), name);
-            case EXTERNAL_DATA_SOURCE -> containsMdObjectName(configuration.getExternalDataSources(), name);
-            case INTEGRATION_SERVICE -> containsMdObjectName(configuration.getIntegrationServices(), name);
-            case BOT -> containsMdObjectName(configuration.getBots(), name);
-            case WEB_SOCKET_CLIENT -> containsMdObjectName(configuration.getWebSocketClients(), name);
-        };
+        return containsMdObjectName(topLevelCollectionForKind(configuration, kind), name);
+    }
+
+    /**
+     * Canonical mapping from {@link MetadataKind} to its backing top-level configuration collection.
+     *
+     * <p>This is the single source of truth for resolving and enumerating top-level metadata
+     * objects by kind. It is intentionally exhaustive over {@link MetadataKind} so the compiler
+     * rejects any future kind that forgets to register its collection here, preventing the class of
+     * "type silently unsupported" bugs (e.g. Task/HTTPService) caused by partial switch lists.</p>
+     */
+    private List<? extends MdObject> topLevelCollectionForKind(Configuration configuration, MetadataKind kind) {
+        return MetadataConfigurationCollections.topLevelForKind(configuration, kind);
     }
 
     private boolean containsMdObjectName(List<? extends MdObject> objects, String name) {

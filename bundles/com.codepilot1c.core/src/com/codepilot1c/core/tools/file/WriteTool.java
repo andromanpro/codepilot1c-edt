@@ -12,11 +12,14 @@ import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -34,11 +37,14 @@ import com.codepilot1c.core.session.SessionManager;
  * Инструмент записи файлов workspace.
  *
  * <p>Используется для изменения существующих файлов в workspace.
- * Дополнительно разрешает создать Code.md в корне текущего проекта.</p>
+ * Дополнительно разрешает создать Code.md в корне текущего проекта и новые
+ * документационные файлы (*.md, *.txt) внутри проекта.</p>
  *
  * <p>Особенности:</p>
  * <ul>
- *   <li>Не создает новые файлы и директории, кроме Code.md в корне проекта</li>
+ *   <li>Из новых файлов создает только Code.md в корне проекта и документацию (*.md, *.txt),
+ *       при необходимости создавая промежуточные папки</li>
+ *   <li>Структурные EDT-артефакты (.mdo/.form/.mxl/DCS) запрещены — для них есть семантические инструменты</li>
  *   <li>Поддерживает UTF-8 кодировку</li>
  *   <li>Работает только в пределах workspace (безопасность)</li>
  *   <li>Перезаписывает существующие файлы (с overwrite=true)</li>
@@ -55,7 +61,7 @@ public class WriteTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to a workspace file. Existing files are overwritten; project-root Code.md may be created."
+                        "description": "Path to a workspace file. Existing files are overwritten; new files may be created only for project-root Code.md or documentation (*.md, *.txt)."
                     },
                     "content": {
                         "type": "string",
@@ -63,7 +69,11 @@ public class WriteTool extends AbstractTool {
                     },
                     "overwrite": {
                         "type": "boolean",
-                        "description": "Must be true; existing files are overwritten and project-root Code.md may be created"
+                        "description": "Must be true; existing files are overwritten, and new Code.md/documentation (*.md, *.txt) may be created"
+                    },
+                    "allow_empty": {
+                        "type": "boolean",
+                        "description": "Must be true to write empty content over an existing non-empty file"
                     }
                 },
                 "required": ["path", "content"]
@@ -72,7 +82,7 @@ public class WriteTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Перезаписывает файл workspace целиком; может создать Code.md в корне текущего проекта. Используй, когда нужен осознанный full overwrite без patch-логики. Предпочитай edit_file для точечных правок и не используй этот tool как основной путь изменения EDT metadata или .mdo файлов."; //$NON-NLS-1$
+        return "Перезаписывает файл workspace целиком; может создать Code.md в корне проекта и новые документационные файлы (*.md, *.txt). Используй для осознанного full overwrite или сохранения заметок/документации. Предпочитай edit_file для точечных правок; не используй для EDT metadata или .mdo/.form/.mxl файлов."; //$NON-NLS-1$
     }
 
     @Override
@@ -105,6 +115,7 @@ public class WriteTool extends AbstractTool {
             }
 
             boolean overwrite = Boolean.TRUE.equals(parameters.get("overwrite"));
+            boolean allowEmpty = Boolean.TRUE.equals(parameters.get("allow_empty"));
 
             if (!overwrite) {
                 return ToolResult.failure(
@@ -113,7 +124,7 @@ public class WriteTool extends AbstractTool {
             }
 
             try {
-                return writeFile(pathStr, content);
+                return writeFile(pathStr, content, allowEmpty);
             } catch (CoreException e) {
                 logError("Ошибка создания файла", e);
                 return ToolResult.failure("Ошибка записи файла: " + e.getMessage());
@@ -124,7 +135,7 @@ public class WriteTool extends AbstractTool {
     /**
      * Записывает содержимое в файл workspace.
      */
-    private ToolResult writeFile(String pathStr, String content)
+    private ToolResult writeFile(String pathStr, String content, boolean allowEmpty)
             throws CoreException {
 
         // Normalize path
@@ -174,17 +185,28 @@ public class WriteTool extends AbstractTool {
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
         boolean created = false;
 
-        if (!file.exists() && !isProjectRootCodeMd(file)) {
+        boolean allowedNewDoc = isAllowedNewDocFile(normalizedPath);
+        if (!file.exists() && !isProjectRootCodeMd(file) && !allowedNewDoc) {
             return ToolResult.failure(
                     "Создание новых файлов через write_file запрещено: " + file.getFullPath() + ". " +
-                    "Исключение разрешено только для Code.md в корне проекта. " +
-                    "Используйте ensure_module_artifact для подготовки Module.bsl/ObjectModule.bsl/ManagerModule.bsl, " +
+                    "Разрешено создавать только Code.md в корне проекта и новые документационные файлы (*.md, *.txt) внутри проекта. " +
+                    "Для модулей используйте ensure_module_artifact (Module.bsl/ObjectModule.bsl/ManagerModule.bsl), " +
                     "после чего применяйте edit_file/write_file только к существующему файлу.");
         }
 
+        if (file.exists() && content.isBlank() && !allowEmpty && existingFileHasContent(file)) {
+            logWarning("[WRITE_FILE] ЗАБЛОКИРОВАНО: пустая запись поверх непустого файла: " + file.getFullPath());
+            return ToolResult.failure(
+                    "write_file rejected: the new content is empty while the existing file '" + file.getFullPath() +
+                    "' is not. The write was aborted to prevent data loss. " +
+                    "Pass allow_empty=true to intentionally empty the file.");
+        }
+
         if (file.exists()) {
-            file.setContents(new ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+            file.setContents(new ByteArrayInputStream(bytes), IResource.FORCE | IResource.KEEP_HISTORY,
+                    new NullProgressMonitor());
         } else {
+            ensureParentFolderExists(file);
             file.create(new ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
             created = true;
         }
@@ -202,6 +224,24 @@ public class WriteTool extends AbstractTool {
         logInfo((created ? "Файл создан: " : "Файл обновлен: ") + file.getFullPath());
 
         return ToolResult.success(result.toString(), ToolResult.ToolResultType.TEXT);
+    }
+
+    /**
+     * Проверяет, содержит ли существующий файл значимые (не-whitespace) байты.
+     * При ошибке чтения считает файл непустым (консервативно блокирует запись).
+     */
+    private boolean existingFileHasContent(IFile file) {
+        try (InputStream stream = file.getContents(true)) {
+            int value;
+            while ((value = stream.read()) != -1) {
+                if (!Character.isWhitespace(value)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     /**
@@ -274,6 +314,43 @@ public class WriteTool extends AbstractTool {
             return false;
         }
         return ProjectMemoryFilePolicy.isCanonicalFileName(file.getName());
+    }
+
+    /**
+     * Allows creating new plain documentation files (*.md, *.txt) inside the workspace, e.g. when
+     * the user explicitly asks to save notes or a report to a file. Structured EDT artifacts
+     * (.mdo/.form/.mxl/DCS) are rejected earlier and never reach this check.
+     */
+    private boolean isAllowedNewDocFile(String normalizedPath) {
+        if (normalizedPath == null || normalizedPath.isBlank()) {
+            return false;
+        }
+        String lower = normalizedPath.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".md") || lower.endsWith(".txt"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Ensures the parent folder chain of a to-be-created file exists, so new docs can be placed in
+     * nested directories (e.g. {@code docs/report/summary.md}).
+     */
+    private void ensureParentFolderExists(IFile file) throws CoreException {
+        if (file == null) {
+            return;
+        }
+        IContainer parent = file.getParent();
+        if (parent instanceof IFolder folder && !folder.exists()) {
+            createFolderChain(folder);
+        }
+    }
+
+    private void createFolderChain(IFolder folder) throws CoreException {
+        IContainer parent = folder.getParent();
+        if (parent instanceof IFolder parentFolder && !parentFolder.exists()) {
+            createFolderChain(parentFolder);
+        }
+        if (!folder.exists()) {
+            folder.create(true, true, new NullProgressMonitor());
+        }
     }
 
     /**
