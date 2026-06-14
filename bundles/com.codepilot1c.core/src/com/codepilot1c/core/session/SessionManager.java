@@ -287,6 +287,24 @@ public class SessionManager {
     }
 
     /**
+     * Завершает конкретную сессию: status COMPLETED + сохранение + уведомление слушателей
+     * (что запускает извлечение памяти). Для мульти-вью, где каждое окно владеет своей сессией и
+     * не полагается на единственный {@code currentSession}.
+     */
+    public void completeSession(Session session) {
+        if (session == null || session.isEmpty()) {
+            return;
+        }
+        session.setStatus(Session.SessionStatus.COMPLETED);
+        if (saveSession(session)) {
+            notifySessionCompleted(session);
+        }
+        if (session == currentSession) {
+            currentSession = null;
+        }
+    }
+
+    /**
      * Архивирует сессию.
      */
     public void archiveSession(String sessionId) {

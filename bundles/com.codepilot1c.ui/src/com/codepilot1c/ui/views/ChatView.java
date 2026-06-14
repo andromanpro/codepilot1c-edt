@@ -44,6 +44,10 @@ import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.FileDialog;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Text;
+import org.eclipse.ui.IMemento;
+import org.eclipse.ui.IViewSite;
+import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.part.ViewPart;
 
 import com.codepilot1c.core.diff.CodeDiffUtils;
@@ -77,6 +81,8 @@ import com.codepilot1c.core.ui.ChatSystemPromptToolsSection;
 import com.codepilot1c.core.util.AttachmentTextExtractor;
 import com.codepilot1c.core.backend.BackendConfig;
 import com.codepilot1c.core.backend.BackendService;
+import com.codepilot1c.core.provider.config.LlmProviderConfig;
+import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
 import com.codepilot1c.core.provider.config.ProviderType;
 import com.codepilot1c.core.provider.config.ModelFetchService;
 import com.codepilot1c.core.provider.config.ModelFetchService.ModelInfo;
@@ -133,6 +139,7 @@ public class ChatView extends ViewPart {
     private Button attachButton;
     private Button clearButton;
     private Button newChatButton;
+    private Button newWindowButton;
     private Button stopButton;
     private Button applyCodeButton;
     private Button initCodeMdButton;
@@ -145,6 +152,17 @@ public class ChatView extends ViewPart {
 
     private final List<LlmMessage> conversationHistory = new ArrayList<>();
     private final List<ChatMessageComposite> messageWidgets = new ArrayList<>();
+    /**
+     * Phase 0/2 (chat persistence / multi-chat): this view instance's own chat session — the persisted
+     * record of the conversation. Each ChatView instance owns a distinct session (multi-view). Saved on
+     * close ({@link #dispose()}) and at clear-chat; restored on open via memento or most-recent.
+     */
+    private Session session;
+
+    /** Memento key for the per-view session id (restored across EDT restart). */
+    private static final String MEMENTO_SESSION_ID = "sessionId"; //$NON-NLS-1$
+    /** Session id captured from the view memento in {@link #init}, restored in createPartControl. */
+    private String restoredSessionId;
     private final List<LlmAttachment> draftAttachments = new ArrayList<>();
     /**
      * Plan 1.2: detects tool-call repetition loops (e.g., grep x 42 with the
@@ -234,6 +252,24 @@ public class ChatView extends ViewPart {
     private static final int FILE_PREVIEW_CHAR_LIMIT = 4000;
 
     @Override
+    public void init(IViewSite site, IMemento memento) throws PartInitException {
+        super.init(site, memento);
+        // Capture the session id Eclipse saved for this view instance (multi-view restore).
+        if (memento != null) {
+            restoredSessionId = memento.getString(MEMENTO_SESSION_ID);
+        }
+    }
+
+    @Override
+    public void saveState(IMemento memento) {
+        super.saveState(memento);
+        // Persist this view's session id so Eclipse restores the exact chat on restart.
+        if (session != null && memento != null) {
+            memento.putString(MEMENTO_SESSION_ID, session.getId());
+        }
+    }
+
+    @Override
     public void createPartControl(Composite parent) {
         VibeTheme theme = ThemeManager.getInstance().getTheme();
 
@@ -248,7 +284,8 @@ public class ChatView extends ViewPart {
         createChatArea(container);
         createInputArea(container);
 
-        appendSystemMessage(Messages.ChatView_WelcomeMessage);
+        // Phase 0: restore the last chat (persistence) or show the welcome message.
+        restoreLastSessionOrWelcome();
     }
 
     private void createChatArea(Composite parent) {
@@ -454,6 +491,12 @@ public class ChatView extends ViewPart {
                 Messages.ChatView_NewChatTooltip, CHAT_NEW_CHAT_BUTTON_WIDTH);
         ((GridData) newChatButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
         newChatButton.addListener(SWT.Selection, e -> confirmAndClearChat());
+
+        // New Window button — open another chat in parallel (multi-view).
+        newWindowButton = createChatActionButton(buttonBar, "➕", //$NON-NLS-1$
+                Messages.ChatView_NewChatTooltip, CHAT_ICON_BUTTON_WIDTH);
+        ((GridData) newWindowButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
+        newWindowButton.addListener(SWT.Selection, e -> openNewChatWindow());
 
         // Clear button with icon (legacy, kept for backward compat)
         clearButton = createChatActionButton(buttonBar, "\uD83D\uDDD1", //$NON-NLS-1$
@@ -2385,46 +2428,163 @@ public class ChatView extends ViewPart {
         }
     }
 
+    /**
+     * This view's chat session (Phase 0 — persistence/multi-chat foundation). Bound on first use to
+     * the current session; the {@link #session} field is the seam for full per-view ownership later.
+     */
+    private Session viewSession() {
+        if (session == null) {
+            // Multi-view: each ChatView instance owns a distinct session (not the global current one).
+            session = SessionManager.getInstance().createSessionForCurrentProject();
+        }
+        return session;
+    }
+
+    /**
+     * Opens a new ChatView instance (multi-view) so the user can run another chat in parallel. The new
+     * instance gets a unique secondary id and starts a fresh session.
+     */
+    private void openNewChatWindow() {
+        try {
+            String secondaryId = "chat-" + Long.toHexString(System.nanoTime()); //$NON-NLS-1$
+            getSite().getWorkbenchWindow().getActivePage()
+                    .showView(ID, secondaryId, IWorkbenchPage.VIEW_ACTIVATE);
+        } catch (PartInitException e) {
+            LOG.warn("openNewChatWindow failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Appends the current UI conversation (USER/ASSISTANT text) into the given session record.
+     * Used at clear-chat and on close so the session reflects what the user sees.
+     */
+    private void syncSessionFromHistory(Session target) {
+        // Rebuild (not append) so re-saving a restored session does not duplicate messages.
+        target.clearMessages();
+        for (LlmMessage msg : conversationHistory) {
+            LlmMessage.Role role = msg.getRole();
+            if (role != LlmMessage.Role.USER && role != LlmMessage.Role.ASSISTANT) {
+                continue;
+            }
+            String content = msg.getContent();
+            if ((content == null || content.isBlank()) && msg.getContentParts() != null) {
+                StringBuilder sb = new StringBuilder();
+                for (var part : msg.getContentParts()) {
+                    if (part.getText() != null) {
+                        sb.append(part.getText());
+                    }
+                }
+                content = sb.toString();
+            }
+            if (content != null && !content.isBlank()) {
+                target.addMessage(role == LlmMessage.Role.USER
+                        ? SessionMessage.user(content)
+                        : SessionMessage.assistant(content, msg.getReasoningContent()));
+            }
+        }
+    }
+
+    /**
+     * Persists this view's session to disk. Save-on-close entry point (Phase 0): called from
+     * {@link #dispose()} so the conversation survives EDT restart. No-op for an empty chat.
+     */
+    private void persistSession() {
+        try {
+            if (conversationHistory.isEmpty()) {
+                return;
+            }
+            Session target = viewSession();
+            syncSessionFromHistory(target);
+            SessionManager.getInstance().saveSession(target);
+            LOG.debug("persistSession: saved session %s (%d messages)", //$NON-NLS-1$
+                    target.getId(), Integer.valueOf(target.getMessages().size()));
+        } catch (Exception e) {
+            LOG.debug("persistSession failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * On view open (Phase 0 — chat persistence): restores the most recent saved chat into this view,
+     * or shows the welcome message when there is nothing to restore.
+     */
+    private void restoreLastSessionOrWelcome() {
+        try {
+            Session restored = null;
+            if (restoredSessionId != null && !restoredSessionId.isBlank()) {
+                // Restart: Eclipse recreated this view instance — restore its exact session.
+                restored = SessionManager.getInstance().loadSession(restoredSessionId).orElse(null);
+            } else if (getViewSite().getSecondaryId() == null) {
+                // Primary view, fresh open: restore the most recent chat (Feature 1).
+                restored = loadMostRecentSession();
+            }
+            // else: a window explicitly opened by the user (secondary id, no memento) → start fresh.
+            if (restored != null && !restored.getMessages().isEmpty()) {
+                session = restored;
+                // Restore this window's per-view model choice.
+                overrideModelId = restored.getModelId();
+                SessionManager.getInstance().setCurrentSession(restored);
+                renderSession(restored);
+                updateModelButtonLabel();
+                return;
+            }
+        } catch (Exception e) {
+            LOG.debug("restoreLastSession failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        appendSystemMessage(Messages.ChatView_WelcomeMessage);
+    }
+
+    /** @return the most recent non-empty saved session, or {@code null}. */
+    private Session loadMostRecentSession() {
+        SessionManager manager = SessionManager.getInstance();
+        for (com.codepilot1c.core.session.ISessionStore.SessionSummary summary
+                : manager.listRecentSessions(10)) {
+            if (summary.getMessageCount() <= 0) {
+                continue;
+            }
+            Session loaded = manager.loadSession(summary.getId()).orElse(null);
+            if (loaded != null && !loaded.getMessages().isEmpty()) {
+                return loaded;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Replays a saved session into the view: seeds the LLM context and re-renders the visible
+     * user/assistant bubbles. Tool-call/system detail is not replayed in this v1.
+     */
+    private void renderSession(Session restored) {
+        conversationHistory.clear();
+        conversationHistory.addAll(restored.toLlmMessages());
+        for (SessionMessage msg : restored.getMessages()) {
+            String content = msg.getContent();
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+            switch (msg.getType()) {
+                case USER -> appendUserMessage(content);
+                case ASSISTANT -> appendAssistantMessage(content);
+                default -> { /* tool/system messages are not replayed in v1 */ }
+            }
+        }
+        LOG.debug("renderSession: restored %d messages from session %s", //$NON-NLS-1$
+                Integer.valueOf(restored.getMessages().size()), restored.getId());
+    }
+
     private void clearChat() {
         // Sync UI conversation history into SessionManager and complete session.
         // This triggers memory extraction for facts like "Запомни что...".
         try {
             if (!conversationHistory.isEmpty()) {
-                SessionManager sm = SessionManager.getInstance();
-                Session session = sm.getCurrentSession();
-                if (session == null) {
-                    // Force-create a session if none exists
-                    session = sm.startNewSession();
-                }
-                // Populate the session with UI conversation messages
-                for (LlmMessage msg : conversationHistory) {
-                    LlmMessage.Role role = msg.getRole();
-                    if (role == LlmMessage.Role.USER || role == LlmMessage.Role.ASSISTANT) {
-                        String content = msg.getContent();
-                        if (content == null || content.isBlank()) {
-                            if (msg.getContentParts() != null) {
-                                StringBuilder sb = new StringBuilder();
-                                for (var part : msg.getContentParts()) {
-                                    if (part.getText() != null) {
-                                        sb.append(part.getText());
-                                    }
-                                }
-                                content = sb.toString();
-                            }
-                        }
-                        if (content != null && !content.isBlank()) {
-                            session.addMessage(role == LlmMessage.Role.USER
-                                    ? SessionMessage.user(content)
-                                    : SessionMessage.assistant(content, msg.getReasoningContent()));
-                        }
-                    }
-                }
-                LOG.debug("clearChat: synced " + conversationHistory.size() //$NON-NLS-1$
-                        + " UI messages to session " + session.getId() //$NON-NLS-1$
-                        + " (now has " + session.getMessages().size() + " messages)"); //$NON-NLS-1$ //$NON-NLS-2$
+                Session target = viewSession();
+                syncSessionFromHistory(target);
+                // Complete THIS view's session (save + memory extraction), not the global current.
+                SessionManager.getInstance().completeSession(target);
+                LOG.debug("clearChat: completed session %s (%d UI messages)", //$NON-NLS-1$
+                        target.getId(), Integer.valueOf(conversationHistory.size()));
             }
-            // Complete the current session (triggers memory extraction) and start fresh
-            SessionManager.getInstance().startNewSession();
+            // Drop the per-view binding so the next turn rebinds to a fresh session.
+            session = null;
         } catch (Exception e) {
             LOG.debug("clearChat: session management failed: " + e.getMessage()); //$NON-NLS-1$
         }
@@ -2557,7 +2717,8 @@ public class ChatView extends ViewPart {
      * Returns the currently active model name for display in message badges.
      */
     private String getCurrentModelName() {
-        return getEffectiveModelId();
+        String model = getEffectiveModelId();
+        return model != null && !model.isBlank() ? model : null;
     }
 
     private void appendSystemMessage(String message) {
@@ -2906,9 +3067,6 @@ public class ChatView extends ViewPart {
         modelButton.getParent().layout(true, true);
     }
 
-    /** Default model when user has not explicitly selected one. */
-    private static final String DEFAULT_MODEL_ID = "kimi-k2.5"; //$NON-NLS-1$
-
     private void updateModelButtonLabel() {
         if (modelButton == null || modelButton.isDisposed()) {
             return;
@@ -2930,14 +3088,26 @@ public class ChatView extends ViewPart {
     }
 
     /**
-     * Returns the model ID to use for requests and display.
-     * Falls back to {@link #DEFAULT_MODEL_ID} when no explicit selection.
+     * Returns the model ID to use for requests (CodePilot backend only) and for display.
+     * Without an explicit override, resolves the active provider's configured model.
      */
     private String getEffectiveModelId() {
         if (overrideModelId != null && !overrideModelId.isBlank()) {
             return overrideModelId;
         }
-        return DEFAULT_MODEL_ID;
+        String activeModel = resolveActiveProviderModel();
+        return activeModel != null ? activeModel : ""; //$NON-NLS-1$
+    }
+
+    private String resolveActiveProviderModel() {
+        try {
+            return LlmProviderConfigStore.getInstance().getActiveProvider()
+                    .map(LlmProviderConfig::getModel)
+                    .filter(model -> model != null && !model.isBlank())
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void openModelSelectionDialog() {
@@ -2978,6 +3148,10 @@ public class ChatView extends ViewPart {
                         if (selected != null) {
                             String previousModelId = overrideModelId;
                             overrideModelId = selected.getId();
+                            // Persist the per-view model choice with this window's session.
+                            Session modelSession = viewSession();
+                            modelSession.setModelId(overrideModelId);
+                            SessionManager.getInstance().saveSession(modelSession);
                             updateModelButtonLabel();
 
                             // Ask user whether to start a new chat when model changes mid-conversation
@@ -3050,6 +3224,11 @@ public class ChatView extends ViewPart {
 
     @Override
     public void setFocus() {
+        // Multi-view: the focused chat becomes the global current session, so remote-trigger and
+        // Code.md resolution target this window.
+        if (session != null) {
+            SessionManager.getInstance().setCurrentSession(session);
+        }
         inputField.setFocus();
     }
 
@@ -3128,6 +3307,8 @@ public class ChatView extends ViewPart {
 
     @Override
     public void dispose() {
+        // Phase 0: persist the conversation so it survives EDT close/restart.
+        persistSession();
         if (currentRequest != null && !currentRequest.isDone()) {
             currentRequest.cancel(true);
             if (currentRequestUsesDesktopController) {

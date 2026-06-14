@@ -21,6 +21,12 @@
             class="com.codepilot1c.ui.preferences.AccountPreferencePage">
         </page>
         <page
+            id="com.codepilot1c.ui.preferences.CodexAccountPreferencePage"
+            name="Аккаунт ChatGPT"
+            category="com.codepilot1c.ui.preferences.VibePreferencePage"
+            class="com.codepilot1c.ui.preferences.CodexAccountPreferencePage">
+        </page>
+        <page
             id="com.codepilot1c.ui.preferences.ProvidersPreferencePage"
             name="%preferences.providers.name"
             category="com.codepilot1c.ui.preferences.VibePreferencePage"
@@ -83,7 +89,7 @@
             icon="icons/vibe16.png"
             category="com.codepilot1c.ui.category"
             class="com.codepilot1c.ui.views.ChatView"
-            allowMultiple="false">
+            allowMultiple="true">
         </view>
         <view
             id="com.codepilot1c.ui.views.GraphStudioView"

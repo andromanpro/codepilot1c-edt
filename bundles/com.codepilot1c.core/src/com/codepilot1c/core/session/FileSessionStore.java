@@ -336,6 +336,7 @@ public class FileSessionStore implements ISessionStore {
         Instant updatedAt;
         String systemPrompt;
         String agentProfile;
+        String modelId;
         int totalTokens;
         List<MessageData> messages;
 
@@ -350,6 +351,7 @@ public class FileSessionStore implements ISessionStore {
             data.updatedAt = session.getUpdatedAt();
             data.systemPrompt = session.getSystemPrompt();
             data.agentProfile = session.getAgentProfile();
+            data.modelId = session.getModelId();
             data.totalTokens = session.getTotalTokens();
             data.messages = session.getMessages().stream()
                     .map(MessageData::from)
@@ -366,6 +368,7 @@ public class FileSessionStore implements ISessionStore {
             session.setUpdatedAt(updatedAt);
             session.setSystemPrompt(systemPrompt);
             session.setAgentProfile(agentProfile);
+            session.setModelId(modelId);
             session.setTotalTokens(totalTokens);
 
             if (messages != null) {

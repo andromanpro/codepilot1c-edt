@@ -56,6 +56,8 @@ public class Session {
     private final List<SessionMessage> messages;
     private String systemPrompt;
     private String agentProfile;
+    /** Per-view model id chosen for this session (multi-view: each chat window keeps its own model). */
+    private String modelId;
     private int totalTokens;
 
     /**
@@ -234,6 +236,21 @@ public class Session {
      */
     public void setAgentProfile(String agentProfile) {
         this.agentProfile = agentProfile;
+        touch();
+    }
+
+    /**
+     * Идентификатор модели, выбранной для этой сессии (per-view выбор модели в мульти-вью).
+     */
+    public String getModelId() {
+        return modelId;
+    }
+
+    /**
+     * Устанавливает идентификатор модели сессии.
+     */
+    public void setModelId(String modelId) {
+        this.modelId = modelId;
         touch();
     }
 
