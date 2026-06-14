@@ -46,6 +46,11 @@ The web client renders the **Taxi** managed interface. Know its anatomy or you w
   `browser_snapshot` accessibility tree).
 - **Wait for the server round-trip** after every action — 1C actions are async and show a busy indicator;
   wait for idle/network-quiet, then re-`browser_snapshot` before asserting. Never assert immediately.
+- **Commit each input value — critical.** 1C web-client fields send their value to the server on **blur/Enter**
+  (a round-trip), NOT on keystroke. After typing into a field, press **Tab** (or click another element) to
+  force the commit, then wait for the busy indicator. A value set without firing the field's change/blur event
+  never reaches the server: a later «Записать» will report «Поле … не заполнено» and the form will visually
+  reset, even though the field looked filled. `type`-style input + Tab is reliable; a bare value-set is not.
 - Errors surface in **two** places: the **messages area** (служебные сообщения, usually bottom) and modal
   **dialogs** — check both after each action. Login goes through `e1cib/login` (a 402→200 handshake is normal).
 
@@ -76,11 +81,13 @@ Navigate to `web_client_url`, log in once, then for each planned object/flow (us
 `#e1cib/list/<Тип>.<Имя>`, the sections panel, or «Функции для технического специалиста» to reach it):
 1. Open the **list form** — confirm it loads, columns match what `inspect_form_layout` reported, data renders.
 2. **Create** via «Создать»: open the object form, confirm every new attribute/field/table is present and
-   editable; fill required fields with sample data. If a command seems missing, check the **«Ещё»** menu.
-3. **Tabular sections / ValueTable / ValueTree**: add rows via the table's own «Добавить», fill cells,
-   confirm the new columns exist and accept input; for a tree, expand/add child rows.
-4. **Persist**: «Записать»/«Записать и закрыть» (documents: «Провести»/«Провести и закрыть») — confirm success,
-   no error dialog.
+   editable; fill required fields with sample data — **commit each field with Tab and wait for the busy
+   indicator** before moving to the next. If a command seems missing, check the **«Ещё»** menu.
+3. **Tabular sections / ValueTable / ValueTree**: add rows via the table's own «Добавить», fill cells
+   (commit each cell with Tab/Enter), confirm the new columns exist and accept input; for a tree, expand/add
+   child rows.
+4. **Persist**: ensure the last edited field has committed (focus has left it), then «Записать»/«Записать и
+   закрыть» (documents: «Провести»/«Провести и закрыть») — confirm success, no error dialog.
 5. **Reopen** the saved item — confirm values persisted and the layout is intact.
 6. **Exercise new behavior**: run the new command/button, open the new report (set parameters, generate),
    trigger the form event the change introduced.
@@ -107,6 +114,12 @@ Synthesize the run into findings — this is the core deliverable, not just raw 
 - Correlate each screenshot + snapshot + console/network slice into a concrete observation.
 - Classify each: **FAIL** (error, broken flow, missing element), **WARN** (UX/UI issue, cosmetic,
   non-blocking), **PASS**.
+- **Rule out automation artifacts before reporting a defect.** A «Поле … не заполнено» error on save for a
+  field you DID fill — especially when entered values visually reset — almost always means the value never
+  committed to the server (blur/round-trip missed), NOT a config bug. Re-test it cleanly first: fill ONLY the
+  mandatory field, commit with Tab, wait for the busy indicator, then «Записать». Escalate to a real
+  config/code finding (header field not bound, a handler clearing data) ONLY if a committed re-entry still
+  fails. Do not report a Critical defect on the strength of a single un-committed attempt.
 - If `vision_confirmed=true`: judge screenshots visually against the expected result.
 - If `vision_confirmed=false`: do NOT claim a screenshot looks correct. Judge from the accessibility
   snapshot / page text / DOM (element presence, labels, error text) and surface `vision_hint` to the user

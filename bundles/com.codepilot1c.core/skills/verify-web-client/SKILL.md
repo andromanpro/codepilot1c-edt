@@ -26,6 +26,10 @@ Goal: maximum verification depth — actually open the changed feature, exercise
 - **Automate by meaning, not by id:** the web client is a virtual DOM with auto-generated ids/classes, so
   CSS/XPath selectors break. Use accessible name / visible text / role (button captions, field synonyms,
   row text — Playwright `getByRole`/`getByText`/`getByLabel` or the `browser_snapshot` tree).
+- **Commit each input:** 1C fields send their value on blur/Enter, not on keystroke — after typing, press
+  Tab and wait for the busy indicator. A value that never committed makes «Записать» report «Поле … не
+  заполнено» and resets the form, which looks like a config bug but is an automation artifact — re-enter and
+  commit before reporting it.
 - **Wait for the busy indicator** to clear after each action (1C round-trips are async) before asserting;
   errors appear both in modal dialogs and the bottom messages area (служебные сообщения). `e1cib/login`
   returning 402→200 is the normal auth handshake.
