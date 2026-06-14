@@ -47,6 +47,7 @@ import com._1c.g5.v8.bm.core.BmNameAlreadyInUseException;
 import com._1c.g5.v8.bm.core.IBmNamespace;
 import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.bm.core.IBmPlatformTransaction;
+import com._1c.g5.v8.dt.rights.IRightInfosService;
 import com._1c.g5.v8.bm.core.IBmTransaction;
 import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
 import com._1c.g5.v8.derived.IDerivedDataManager;
@@ -141,6 +142,7 @@ import com.codepilot1c.core.edt.forms.UpdateFormModelResult;
 import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
+import java.util.function.Consumer;
 import org.osgi.framework.Bundle;
 
 /**
@@ -160,6 +162,8 @@ public class EdtMetadataService {
     private static final String FORM_BUNDLE_ID = "com._1c.g5.v8.dt.form"; //$NON-NLS-1$
     private static final String PLATFORM_BUNDLE_ID = "com._1c.g5.v8.dt.platform"; //$NON-NLS-1$
     private static final String FORM_PLUGIN_CLASS = "com._1c.g5.v8.dt.internal.form.FormPlugin"; //$NON-NLS-1$
+    private static final String RIGHTS_BUNDLE_ID = "com._1c.g5.v8.dt.rights"; //$NON-NLS-1$
+    private static final String RIGHTS_PLUGIN_CLASS = "com._1c.g5.v8.dt.rights.RightsPlugin"; //$NON-NLS-1$
     private static final String FORM_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormFieldGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_INFO_CLASS = "com._1c.g5.v8.dt.form.generator.FormFieldInfo"; //$NON-NLS-1$
@@ -5009,6 +5013,32 @@ public class EdtMetadataService {
         return injector;
     }
 
+    private Object resolvePluginInjector(Bundle bundle, String pluginClassName) throws ReflectiveOperationException {
+        Class<?> pluginClass = loadBundleClass(bundle, pluginClassName);
+        Method getDefault = pluginClass.getMethod("getDefault"); //$NON-NLS-1$
+        Object plugin = getDefault.invoke(null);
+        if (plugin == null) {
+            try {
+                bundle.start(Bundle.START_TRANSIENT);
+            } catch (Exception e) {
+                throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                        "Failed to start EDT bundle " + bundle.getSymbolicName() + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            plugin = getDefault.invoke(null);
+        }
+        if (plugin == null) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Plugin instance unavailable: " + pluginClassName, false); //$NON-NLS-1$
+        }
+        Method getInjector = pluginClass.getMethod("getInjector"); //$NON-NLS-1$
+        Object injector = getInjector.invoke(plugin);
+        if (injector == null) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Plugin injector unavailable: " + pluginClassName, false); //$NON-NLS-1$
+        }
+        return injector;
+    }
+
     private Object resolveInjectorService(Object injector, Class<?> serviceClass) throws ReflectiveOperationException {
         Class<?> injectorApiClass = resolveInjectorApiClass(injector);
         Method getInstance = injectorApiClass.getMethod("getInstance", Class.class); //$NON-NLS-1$
@@ -9395,6 +9425,40 @@ public class EdtMetadataService {
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
                     "Metadata transaction failed: " + e.getMessage(), false, e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Resolves the EDT {@link IRightInfosService} (configuration rights catalog) via the rights
+     * plugin Guice injector — the same reflective pattern used for form services.
+     */
+    public IRightInfosService resolveRightInfosService() {
+        try {
+            Bundle rightsBundle = requireBundle(RIGHTS_BUNDLE_ID);
+            Object injector = resolvePluginInjector(rightsBundle, RIGHTS_PLUGIN_CLASS);
+            return (IRightInfosService) resolveInjectorService(injector, IRightInfosService.class);
+        } catch (MetadataOperationException e) {
+            throw e;
+        } catch (ReflectiveOperationException e) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve IRightInfosService: " + e.getMessage(), false, e); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Runs {@code mutation} inside a BM write transaction on the project, then force-exports the given
+     * top object (FQN) to the filesystem and refreshes the project. Shared write+export plumbing for
+     * callers (e.g. role rights) that mutate a single top object's contained model.
+     */
+    public void mutateTopObjectAndExport(String projectName, String topObjectFqn,
+            Consumer<IBmPlatformTransaction> mutation) {
+        IProject project = requireProject(projectName);
+        String opId = LogSanitizer.newId("mutate-top"); //$NON-NLS-1$
+        executeWrite(project, transaction -> {
+            mutation.accept(transaction);
+            return null;
+        });
+        forceExportTopLevelObject(project, topObjectFqn, opId);
+        refreshProjectSafely(project);
     }
 
     private <T> T executeRead(IProject project, ReadTransactionTask<T> task) {

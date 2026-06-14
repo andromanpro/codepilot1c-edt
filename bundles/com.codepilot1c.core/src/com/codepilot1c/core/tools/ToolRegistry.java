@@ -109,6 +109,8 @@ public class ToolRegistry {
         register(new EdtFindReferencesTool());
         register(new EdtMetadataDetailsTool());
         register(new ScanMetadataIndexTool());
+        register(new InspectRoleRightsTool());
+        register(new MutateRoleRightsTool());
         register(new GetConfigurationPropertiesTool());
         register(new GetProblemSummaryTool());
         register(new GetTagsTool());

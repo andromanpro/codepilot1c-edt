@@ -655,6 +655,30 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    public Map<String, Object> normalizeMutateRoleRightsPayload(
+            String projectName,
+            String role,
+            List<Map<String, Object>> operations
+    ) {
+        if (projectName == null || projectName.isBlank()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "project is required", false); //$NON-NLS-1$
+        }
+        if (role == null || role.isBlank()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "role is required", false); //$NON-NLS-1$
+        }
+        if (operations == null || operations.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "operations must contain at least one operation", false); //$NON-NLS-1$
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("role", role); //$NON-NLS-1$
+        payload.put("operations", new ArrayList<>(operations)); //$NON-NLS-1$
+        return payload;
+    }
+
     public Map<String, Object> normalizeRenderTemplatePayload(
             String projectName,
             String templateFqn,
@@ -1105,6 +1129,14 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("form_fqn")), //$NON-NLS-1$
                         asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
                 checks.add("Операция mutate_form_model валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case MUTATE_ROLE_RIGHTS -> {
+                Map<String, Object> payload = normalizeMutateRoleRightsPayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("role")), //$NON-NLS-1$
+                        asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
+                checks.add("Операция mutate_role_rights валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
             case RENDER_TEMPLATE -> {
