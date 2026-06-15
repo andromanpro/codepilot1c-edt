@@ -10,6 +10,7 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
+import com.codepilot1c.core.edt.ast.BmSyncHelper;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -214,12 +215,19 @@ public class WriteTool extends AbstractTool {
         // Refresh
         file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
 
+        // Wait for EDT to recompute derived data (BM) for this project, so subsequent
+        // BM-backed operations (bsl_get_method_body, update_infobase, ...) see the new
+        // content without requiring an EDT restart.
+        boolean bmSynced = BmSyncHelper.flushAfterWrite(file);
+
         // Build result
         StringBuilder result = new StringBuilder();
         result.append("**Файл обновлен:** `").append(file.getFullPath()).append("`\n");
         result.append("**Размер:** ").append(bytes.length).append(" байт\n");
         result.append("**Строк:** ").append(countLines(content)).append("\n");
-        result.append("**Статус:** ").append(created ? "создан" : "перезаписан");
+        result.append("**Статус:** ").append(created ? "создан" : "перезаписан").append("\n");
+        result.append("**BM-синхронизация:** ")
+                .append(bmSynced ? "готово" : "не подтверждена (модель может отставать)");
 
         logInfo((created ? "Файл создан: " : "Файл обновлен: ") + file.getFullPath());
 
