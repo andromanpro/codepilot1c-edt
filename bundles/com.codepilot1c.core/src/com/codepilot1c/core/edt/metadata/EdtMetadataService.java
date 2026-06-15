@@ -73,7 +73,9 @@ import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.FormGroup;
+import com._1c.g5.v8.dt.form.model.FieldExtInfo;
 import com._1c.g5.v8.dt.form.model.GroupExtInfo;
+import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
 import com._1c.g5.v8.dt.form.model.ManagedFormButtonType;
 import com._1c.g5.v8.dt.form.model.ManagedFormGroupType;
 import com._1c.g5.v8.dt.form.model.PageGroupExtInfo;
@@ -87,6 +89,8 @@ import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.Event;
+import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
@@ -863,6 +867,7 @@ public class EdtMetadataService {
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(field, effectiveSet);
                     }
+                    ensureFormFieldExtInfo(field);
                     applyDefaultVisibility(field, effectiveSet);
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
@@ -907,6 +912,9 @@ public class EdtMetadataService {
                                 "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
                     applyFormPropertySet(item, set);
+                    if (item instanceof FormField) {
+                        ensureFormFieldExtInfo((FormField) item);
+                    }
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "removeitem", "deleteitem" -> {
@@ -997,6 +1005,55 @@ public class EdtMetadataService {
                     summaries.add("add_button[" + operationIndex + "]: name=" + button.getName() //$NON-NLS-1$ //$NON-NLS-2$
                             + ", id=" + safeItemId(button) //$NON-NLS-1$
                             + (commandRef != null ? ", command=" + commandRef : "")); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addhandler", "add_handler", "addeventhandler", "set_handler" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    String event = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+                    if (event == null || event.isBlank()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "add_handler requires 'event' (e.g. OnCreateAtServer)", false); //$NON-NLS-1$
+                    }
+                    String handlerName = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (handlerName == null || handlerName.isBlank()) {
+                        handlerName = event;
+                    }
+                    Event targetEvent = null;
+                    for (Event ev : formModel.getFormEvents()) {
+                        if (ev != null && event.equalsIgnoreCase(ev.getName())) {
+                            targetEvent = ev;
+                            break;
+                        }
+                    }
+                    if (targetEvent == null) {
+                        java.util.List<String> available = new java.util.ArrayList<>();
+                        for (Event ev : formModel.getFormEvents()) {
+                            if (ev != null) {
+                                available.add(ev.getName());
+                            }
+                        }
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.METADATA_NOT_FOUND,
+                                "Form event not found: " + event + ". Available: " + String.join(", ", available), false); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
+                    EventHandler existingHandler = null;
+                    for (EventHandler h : formModel.getHandlers()) {
+                        if (h != null && h.getEvent() == targetEvent) {
+                            existingHandler = h;
+                            break;
+                        }
+                    }
+                    if (existingHandler != null) {
+                        existingHandler.setName(handlerName);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName + " (updated)"); //$NON-NLS-1$ //$NON-NLS-2$
+                    } else {
+                        EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
+                        handler.setEvent(targetEvent);
+                        handler.setName(handlerName);
+                        formModel.getHandlers().add(handler);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -1415,6 +1472,44 @@ public class EdtMetadataService {
                 }
             }
         }
+    }
+
+    private FieldExtInfo ensureFormFieldExtInfo(FormField field) {
+        if (field == null) {
+            return null;
+        }
+        FieldExtInfo existing = field.getExtInfo();
+        ManagedFormFieldType type = field.getType();
+        // NOTE: factory method names adjusted to the EDT 2025.2.3 form.model API
+        // (renamed/removed vs the old base — verified via javap on FormFactory).
+        FieldExtInfo created = switch (type == null ? ManagedFormFieldType.INPUT_FIELD : type) {
+            case LABEL_FIELD -> FormFactory.eINSTANCE.createLabelFieldExtInfo();
+            case INPUT_FIELD -> FormFactory.eINSTANCE.createInputFieldExtInfo();
+            case CHECK_BOX_FIELD -> FormFactory.eINSTANCE.createCheckBoxFieldExtInfo();
+            case PICTURE_FIELD -> FormFactory.eINSTANCE.createImageFieldExtInfo();
+            case RADIO_BUTTON_FIELD -> FormFactory.eINSTANCE.createRadioButtonsFieldExtInfo();
+            case TEXT_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createTextDocFieldExtInfo();
+            case HTML_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createHtmlFieldExtInfo();
+            case CALENDAR_FIELD -> FormFactory.eINSTANCE.createCalendarFieldExtInfo();
+            case PERIOD_FIELD -> FormFactory.eINSTANCE.createPeriodFieldExtInfo();
+            case PROGRESS_BAR_FIELD -> FormFactory.eINSTANCE.createProgressBarFieldExtInfo();
+            case TRACK_BAR_FIELD -> FormFactory.eINSTANCE.createTrackBarFieldExtInfo();
+            case CHART_FIELD -> FormFactory.eINSTANCE.createChartFieldExtInfo();
+            case GANTT_CHART_FIELD -> FormFactory.eINSTANCE.createGanttChartFieldExtInfo();
+            case DENDROGRAM_FIELD -> FormFactory.eINSTANCE.createDendrogramFieldExtInfo();
+            case PLANNER_FIELD -> FormFactory.eINSTANCE.createPlannerFieldExtInfo();
+            case GEOGRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createGeographicalMapFieldExtInfo();
+            case FORMATTED_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createFormattedDocFieldExtInfo();
+            case GRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createFlowchartFieldExtInfo();
+            case SPREADSHEET_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createSpreadSheetDocFieldExtInfo();
+            case PDF_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createPDFDocumentFieldExtInfo();
+            default -> FormFactory.eINSTANCE.createInputFieldExtInfo();
+        };
+        if (existing != null && existing.getClass() == created.getClass()) {
+            return existing;
+        }
+        field.setExtInfo(created);
+        return created;
     }
 
     private FormItemContainer resolveTargetContainer(Form formModel, Map<String, Object> operation) {
