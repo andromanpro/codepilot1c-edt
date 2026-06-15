@@ -653,33 +653,37 @@ public class EdtRuntimeService {
                 loader);
         return Proxy.newProxyInstance(callbackInterface.getClassLoader(),
                 new Class<?>[] { callbackInterface },
-                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(method, args));
+                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(proxy, method, args));
     }
 
-    @SuppressWarnings("unchecked")
-    private static Object handleUpdateCallback(Method method, Object[] args) throws Exception {
+    private static Object handleUpdateCallback(Object proxy, Method method, Object[] args) {
         String name = method.getName();
         if ("onConfirm".equals(name)) { //$NON-NLS-1$
             return Boolean.TRUE;
         }
-        if ("onInfobaseChanges".equals(name)) { //$NON-NLS-1$
-            if (args == null || args.length < 7) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+        // EDT 2025.2.x вызывает resolveInfobaseChanges (унаследован из IInfobaseChangesResolver);
+        // прежнее имя onInfobaseChanges оставлено как legacy-alias на случай других версий API.
+        // Для headless-обновления политика — «проект перезаписывает ИБ»: возвращаем OVERRIDDEN
+        // (как GUI-callback при allowOverrideConflict), НЕ вызывая resolver.overrideConflict —
+        // он требует IUpdateInfobaseFlow, которого в аргументах resolveInfobaseChanges нет.
+        if ("resolveInfobaseChanges".equals(name) || "onInfobaseChanges".equals(name)) { //$NON-NLS-1$ //$NON-NLS-2$
+            Object overridden = enumValue(method.getReturnType(), "OVERRIDDEN"); //$NON-NLS-1$
+            if (overridden != null) {
+                return overridden;
             }
-            Object conflictResolver = args[4];
-            if (conflictResolver == null) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
-            }
-            Method override = findMethod(conflictResolver.getClass(), "overrideConflict", 6); //$NON-NLS-1$
-            if (override != null) {
-                return override.invoke(conflictResolver, args[0], args[1], args[2], args[3], args[5], args[6]);
-            }
-            return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            Object deferred = enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            return deferred != null ? deferred : defaultValue(method.getReturnType());
         }
-        if ("toString".equals(name)) { //$NON-NLS-1$
+        if ("toString".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
             return "AutoUpdateCallbackProxy"; //$NON-NLS-1$
         }
-        return null;
+        if ("hashCode".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
+            return Integer.valueOf(System.identityHashCode(proxy));
+        }
+        if ("equals".equals(name) && method.getParameterCount() == 1) { //$NON-NLS-1$
+            return Boolean.valueOf(args != null && args.length == 1 && proxy == args[0]);
+        }
+        return defaultValue(method.getReturnType());
     }
 
     private static Method findUpdateMethod(Class<?> managerClass) {
@@ -698,7 +702,42 @@ public class EdtRuntimeService {
     @SuppressWarnings("unchecked")
     private static Object enumValue(Class<?> type, String name) {
         if (type != null && type.isEnum()) {
-            return Enum.valueOf((Class<Enum>) type, name);
+            try {
+                return Enum.valueOf((Class<Enum>) type, name);
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Object defaultValue(Class<?> type) {
+        if (type == null || type == Void.TYPE || !type.isPrimitive()) {
+            return null;
+        }
+        if (type == Boolean.TYPE) {
+            return Boolean.FALSE;
+        }
+        if (type == Character.TYPE) {
+            return Character.valueOf('\0');
+        }
+        if (type == Byte.TYPE) {
+            return Byte.valueOf((byte) 0);
+        }
+        if (type == Short.TYPE) {
+            return Short.valueOf((short) 0);
+        }
+        if (type == Integer.TYPE) {
+            return Integer.valueOf(0);
+        }
+        if (type == Long.TYPE) {
+            return Long.valueOf(0L);
+        }
+        if (type == Float.TYPE) {
+            return Float.valueOf(0F);
+        }
+        if (type == Double.TYPE) {
+            return Double.valueOf(0D);
         }
         return null;
     }
