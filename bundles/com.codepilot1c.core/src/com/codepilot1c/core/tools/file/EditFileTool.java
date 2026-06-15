@@ -37,6 +37,7 @@ import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
 import com.codepilot1c.core.edit.MatchResult;
 import com.codepilot1c.core.edit.SearchReplaceFormat;
+import com.codepilot1c.core.edt.ast.BmSyncHelper;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -202,6 +203,14 @@ public class EditFileTool extends AbstractTool {
                     LOG.warn("edit_file: недостаточно параметров для редактирования"); //$NON-NLS-1$
                     return ToolResult.failure(
                             "Either 'content', 'edits', or both 'old_text' and 'new_text' are required"); //$NON-NLS-1$
+                }
+
+                if (result.isSuccess()) {
+                    // Wait for EDT to recompute derived data (BM) for this project, so
+                    // subsequent BM-backed operations (bsl_get_method_body, update_infobase,
+                    // ...) see the edit without requiring an EDT restart. Covers all write
+                    // paths above (replace / search-replace / fuzzy / edit-blocks).
+                    BmSyncHelper.flushAfterWrite(file);
                 }
 
                 LOG.debug("edit_file: завершено за %s, success=%b", //$NON-NLS-1$
