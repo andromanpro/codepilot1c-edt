@@ -404,8 +404,33 @@ public class BslSemanticService {
         } catch (RuntimeException e) {
             throw new EdtAstException(
                     EdtAstErrorCode.EDT_SERVICE_UNAVAILABLE,
-                    "Failed to execute BSL read transaction: " + e.getMessage(), true, e); //$NON-NLS-1$
+                    "Failed to execute BSL read transaction: " + describeCause(e), true, e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Human-readable description of a failure for diagnostics. Surfaces the exception class and the
+     * cause chain even when {@code getMessage()} is null (e.g. a bare {@link NullPointerException} from
+     * the headless content-assist engine), so the tool error tells us the real reason, not just
+     * "Failed to execute BSL read transaction".
+     */
+    private static String describeCause(Throwable error) {
+        StringBuilder sb = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < 5) {
+            if (depth > 0) {
+                sb.append(" <- "); //$NON-NLS-1$
+            }
+            sb.append(current.getClass().getSimpleName());
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                sb.append(": ").append(message); //$NON-NLS-1$
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return sb.length() == 0 ? "unknown error" : sb.toString(); //$NON-NLS-1$
     }
 
     private PositionContext resolveContext(BslPositionRequest request) {
