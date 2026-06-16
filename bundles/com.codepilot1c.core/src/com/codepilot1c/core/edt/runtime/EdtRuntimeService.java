@@ -661,12 +661,17 @@ public class EdtRuntimeService {
         if ("onConfirm".equals(name)) { //$NON-NLS-1$
             return Boolean.TRUE;
         }
-        // EDT 2025.2.x вызывает resolveInfobaseChanges (унаследован из IInfobaseChangesResolver);
-        // прежнее имя onInfobaseChanges оставлено как legacy-alias на случай других версий API.
-        // Для headless-обновления политика — «проект перезаписывает ИБ»: возвращаем OVERRIDDEN
-        // (как GUI-callback при allowOverrideConflict), НЕ вызывая resolver.overrideConflict —
-        // он требует IUpdateInfobaseFlow, которого в аргументах resolveInfobaseChanges нет.
+        // EDT 2025.2.x calls resolveInfobaseChanges (from IInfobaseChangesResolver); the legacy
+        // onInfobaseChanges name is kept for other API versions. Headless policy: the project overrides
+        // the infobase. We must ACTUALLY perform the override via the conflict resolver passed in the
+        // callback args (IInfobaseUpdateConflictResolver.overrideConflict) — just returning OVERRIDDEN
+        // reports success while leaving the infobase unsynced, so updateInfobase() returns false. We
+        // fall back to reporting OVERRIDDEN only when the resolver cannot be invoked.
         if ("resolveInfobaseChanges".equals(name) || "onInfobaseChanges".equals(name)) { //$NON-NLS-1$ //$NON-NLS-2$
+            Object resolved = invokeConflictOverride(args);
+            if (resolved != null) {
+                return resolved;
+            }
             Object overridden = enumValue(method.getReturnType(), "OVERRIDDEN"); //$NON-NLS-1$
             if (overridden != null) {
                 return overridden;
@@ -697,6 +702,79 @@ public class EdtRuntimeService {
             }
         }
         return null;
+    }
+
+    /**
+     * Performs the infobase override by reflectively invoking {@code overrideConflict(...)} on the
+     * conflict resolver passed in the callback args (the arg exposing such a method). Arguments are
+     * matched to the available callback args by type, so it tolerates signature differences across EDT
+     * versions. Returns the resolver's result enum, or {@code null} when it cannot be invoked (the
+     * caller then safely falls back to reporting OVERRIDDEN).
+     */
+    private static Object invokeConflictOverride(Object[] args) {
+        if (args == null) {
+            return null;
+        }
+        for (Object resolver : args) {
+            if (resolver == null) {
+                continue;
+            }
+            Method override = findMethodByName(resolver.getClass(), "overrideConflict"); //$NON-NLS-1$
+            if (override == null) {
+                continue;
+            }
+            Object[] callArgs = matchArgsByType(override.getParameterTypes(), args, resolver);
+            if (callArgs == null) {
+                continue;
+            }
+            try {
+                override.setAccessible(true);
+                return override.invoke(resolver, callArgs);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                LOG.warn("overrideConflict invocation failed; reporting OVERRIDDEN instead: " //$NON-NLS-1$
+                        + e.getMessage());
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Method findMethodByName(Class<?> type, String name) {
+        for (Method method : type.getMethods()) {
+            if (method.getName().equals(name)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Best-effort matching of {@code paramTypes} against the available callback args (excluding
+     * {@code exclude}, the resolver itself), by assignability. Returns {@code null} when any
+     * non-primitive parameter has no assignable arg, so the caller can fall back instead of mis-invoking.
+     */
+    private static Object[] matchArgsByType(Class<?>[] paramTypes, Object[] available, Object exclude) {
+        Object[] result = new Object[paramTypes.length];
+        boolean[] used = new boolean[available.length];
+        for (int p = 0; p < paramTypes.length; p++) {
+            Object match = null;
+            for (int a = 0; a < available.length; a++) {
+                Object arg = available[a];
+                if (used[a] || arg == null || arg == exclude) {
+                    continue;
+                }
+                if (paramTypes[p].isInstance(arg)) {
+                    match = arg;
+                    used[a] = true;
+                    break;
+                }
+            }
+            if (match == null && !paramTypes[p].isPrimitive()) {
+                return null;
+            }
+            result[p] = match;
+        }
+        return result;
     }
 
     @SuppressWarnings("unchecked")
