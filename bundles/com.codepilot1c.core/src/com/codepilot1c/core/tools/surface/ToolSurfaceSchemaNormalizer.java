@@ -140,7 +140,7 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "content": {
                           "type": "string",
-                          "description": "Full replacement content for the file."
+                          "description": "Full replacement content for the file. Must be non-empty; ignored when old_text/new_text or edits are provided."
                         },
                         "old_text": {
                           "type": "string",
@@ -182,6 +182,10 @@ final class ToolSurfaceSchemaNormalizer {
                         "overwrite": {
                           "type": "boolean",
                           "description": "Must be true. Existing files are overwritten; project-root Code.md may be created."
+                        },
+                        "allow_empty": {
+                          "type": "boolean",
+                          "description": "Must be true to write empty content over an existing non-empty file."
                         }
                       },
                       "required": ["path", "content"],

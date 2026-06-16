@@ -66,7 +66,7 @@ public class EditFileTool extends AbstractTool {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full replacement content for the file; prefer write_file if you intentionally overwrite the whole file"
+                        "description": "Full replacement content for the file; must be non-empty and is ignored when old_text/new_text or edits are provided. Prefer write_file for intentional whole-file overwrite"
                     },
                     "old_text": {
                         "type": "string",
@@ -183,21 +183,36 @@ public class EditFileTool extends AbstractTool {
                 }
 
                 ToolResult result;
-                if (content != null) {
-                    // Replace entire file content
-                    LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
-                            file.getFullPath(), content.length());
-                    result = replaceContent(file, content);
-                } else if (edits != null && !edits.isEmpty()) {
+                EditMode mode = resolveEditMode(content, edits, oldText, newText);
+                if (content != null && (mode == EditMode.SEARCH_REPLACE_BLOCKS || mode == EditMode.FUZZY_REPLACE)) {
+                    // A stray (often empty) 'content' next to targeted-edit params must not
+                    // turn a partial edit into a full-file overwrite.
+                    LOG.warn("edit_file: параметр content проигнорирован — частичные правки имеют приоритет (%s)", //$NON-NLS-1$
+                            mode);
+                }
+                if (mode == EditMode.SEARCH_REPLACE_BLOCKS) {
                     // SEARCH/REPLACE blocks format
                     LOG.info("edit_file: SEARCH/REPLACE редактирование %s", //$NON-NLS-1$
                             file.getFullPath());
                     result = applySearchReplaceEdits(file, edits);
-                } else if (oldText != null && newText != null) {
+                } else if (mode == EditMode.FUZZY_REPLACE) {
                     // Search and replace with fuzzy matching
                     LOG.info("edit_file: fuzzy search-replace в %s (oldText=%d символов)", //$NON-NLS-1$
                             file.getFullPath(), oldText.length());
                     result = fuzzySearchAndReplace(file, oldText, newText);
+                } else if (mode == EditMode.REPLACE_CONTENT) {
+                    // Replace entire file content
+                    LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
+                            file.getFullPath(), content.length());
+                    result = replaceContent(file, content);
+                } else if (mode == EditMode.EMPTY_CONTENT_ONLY) {
+                    LOG.warn("edit_file: пустой content без частичных параметров — запись отклонена: %s", //$NON-NLS-1$
+                            file.getFullPath());
+                    return ToolResult.failure(
+                            "edit_file received an empty 'content' and no 'old_text'/'new_text' or 'edits'. " + //$NON-NLS-1$
+                            "The write was aborted to prevent wiping the file. " + //$NON-NLS-1$
+                            "Provide targeted edits, or use write_file with overwrite=true and allow_empty=true " + //$NON-NLS-1$
+                            "to intentionally empty the file."); //$NON-NLS-1$
                 } else {
                     LOG.warn("edit_file: недостаточно параметров для редактирования"); //$NON-NLS-1$
                     return ToolResult.failure(
@@ -214,6 +229,44 @@ public class EditFileTool extends AbstractTool {
                 return ToolResult.failure("Error editing file: " + e.getMessage()); //$NON-NLS-1$
             }
         });
+    }
+
+    /**
+     * Edit mode resolved from the tool parameters.
+     */
+    enum EditMode {
+        /** Full-file replacement with non-blank content. */
+        REPLACE_CONTENT,
+        /** SEARCH/REPLACE blocks from the 'edits' parameter. */
+        SEARCH_REPLACE_BLOCKS,
+        /** Fuzzy old_text/new_text replacement. */
+        FUZZY_REPLACE,
+        /** Only a blank 'content' was provided — must be rejected. */
+        EMPTY_CONTENT_ONLY,
+        /** No actionable parameters. */
+        NONE
+    }
+
+    /**
+     * Resolves the edit mode with targeted edits taking precedence over
+     * full-content replacement: models often emit a stray (frequently empty)
+     * 'content' field alongside old_text/new_text, and full replacement with
+     * it would wipe the file. Blank 'content' never counts as a replacement.
+     */
+    static EditMode resolveEditMode(String content, String edits, String oldText, String newText) {
+        if (edits != null && !edits.isEmpty()) {
+            return EditMode.SEARCH_REPLACE_BLOCKS;
+        }
+        if (oldText != null && newText != null) {
+            return EditMode.FUZZY_REPLACE;
+        }
+        if (content != null && !content.isBlank()) {
+            return EditMode.REPLACE_CONTENT;
+        }
+        if (content != null) {
+            return EditMode.EMPTY_CONTENT_ONLY;
+        }
+        return EditMode.NONE;
     }
 
     /**
@@ -375,6 +428,11 @@ public class EditFileTool extends AbstractTool {
         String currentContent = readFileContent(file);
         String lineSeparator = detectLineSeparator(currentContent);
         String normalizedContent = normalizeLineEndings(content, lineSeparator);
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, normalizedContent)) {
+            LOG.warn("edit_file: запись пустого результата поверх непустого файла отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
@@ -444,6 +502,11 @@ public class EditFileTool extends AbstractTool {
 
         // Write the modified content preserving line endings
         String normalizedContent = normalizeLineEndings(applyResult.afterContent(), lineSeparator);
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, normalizedContent)) {
+            LOG.warn("edit_file: SEARCH/REPLACE результат пуст при непустом исходнике, запись отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
@@ -483,6 +546,11 @@ public class EditFileTool extends AbstractTool {
         String after = currentContent.substring(location.getEndOffset());
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
         String newContent = before + normalizedNewText + after;
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, newContent)) {
+            LOG.warn("edit_file: fuzzy результат пуст при непустом исходнике, запись отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
 
         // Write with same charset
         Charset charset = getFileCharset(file);

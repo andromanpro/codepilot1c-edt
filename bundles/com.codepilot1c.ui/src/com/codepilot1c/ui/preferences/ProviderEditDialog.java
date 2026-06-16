@@ -8,6 +8,7 @@
 package com.codepilot1c.ui.preferences;
 
 import java.util.List;
+import java.util.concurrent.CompletionException;
 
 import org.eclipse.jface.dialogs.IDialogConstants;
 import org.eclipse.jface.dialogs.IMessageProvider;
@@ -17,6 +18,7 @@ import org.eclipse.swt.events.SelectionAdapter;
 import org.eclipse.swt.events.SelectionEvent;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
+import org.eclipse.swt.program.Program;
 import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
@@ -31,6 +33,10 @@ import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.ModelFetchService;
 import com.codepilot1c.core.provider.config.ModelFetchService.FetchResult;
 import com.codepilot1c.core.provider.config.ModelFetchService.ModelInfo;
+import com.codepilot1c.core.provider.codex.CodexOAuthConstants;
+import com.codepilot1c.core.provider.codex.CodexOAuthService;
+import com.codepilot1c.core.provider.codex.CodexOAuthService.CodexLoginResult;
+import com.codepilot1c.core.provider.codex.CodexOAuthService.CodexLoginSession;
 import com.codepilot1c.core.provider.config.ProviderType;
 import com.codepilot1c.ui.internal.Messages;
 
@@ -50,6 +56,10 @@ public class ProviderEditDialog extends TitleAreaDialog {
     private Button fetchModelsButton;
     private Spinner maxTokensSpinner;
     private Button streamingCheckbox;
+    private Button codexLoginButton;
+    private Label codexStatusLabel;
+    private final CodexOAuthService codexOAuthService = new CodexOAuthService();
+    private CodexLoginSession codexSession;
 
     /**
      * Creates a dialog for editing an existing configuration.
@@ -112,6 +122,8 @@ public class ProviderEditDialog extends TitleAreaDialog {
             @Override
             public void widgetSelected(SelectionEvent e) {
                 updateFetchButtonState();
+                updateCodexControls();
+                validateInput();
             }
         });
 
@@ -161,7 +173,27 @@ public class ProviderEditDialog extends TitleAreaDialog {
         streamingCheckbox.setText(Messages.ProviderEditDialog_EnableStreaming);
         streamingCheckbox.setSelection(config.isStreamingEnabled());
 
+        // ChatGPT (Codex OAuth) sign-in row
+        createLabel(container, "Аккаунт ChatGPT"); //$NON-NLS-1$
+        Composite codexRow = new Composite(container, SWT.NONE);
+        codexRow.setLayoutData(createTextGridData(2));
+        GridLayout codexRowLayout = new GridLayout(2, false);
+        codexRowLayout.marginWidth = 0;
+        codexRowLayout.marginHeight = 0;
+        codexRow.setLayout(codexRowLayout);
+        codexLoginButton = new Button(codexRow, SWT.PUSH);
+        codexLoginButton.setText("Подключить ChatGPT"); //$NON-NLS-1$
+        codexLoginButton.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent e) {
+                startCodexLogin();
+            }
+        });
+        codexStatusLabel = new Label(codexRow, SWT.NONE);
+        codexStatusLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
         updateFetchButtonState();
+        updateCodexControls();
 
         return area;
     }
@@ -194,6 +226,62 @@ public class ProviderEditDialog extends TitleAreaDialog {
         } else {
             fetchModelsButton.setToolTipText(Messages.ProviderEditDialog_FetchTooltip);
         }
+    }
+
+    private void updateCodexControls() {
+        boolean codex = getSelectedType() == ProviderType.OPENAI_CODEX;
+        codexLoginButton.setEnabled(codex);
+        if (codex) {
+            if (baseUrlText.getText().trim().isEmpty()) {
+                baseUrlText.setText(CodexOAuthConstants.CODEX_BASE_URL);
+            }
+            if (modelText.getText().trim().isEmpty()) {
+                modelText.setText(CodexOAuthConstants.DEFAULT_MODEL);
+            }
+            apiKeyText.setEnabled(false);
+        } else {
+            apiKeyText.setEnabled(true);
+        }
+        refreshCodexStatus();
+    }
+
+    private void refreshCodexStatus() {
+        if (codexStatusLabel == null || codexStatusLabel.isDisposed()) {
+            return;
+        }
+        if (getSelectedType() != ProviderType.OPENAI_CODEX) {
+            codexStatusLabel.setText(""); //$NON-NLS-1$
+        } else {
+            codexStatusLabel.setText(codexOAuthService.isLoggedIn() ? "Подключён" : "Не подключён"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    private void startCodexLogin() {
+        codexLoginButton.setEnabled(false);
+        codexStatusLabel.setText("Открываю браузер…"); //$NON-NLS-1$
+        setErrorMessage(null);
+        codexSession = codexOAuthService.beginLogin(
+            url -> Display.getDefault().asyncExec(() -> Program.launch(url)));
+        codexSession.result().whenComplete((result, error) ->
+            Display.getDefault().asyncExec(() -> onCodexLoginDone(result, error)));
+    }
+
+    private void onCodexLoginDone(CodexLoginResult result, Throwable error) {
+        if (codexLoginButton == null || codexLoginButton.isDisposed()) {
+            return;
+        }
+        codexLoginButton.setEnabled(getSelectedType() == ProviderType.OPENAI_CODEX);
+        if (error != null) {
+            Throwable cause = error instanceof CompletionException && error.getCause() != null
+                ? error.getCause()
+                : error;
+            codexStatusLabel.setText("Не удалось подключить"); //$NON-NLS-1$
+            setErrorMessage(cause.getMessage());
+        } else if (result != null) {
+            codexStatusLabel.setText(result.email() != null ? "Подключён: " + result.email() : "Подключён"); //$NON-NLS-1$ //$NON-NLS-2$
+            setErrorMessage(null);
+        }
+        validateInput();
     }
 
     private void fetchModels() {
@@ -276,9 +364,16 @@ public class ProviderEditDialog extends TitleAreaDialog {
             return;
         }
 
-        // API key required for non-Ollama providers
-        if (type != ProviderType.OLLAMA && apiKey.isEmpty()) {
+        // API key required for non-Ollama, non-Codex providers
+        if (type != ProviderType.OLLAMA && type != ProviderType.OPENAI_CODEX && apiKey.isEmpty()) {
             setErrorMessage(Messages.ProviderEditDialog_ApiKeyRequired);
+            if (okButton != null) okButton.setEnabled(false);
+            return;
+        }
+
+        // Codex authenticates via ChatGPT OAuth instead of an API key.
+        if (type == ProviderType.OPENAI_CODEX && !codexOAuthService.isLoggedIn()) {
+            setErrorMessage("Подключите ChatGPT для использования OpenAI Codex."); //$NON-NLS-1$
             if (okButton != null) okButton.setEnabled(false);
             return;
         }
@@ -305,6 +400,15 @@ public class ProviderEditDialog extends TitleAreaDialog {
         config.setStreamingEnabled(streamingCheckbox.getSelection());
 
         super.okPressed();
+    }
+
+    @Override
+    public boolean close() {
+        if (codexSession != null) {
+            codexSession.close();
+            codexSession = null;
+        }
+        return super.close();
     }
 
     /**

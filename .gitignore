@@ -27,7 +27,6 @@ docs/*
 OSS_SUMMARY.md
 AGENTS.md
 CLAUDE.md
-CLAUDE.md
 *.bak
 git-paperclip-sync*.py
 github-sync-state*.json

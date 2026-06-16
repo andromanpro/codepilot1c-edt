@@ -17,6 +17,7 @@ public class ToolCall {
     private final String id;
     private final String name;
     private final String arguments;
+    private final boolean argumentsRepaired;
 
     /**
      * Creates a new tool call.
@@ -26,9 +27,23 @@ public class ToolCall {
      * @param arguments JSON string of arguments
      */
     public ToolCall(String id, String name, String arguments) {
+        this(id, name, arguments, false);
+    }
+
+    /**
+     * Creates a new tool call.
+     *
+     * @param id unique identifier for this tool call
+     * @param name the name of the tool to call
+     * @param arguments JSON string of arguments
+     * @param argumentsRepaired whether arguments were reconstructed from a
+     *        truncated/malformed payload and may be incomplete
+     */
+    public ToolCall(String id, String name, String arguments, boolean argumentsRepaired) {
         this.id = Objects.requireNonNull(id, "id"); //$NON-NLS-1$
         this.name = Objects.requireNonNull(name, "name"); //$NON-NLS-1$
         this.arguments = arguments != null ? arguments : "{}"; //$NON-NLS-1$
+        this.argumentsRepaired = argumentsRepaired;
     }
 
     /**
@@ -56,6 +71,16 @@ public class ToolCall {
      */
     public String getArguments() {
         return arguments;
+    }
+
+    /**
+     * Returns whether the arguments were reconstructed from a truncated or
+     * malformed payload (e.g. streaming cut mid-JSON) and may be incomplete.
+     *
+     * @return true if arguments were repaired
+     */
+    public boolean isArgumentsRepaired() {
+        return argumentsRepaired;
     }
 
     @Override
