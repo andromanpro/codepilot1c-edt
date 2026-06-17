@@ -122,9 +122,16 @@ public record EdtDiagnostic(
 
     /**
      * Creates a diagnostic from EDT runtime marker manager data.
+     *
+     * <p>Position (line/charStart/charEnd) is extracted from the DT marker's
+     * extra info ({@code TEXT_LINE}/{@code TEXT_OFFSET}/{@code TEXT_LENGTH});
+     * pass {@code -1} when unavailable.</p>
      */
     public static EdtDiagnostic fromRuntimeMarker(
             String filePath,
+            int lineNumber,
+            int charStart,
+            int charEnd,
             String message,
             Severity severity,
             String markerType,
@@ -137,9 +144,9 @@ public record EdtDiagnostic(
             String locationText) {
         return new EdtDiagnostic(
                 filePath,
-                -1,
-                -1,
-                -1,
+                lineNumber,
+                charStart,
+                charEnd,
                 message,
                 severity,
                 markerType,
@@ -168,6 +175,9 @@ public record EdtDiagnostic(
             sb.append(" (позиция ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         }
         sb.append(": ").append(message); //$NON-NLS-1$
+        if (source != null && !source.isBlank()) {
+            sb.append("\n  source: ").append(source); //$NON-NLS-1$
+        }
         if (checkId != null && !checkId.isBlank()) {
             sb.append("\n  check_id: ").append(checkId); //$NON-NLS-1$
         }

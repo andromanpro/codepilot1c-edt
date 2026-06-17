@@ -56,6 +56,10 @@ public class GetDiagnosticsTool implements ITool {
                         "type": "string",
                         "description": "EDT project name for scope=project. If omitted, default project or workspace diagnostics are used."
                     },
+                    "object": {
+                        "type": "string",
+                        "description": "Optional object/module name or path to narrow scope=project diagnostics (e.g. 'аи_tools'). Avoids truncation burying one object in a large project."
+                    },
                     "severity": {
                         "type": "string",
                         "enum": ["error", "warning", "info"],
@@ -99,6 +103,7 @@ public class GetDiagnosticsTool implements ITool {
         String scope = (String) parameters.getOrDefault("scope", ""); //$NON-NLS-1$ //$NON-NLS-2$
         String path = firstString(parameters.get("path"), parameters.get("file")); //$NON-NLS-1$ //$NON-NLS-2$
         String projectName = (String) parameters.get("project_name"); //$NON-NLS-1$
+        String objectFilter = asNonBlankString(parameters.get("object")); //$NON-NLS-1$
         String severityStr = (String) parameters.getOrDefault("severity", "info"); //$NON-NLS-1$ //$NON-NLS-2$
         int maxItems = getIntParam(parameters, "max_items", 0); //$NON-NLS-1$
         long waitMs = getIntParam(parameters, "wait_ms", 0); //$NON-NLS-1$
@@ -112,7 +117,8 @@ public class GetDiagnosticsTool implements ITool {
         // Parse severity
         Severity minSeverity = parseSeverity(severityStr);
 
-        DiagnosticsQuery query = new DiagnosticsQuery(minSeverity, maxItems, true, waitMs, includeRuntimeMarkers);
+        DiagnosticsQuery query = new DiagnosticsQuery(
+                minSeverity, maxItems, true, waitMs, includeRuntimeMarkers, objectFilter);
         EdtDiagnosticsCollector collector = EdtDiagnosticsCollector.getInstance();
 
         String normalizedScope = normalizeScope(scope, path, projectName);
@@ -123,8 +129,8 @@ public class GetDiagnosticsTool implements ITool {
                 collectWorkspaceDiagnostics = true;
             }
         }
-        LOG.debug("get_diagnostics: scope=%s, project=%s, path=%s, severity=%s, max=%d, wait=%d, runtime=%s", //$NON-NLS-1$
-                normalizedScope, projectName, path, minSeverity, maxItems, waitMs, includeRuntimeMarkers);
+        LOG.debug("get_diagnostics: scope=%s, project=%s, path=%s, object=%s, severity=%s, max=%d, wait=%d, runtime=%s", //$NON-NLS-1$
+                normalizedScope, projectName, path, objectFilter, minSeverity, maxItems, waitMs, includeRuntimeMarkers);
 
         CompletableFuture<DiagnosticsResult> resultFuture;
 
@@ -151,6 +157,7 @@ public class GetDiagnosticsTool implements ITool {
     private Severity parseSeverity(String str) {
         if (str == null) return Severity.INFO;
         return switch (str.toLowerCase()) {
+            case "error", "err" -> Severity.ERROR; //$NON-NLS-1$ //$NON-NLS-2$
             case "warning", "warn" -> Severity.WARNING; //$NON-NLS-1$ //$NON-NLS-2$
             case "info", "all" -> Severity.INFO; //$NON-NLS-1$ //$NON-NLS-2$
             default -> Severity.INFO;
