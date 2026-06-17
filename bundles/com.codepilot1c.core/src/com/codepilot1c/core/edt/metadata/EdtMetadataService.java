@@ -852,11 +852,16 @@ public class EdtMetadataService {
                     }
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Object fieldDataPathValue = getMapValueIgnoreCase(set, "data_path"); //$NON-NLS-1$
+                    if (fieldDataPathValue == null) {
+                        fieldDataPathValue = getMapValueIgnoreCase(set, "dataPath"); //$NON-NLS-1$
+                    }
                     FormField field = addFieldItem(
                             formModel,
                             parentContainer,
                             operation,
                             name,
+                            fieldDataPathValue,
                             index,
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -1087,14 +1092,25 @@ public class EdtMetadataService {
             FormItemContainer parentContainer,
             Map<String, Object> operation,
             String name,
+            Object dataPathValue,
             Integer index,
             IFormItemManagementService itemManagementService) {
         FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        boolean atIndex = index != null && index.intValue() >= 0
+                && index.intValue() <= parentContainer.getItems().size();
         if (itemManagementService != null) {
-            if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
-                return itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor);
+            // When the field is bound to a data path, pass it to EDT so it picks the widget by
+            // the attribute's type (Boolean -> CheckBoxField, etc.) — exactly like dragging the
+            // attribute onto the form. The path-less overload always yields a plain InputField.
+            AbstractDataPath path = dataPathValue != null ? toDataPath(dataPathValue, "data_path") : null; //$NON-NLS-1$
+            if (path != null) {
+                return atIndex
+                        ? itemManagementService.addField(parentContainer, path, index.intValue(), formModel, descriptor)
+                        : itemManagementService.addField(parentContainer, path, formModel, descriptor);
             }
-            return itemManagementService.addField(parentContainer, formModel, descriptor);
+            return atIndex
+                    ? itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor)
+                    : itemManagementService.addField(parentContainer, formModel, descriptor);
         }
         FormField field = FormFactory.eINSTANCE.createFormField();
         field.setId(nextFormItemId(formModel));
