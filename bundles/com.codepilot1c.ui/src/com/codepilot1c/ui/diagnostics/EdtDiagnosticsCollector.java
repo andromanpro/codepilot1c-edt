@@ -48,10 +48,12 @@ import org.eclipse.ui.texteditor.IDocumentProvider;
 import org.eclipse.ui.texteditor.ITextEditor;
 import org.eclipse.ui.texteditor.MarkerAnnotation;
 
+import com._1c.g5.v8.dt.validation.marker.IExtraInfoMap;
 import com._1c.g5.v8.dt.validation.marker.IMarkerManager;
 import com._1c.g5.v8.dt.validation.marker.Marker;
 import com._1c.g5.v8.dt.validation.marker.MarkerFilter;
 import com._1c.g5.v8.dt.validation.marker.MarkerSeverity;
+import com._1c.g5.v8.dt.validation.marker.StandardExtraInfo;
 import com.e1c.g5.dt.applications.IApplicationManager;
 import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
@@ -99,14 +101,22 @@ public class EdtDiagnosticsCollector {
             int maxItems,
             boolean includeSnippets,
             long waitMs,
-            boolean includeRuntimeMarkers) {
+            boolean includeRuntimeMarkers,
+            String objectFilter) {
 
         public static DiagnosticsQuery defaults() {
-            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true);
+            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, null);
         }
 
         public static DiagnosticsQuery withSeverity(Severity minSeverity) {
-            return new DiagnosticsQuery(minSeverity, 0, true, 0, true);
+            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, null);
+        }
+
+        /**
+         * Returns whether a non-blank object/module filter is set.
+         */
+        public boolean hasObjectFilter() {
+            return objectFilter != null && !objectFilter.isBlank();
         }
     }
 
@@ -266,10 +276,13 @@ public class EdtDiagnosticsCollector {
                 if (context.file() != null && context.file().exists()) {
                     collectFromMarkers(context.file(), resultPath, query, diagnostics, seen);
                 }
-                // Runtime markers excluded from file-scope to prevent false matches across modules.
-                // Runtime markers are project-level and require fuzzy matching that cannot reliably
-                // filter to a single file without including diagnostics from other modules.
-                // Use scope=project or scope=active_editor to include runtime markers.
+                // EDT validation/check results (incl. BSL "method not defined") live in the DT
+                // marker manager, not as Eclipse IMarkers, so file scope must read them too.
+                // Matching to a single file is best-effort (object id / problem URI / module
+                // token); use scope=project for the unfiltered set.
+                if (query.includeRuntimeMarkers()) {
+                    collectRuntimeFileMarkers(context, query, diagnostics, seen);
+                }
 
                 // Sort and limit (ensure maxItems is positive)
                 diagnostics.sort(Comparator
@@ -492,6 +505,60 @@ public class EdtDiagnosticsCollector {
         return tokens.size() > 1 ? 2 : 1;
     }
 
+    /**
+     * Builds a lightweight match context from an object/module filter (a bare
+     * name like "аи_tools" or a path) to narrow project-scope diagnostics to a
+     * single object. Reuses the file-scope token/hint logic.
+     *
+     * @param objectFilter the object name or path
+     * @param project the project the markers belong to
+     * @return a match context (no resolved file required)
+     */
+    private ResolvedFileContext buildObjectMatchContext(String objectFilter, IProject project) {
+        String pathWithoutLeadingSlash = removeLeadingSlash(normalizePath(objectFilter));
+        List<String> candidates = buildRelativePathCandidates(pathWithoutLeadingSlash);
+        List<String> tokens = buildMatchTokens(candidates);
+        return new ResolvedFileContext(
+                objectFilter,
+                null,
+                project,
+                null,
+                buildRuntimePathHints(pathWithoutLeadingSlash, candidates),
+                tokens,
+                computeTokenThreshold(tokens));
+    }
+
+    /**
+     * Tests whether an Eclipse marker's resource path matches the object filter
+     * context (by path hint or token containment), mirroring
+     * {@link #markerMatchesContext} for plain paths.
+     */
+    private boolean resourcePathMatchesContext(String resourcePath, ResolvedFileContext context) {
+        if (resourcePath == null || resourcePath.isBlank() || context == null) {
+            return false;
+        }
+        String haystack = decodePercentEncoded(resourcePath).toLowerCase(Locale.ROOT);
+        for (String hint : context.pathHints()) {
+            if (hint != null && !hint.isBlank() && haystack.contains(hint)) {
+                return true;
+            }
+        }
+        int threshold = context.tokenThreshold();
+        if (threshold <= 0) {
+            return false;
+        }
+        int matches = 0;
+        for (String token : context.matchTokens()) {
+            if (token != null && !token.isBlank() && haystack.contains(token)) {
+                matches++;
+                if (matches >= threshold) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void collectRuntimeFileMarkers(
             ResolvedFileContext context,
             DiagnosticsQuery query,
@@ -507,15 +574,14 @@ public class EdtDiagnosticsCollector {
         MarkerFilter projectFilter = MarkerFilter.createProjectFilter(context.project());
 
         try (Stream<Marker> stream = markerManager.markers(projectFilter)) {
-            int preLimit = getSoftScanLimit(query.maxItems(), 10);
+            // The context filter bounds results to one file; scan all matches and apply
+            // severity before collecting so a small max_items can never cut errors.
             stream
                     .filter(marker -> markerMatchesContext(marker, context))
-                    .limit(preLimit)
+                    .filter(marker -> fromRuntimeSeverity(marker.getSeverity()).getLevel()
+                            >= query.minSeverity().getLevel())
                     .forEach(marker -> {
                         Severity sev = fromRuntimeSeverity(marker.getSeverity());
-                        if (sev.getLevel() < query.minSeverity().getLevel()) {
-                            return;
-                        }
 
                         String message = safeString(marker.getMessage());
                         if (message.isBlank()) {
@@ -530,8 +596,12 @@ public class EdtDiagnosticsCollector {
                             return;
                         }
 
+                        int[] position = readMarkerPosition(marker);
                         diagnostics.add(EdtDiagnostic.fromRuntimeMarker(
                                 context.resolvedPath(),
+                                position[0],
+                                position[1],
+                                position[2],
                                 message,
                                 sev,
                                 safeString(marker.getSourceType()),
@@ -587,8 +657,49 @@ public class EdtDiagnosticsCollector {
         String topObjectId = safeObjectString(marker.getTopObjectId());
         String objectPresentation = safeString(marker.getObjectPresentation());
         String location = safeString(marker.getLocation());
-        String haystack = String.join(" ", markerObjectId, sourceObjectId, topObjectId, objectPresentation, location); //$NON-NLS-1$
+        String problemUri = readProblemUri(marker);
+        String haystack = String.join(" ", //$NON-NLS-1$
+                markerObjectId, sourceObjectId, topObjectId, objectPresentation, location, problemUri);
         return decodePercentEncoded(haystack).toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Reads the 1-based line, char start and char end of a DT marker from its
+     * extra info ({@code TEXT_LINE}/{@code TEXT_OFFSET}/{@code TEXT_LENGTH}).
+     * EDT validation/check markers (incl. BSL errors) carry their position here,
+     * not as Eclipse {@code IMarker} attributes.
+     *
+     * @param marker the DT marker
+     * @return array {line, charStart, charEnd}; entries are {@code -1} when absent
+     */
+    private int[] readMarkerPosition(Marker marker) {
+        int line = -1;
+        int charStart = -1;
+        int charEnd = -1;
+        try {
+            IExtraInfoMap extra = marker.getExtraInfo();
+            if (extra != null) {
+                line = extra.getIntOrDefault(StandardExtraInfo.TEXT_LINE, -1);
+                charStart = extra.getIntOrDefault(StandardExtraInfo.TEXT_OFFSET, -1);
+                int length = extra.getIntOrDefault(StandardExtraInfo.TEXT_LENGTH, -1);
+                if (charStart >= 0 && length >= 0) {
+                    charEnd = charStart + length;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("Unable to read DT marker position: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return new int[] { line, charStart, charEnd };
+    }
+
+    private String readProblemUri(Marker marker) {
+        try {
+            // StandardExtraInfo.get(Marker, default) avoids the inherited Map.getOrDefault overload ambiguity.
+            return safeString(StandardExtraInfo.TEXT_URI_TO_PROBLEM.get(marker, "")); //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            LOG.debug("Unable to read DT marker problem URI: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return ""; //$NON-NLS-1$
     }
 
     private String safeObjectString(Object value) {
@@ -858,6 +969,10 @@ public class EdtDiagnosticsCollector {
             List<EdtDiagnostic> diagnostics,
             Set<String> seen) {
 
+        ResolvedFileContext objectContext = query.hasObjectFilter()
+                ? buildObjectMatchContext(query.objectFilter(), project)
+                : null;
+
         try {
             IMarker[] markers = project.findMarkers(null, true, IResource.DEPTH_INFINITE);
             LOG.debug("Found %d workspace markers for project %s", markers.length, project.getName()); //$NON-NLS-1$
@@ -888,6 +1003,10 @@ public class EdtDiagnosticsCollector {
                         ? marker.getResource().getFullPath().toString()
                         : project.getFullPath().toString();
 
+                if (objectContext != null && !resourcePathMatchesContext(markerPath, objectContext)) {
+                    continue;
+                }
+
                 String key = markerPath + ":" + line + ":" + charStart + ":" + message; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 if (!seen.add(key)) {
                     continue;
@@ -915,14 +1034,26 @@ public class EdtDiagnosticsCollector {
 
         Map<String, CheckMetadata> checkMetadata = loadCheckMetadata();
         MarkerFilter projectFilter = MarkerFilter.createProjectFilter(project);
+        ResolvedFileContext objectContext = query.hasObjectFilter()
+                ? buildObjectMatchContext(query.objectFilter(), project)
+                : null;
 
         try (Stream<Marker> stream = markerManager.markers(projectFilter)) {
-            int preLimit = getSoftScanLimit(query.maxItems(), 5);
-            stream.limit(preLimit).forEach(marker -> {
+            // Apply object + severity filters BEFORE limiting, otherwise truncation can
+            // exhaust the budget on non-matching or lower-severity markers and miss real
+            // errors (e.g. severity=error, max_items=5 returning only warnings).
+            Stream<Marker> effective = objectContext != null
+                    ? stream.filter(marker -> markerMatchesContext(marker, objectContext))
+                    : stream;
+            effective = effective.filter(marker -> fromRuntimeSeverity(marker.getSeverity()).getLevel()
+                    >= query.minSeverity().getLevel());
+            // With an object filter the set is already bounded to one object — scan it fully;
+            // otherwise apply a soft cap to avoid streaming the whole project.
+            if (objectContext == null) {
+                effective = effective.limit(getSoftScanLimit(query.maxItems(), 5));
+            }
+            effective.forEach(marker -> {
                 Severity sev = fromRuntimeSeverity(marker.getSeverity());
-                if (sev.getLevel() < query.minSeverity().getLevel()) {
-                    return;
-                }
 
                 String message = safeString(marker.getMessage());
                 if (message.isBlank()) {
@@ -942,8 +1073,12 @@ public class EdtDiagnosticsCollector {
                     return;
                 }
 
+                int[] position = readMarkerPosition(marker);
                 diagnostics.add(EdtDiagnostic.fromRuntimeMarker(
                         markerPath,
+                        position[0],
+                        position[1],
+                        position[2],
                         message,
                         sev,
                         safeString(marker.getSourceType()),
@@ -1118,6 +1253,14 @@ public class EdtDiagnosticsCollector {
         IEditorPart editor = page.getActiveEditor();
         if (editor instanceof ITextEditor textEditor) {
             return textEditor;
+        }
+        // EDT opens BSL modules inside a multi-page/granular DT editor; the active
+        // page's ITextEditor is reachable via adapter, not a direct instanceof.
+        if (editor != null) {
+            Object adapted = editor.getAdapter(ITextEditor.class);
+            if (adapted instanceof ITextEditor textEditor) {
+                return textEditor;
+            }
         }
         return null;
     }
