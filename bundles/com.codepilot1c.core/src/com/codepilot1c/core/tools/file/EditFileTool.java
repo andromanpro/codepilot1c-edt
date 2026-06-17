@@ -36,6 +36,8 @@ import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
 import com.codepilot1c.core.edit.MatchResult;
+import com.codepilot1c.core.edit.MatchStrategy;
+import com.codepilot1c.core.edit.ReplacementShapeSafety;
 import com.codepilot1c.core.edit.SearchReplaceFormat;
 import com.codepilot1c.core.edt.ast.BmSyncHelper;
 import com.codepilot1c.core.logging.LogSanitizer;
@@ -493,6 +495,17 @@ public class EditFileTool extends AbstractTool {
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
         String newContent = before + normalizedNewText + after;
 
+        // Defense-in-depth: block a fuzzy (non-exact) replacement that glued BSL
+        // procedure/function boundaries (safe-subset port of upstream ReplacementShapeSafety).
+        if (matchResult.getStrategy() != MatchStrategy.EXACT) {
+            ReplacementShapeSafety.SafetyResult shapeSafety =
+                    ReplacementShapeSafety.evaluateResult(buildSafetyWindow(before, normalizedNewText, after));
+            if (!shapeSafety.isSafe()) {
+                LOG.warn("edit_file: небезопасный fuzzy-результат заблокирован: %s", shapeSafety.reason()); //$NON-NLS-1$
+                return ToolResult.failure(shapeSafety.reason());
+            }
+        }
+
         // Write with same charset
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
@@ -547,6 +560,14 @@ public class EditFileTool extends AbstractTool {
             return "\n"; //$NON-NLS-1$
         }
         return System.lineSeparator();
+    }
+
+    /** Narrows the shape-safety check to the edit boundary (~200 chars of context each side). */
+    private static String buildSafetyWindow(String before, String newText, String after) {
+        int ctx = 200;
+        String head = before.length() > ctx ? before.substring(before.length() - ctx) : before;
+        String tail = after.length() > ctx ? after.substring(0, ctx) : after;
+        return head + newText + tail;
     }
 
     private String normalizeLineEndings(String text, String lineSeparator) {
