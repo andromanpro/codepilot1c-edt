@@ -42,8 +42,8 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "child_kind": {
                   "type": "string",
-                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite"],
-                  "description": "Kind of new child object. Do not use for top-level objects."
+                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue"],
+                  "description": "Kind of new child object. EnumValue — значение перечисления (parent_fqn=Enum.<Имя>). Do not use for top-level objects."
                 },
                 "name": {
                   "type": "string",
