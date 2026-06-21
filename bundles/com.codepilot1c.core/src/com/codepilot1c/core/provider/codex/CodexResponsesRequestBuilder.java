@@ -7,10 +7,12 @@
  */
 package com.codepilot1c.core.provider.codex;
 
+import com.codepilot1c.core.model.LlmContentPart;
 import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.model.LlmRequest;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.provider.config.ProviderMessageContentSerializer;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -64,7 +66,7 @@ public class CodexResponsesRequestBuilder {
                     instructions.append(text(msg));
                     break;
                 case USER:
-                    input.add(messageItem("user", "input_text", text(msg))); //$NON-NLS-1$ //$NON-NLS-2$
+                    input.add(userMessageItem(msg));
                     break;
                 case ASSISTANT:
                     String assistantText = text(msg);
@@ -103,6 +105,54 @@ public class CodexResponsesRequestBuilder {
         body.addProperty("stream", Boolean.valueOf(stream)); //$NON-NLS-1$
 
         return gson.toJson(body);
+    }
+
+    /**
+     * Builds a Responses {@code user} message, serializing image attachments as
+     * {@code input_image} parts (data URI) so multimodal models actually receive the
+     * picture instead of a {@code [Image: ...]} text placeholder. Falls back to text
+     * for non-image parts and for images that cannot be read.
+     */
+    private JsonObject userMessageItem(LlmMessage msg) {
+        JsonObject item = new JsonObject();
+        item.addProperty("type", "message"); //$NON-NLS-1$ //$NON-NLS-2$
+        item.addProperty("role", "user"); //$NON-NLS-1$ //$NON-NLS-2$
+        JsonArray content = new JsonArray();
+        if (msg.hasContentParts()) {
+            for (LlmContentPart part : msg.getContentParts()) {
+                if (part.isImage()) {
+                    String dataUri = ProviderMessageContentSerializer.toImageDataUri(part.getAttachment());
+                    if (dataUri != null) {
+                        JsonObject imagePart = new JsonObject();
+                        imagePart.addProperty("type", "input_image"); //$NON-NLS-1$ //$NON-NLS-2$
+                        imagePart.addProperty("image_url", dataUri); //$NON-NLS-1$
+                        imagePart.addProperty("detail", "auto"); //$NON-NLS-1$ //$NON-NLS-2$
+                        content.add(imagePart);
+                        continue;
+                    }
+                    addInputText(content, part.toTextFallback());
+                } else if (part.isText()) {
+                    addInputText(content, part.getText());
+                } else {
+                    addInputText(content, part.toTextFallback());
+                }
+            }
+        }
+        if (content.size() == 0) {
+            addInputText(content, text(msg));
+        }
+        item.add("content", content); //$NON-NLS-1$
+        return item;
+    }
+
+    private void addInputText(JsonArray content, String value) {
+        if (value == null || value.isEmpty()) {
+            return;
+        }
+        JsonObject part = new JsonObject();
+        part.addProperty("type", "input_text"); //$NON-NLS-1$ //$NON-NLS-2$
+        part.addProperty("text", value); //$NON-NLS-1$
+        content.add(part);
     }
 
     private JsonObject messageItem(String role, String partType, String text) {

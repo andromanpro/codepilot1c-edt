@@ -8,14 +8,17 @@
 package com.codepilot1c.ui.views;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -32,6 +35,9 @@ import org.eclipse.swt.dnd.FileTransfer;
 import org.eclipse.swt.dnd.ImageTransfer;
 import org.eclipse.swt.events.KeyAdapter;
 import org.eclipse.swt.events.KeyEvent;
+import org.eclipse.swt.events.MenuAdapter;
+import org.eclipse.swt.events.MenuEvent;
+import org.eclipse.swt.events.SelectionListener;
 import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.graphics.ImageLoader;
 import org.eclipse.swt.graphics.Point;
@@ -43,6 +49,8 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.FileDialog;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Menu;
+import org.eclipse.swt.widgets.MenuItem;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.IMemento;
 import org.eclipse.ui.IViewSite;
@@ -408,6 +416,8 @@ public class ChatView extends ViewPart {
             }
         });
 
+        installInputContextMenu();
+
         attachmentPreviewArea = new Composite(inputArea, SWT.NONE);
         attachmentPreviewArea.setBackground(inputArea.getBackground());
         attachmentPreviewArea.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
@@ -565,6 +575,55 @@ public class ChatView extends ViewPart {
         addDraftAttachments(attachments);
     }
 
+    /**
+     * Installs an explicit Cut/Copy/Paste/Select-All context menu on the input field.
+     *
+     * <p>Without it the native control menu is used, which on macOS surfaces only the
+     * system Writing Tools and omits a usable "Paste" entry. The Paste action routes
+     * through {@link #handleClipboardPaste()} first so an image/file on the clipboard
+     * becomes an attachment; otherwise it falls back to the native text paste.</p>
+     */
+    private void installInputContextMenu() {
+        if (inputField == null || inputField.isDisposed()) {
+            return;
+        }
+        Menu menu = new Menu(inputField);
+
+        MenuItem cut = new MenuItem(menu, SWT.PUSH);
+        cut.setText("Вырезать"); //$NON-NLS-1$
+        cut.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.cut()));
+
+        MenuItem copy = new MenuItem(menu, SWT.PUSH);
+        copy.setText("Копировать"); //$NON-NLS-1$
+        copy.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.copy()));
+
+        MenuItem paste = new MenuItem(menu, SWT.PUSH);
+        paste.setText("Вставить"); //$NON-NLS-1$
+        paste.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> {
+            if (!handleClipboardPaste()) {
+                inputField.paste();
+            }
+        }));
+
+        new MenuItem(menu, SWT.SEPARATOR);
+
+        MenuItem selectAll = new MenuItem(menu, SWT.PUSH);
+        selectAll.setText("Выделить всё"); //$NON-NLS-1$
+        selectAll.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.selectAll()));
+
+        menu.addMenuListener(new MenuAdapter() {
+            @Override
+            public void menuShown(MenuEvent e) {
+                boolean hasSelection = inputField.getSelectionCount() > 0;
+                cut.setEnabled(hasSelection);
+                copy.setEnabled(hasSelection);
+                selectAll.setEnabled(inputField.getCharCount() > 0);
+            }
+        });
+
+        inputField.setMenu(menu);
+    }
+
     private boolean handleClipboardPaste() {
         Clipboard clipboard = new Clipboard(getDisplay());
         try {
@@ -589,9 +648,115 @@ public class ChatView extends ViewPart {
                     return true;
                 }
             }
+
+            // macOS: SWT ImageTransfer does not read screenshots from NSPasteboard (TIFF/PNG),
+            // so the branch above returns nothing. Fall back to an isolated osascript subprocess
+            // that writes the clipboard image to a PNG file (no in-process AWT, safe under
+            // -XstartOnFirstThread).
+            Path macImage = tryReadMacClipboardImage();
+            if (macImage != null) {
+                LlmAttachment attachment = createAttachmentFromPath(macImage);
+                if (attachment != null) {
+                    addDraftAttachments(List.of(attachment));
+                    return true;
+                }
+            }
             return false;
         } finally {
             clipboard.dispose();
+        }
+    }
+
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    /**
+     * Reads an image from the macOS clipboard via {@code osascript}, writing it to a PNG file.
+     * SWT's Cocoa {@code ImageTransfer} does not return screenshots placed on the pasteboard,
+     * so this isolated-subprocess fallback handles the common "screenshot to clipboard" case
+     * without initializing AWT in-process (which is unsafe under {@code -XstartOnFirstThread}).
+     *
+     * @return path to a PNG file, or {@code null} when no clipboard image is available
+     */
+    private Path tryReadMacClipboardImage() {
+        if (!isMac()) {
+            return null;
+        }
+        try {
+            Path cacheDir = getAttachmentCacheDir();
+            Files.createDirectories(cacheDir);
+            long stamp = System.currentTimeMillis();
+            Path png = cacheDir.resolve("clipboard-" + stamp + ".png"); //$NON-NLS-1$ //$NON-NLS-2$
+
+            // Preferred path: coerce the clipboard image directly to PNG.
+            String pngScript = "set theFile to (POSIX file \"" + png + "\")\n" //$NON-NLS-1$ //$NON-NLS-2$
+                    + "set theData to (the clipboard as «class PNGf»)\n" //$NON-NLS-1$
+                    + "set fh to open for access theFile with write permission\n" //$NON-NLS-1$
+                    + "set eof fh to 0\n" //$NON-NLS-1$
+                    + "write theData to fh\n" //$NON-NLS-1$
+                    + "close access fh"; //$NON-NLS-1$
+            if (runProcess(new ProcessBuilder("/usr/bin/osascript", "-e", pngScript)) && isPng(png)) { //$NON-NLS-1$ //$NON-NLS-2$
+                return png;
+            }
+            Files.deleteIfExists(png);
+
+            // Fallback: screenshots live on the pasteboard as TIFF; grab TIFF then convert via sips.
+            Path tiff = cacheDir.resolve("clipboard-" + stamp + ".tiff"); //$NON-NLS-1$ //$NON-NLS-2$
+            String tiffScript = "set theFile to (POSIX file \"" + tiff + "\")\n" //$NON-NLS-1$ //$NON-NLS-2$
+                    + "set theData to (the clipboard as TIFF picture)\n" //$NON-NLS-1$
+                    + "set fh to open for access theFile with write permission\n" //$NON-NLS-1$
+                    + "set eof fh to 0\n" //$NON-NLS-1$
+                    + "write theData to fh\n" //$NON-NLS-1$
+                    + "close access fh"; //$NON-NLS-1$
+            if (runProcess(new ProcessBuilder("/usr/bin/osascript", "-e", tiffScript)) //$NON-NLS-1$ //$NON-NLS-2$
+                    && Files.exists(tiff) && Files.size(tiff) > 0) {
+                boolean converted = runProcess(new ProcessBuilder(
+                        "/usr/bin/sips", "-s", "format", "png", tiff.toString(), "--out", png.toString())); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                Files.deleteIfExists(tiff);
+                if (converted && isPng(png)) {
+                    return png;
+                }
+                Files.deleteIfExists(png);
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.debug("macOS clipboard image fallback failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return null;
+    }
+
+    private boolean runProcess(ProcessBuilder builder) {
+        try {
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
+        } catch (IOException e) {
+            LOG.debug("Clipboard subprocess failed: %s", e.getMessage()); //$NON-NLS-1$
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static boolean isPng(Path file) {
+        try {
+            if (!Files.exists(file) || Files.size(file) < 8) {
+                return false;
+            }
+            byte[] header = new byte[8];
+            try (InputStream in = Files.newInputStream(file)) {
+                if (in.read(header) != header.length) {
+                    return false;
+                }
+            }
+            return (header[0] & 0xFF) == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G';
+        } catch (IOException e) {
+            return false;
         }
     }
 

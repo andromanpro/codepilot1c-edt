@@ -98,6 +98,29 @@ public class ProviderCapabilitiesTest {
         assertFalse(unset.supportsStreamUsage());
     }
 
+    @Test
+    public void inferImageInputRecognizesModernMultimodalFamilies() {
+        // The reported case: GPT-5.5 must be treated as multimodal.
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5.5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5o-mini")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("GPT-5.5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-4o")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("o1")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("o3-mini")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("claude-opus-4-8")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("anthropic/claude-3.5-sonnet")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gemini-2.0-flash")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void inferImageInputRejectsTextOnlyAndBlankModels() {
+        assertFalse(ProviderCapabilities.inferImageInputFromModel(null));
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("")); //$NON-NLS-1$
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("text-embedding-3-large")); //$NON-NLS-1$
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("deepseek-chat")); //$NON-NLS-1$
+    }
+
     private static LlmProviderConfig configured(ProviderType type, String model) {
         LlmProviderConfig config = new LlmProviderConfig();
         config.setId("test-" + type.name()); //$NON-NLS-1$

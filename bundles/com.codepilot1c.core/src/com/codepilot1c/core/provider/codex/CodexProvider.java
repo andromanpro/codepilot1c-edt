@@ -23,6 +23,7 @@ import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.provider.AbstractLlmProvider;
 import com.codepilot1c.core.provider.LlmProviderException;
+import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 
 /**
@@ -68,6 +69,19 @@ public class CodexProvider extends AbstractLlmProvider {
     @Override
     public boolean supportsStreaming() {
         return config.isStreamingEnabled();
+    }
+
+    @Override
+    public ProviderCapabilities getCapabilities() {
+        // The ChatGPT/Codex Responses backend accepts image input for multimodal models
+        // (GPT-5.x, etc.). Without this override the provider inherits the text-only default
+        // and the UI blocks image attachments even for vision-capable models.
+        return ProviderCapabilities.builder()
+                .imageInput(ProviderCapabilities.inferImageInputFromModel(config.getModel()))
+                .documentInput(true)
+                .attachmentMetadata(true)
+                .streamUsage(true)
+                .build();
     }
 
     @Override

@@ -153,7 +153,14 @@ public final class ProviderCapabilities {
         if (lower.contains("vision") || lower.contains("vl") || lower.contains("image")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             return true;
         }
-        if (lower.startsWith("gpt-4o") || lower.startsWith("gpt-4.1") || lower.startsWith("o4")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        // OpenAI multimodal families: GPT-4o/4.1, GPT-5.x (incl. gpt-5.5), and the o1/o3/o4 reasoning models.
+        if (lower.startsWith("gpt-4o") || lower.startsWith("gpt-4.1") || lower.startsWith("gpt-5") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                || lower.startsWith("o4") || lower.startsWith("o3") || lower.startsWith("o1")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            return true;
+        }
+        // Anthropic Claude (3.x/4.x and Fable) are multimodal.
+        if (lower.startsWith("claude") || lower.contains("sonnet") || lower.contains("opus") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                || lower.contains("haiku") || lower.contains("fable")) { //$NON-NLS-1$ //$NON-NLS-2$
             return true;
         }
         if (lower.startsWith("gemini")) { //$NON-NLS-1$
