@@ -44,14 +44,16 @@ public class TaskToolTest {
     }
 
     @Test
-    public void taskToolRejectsNonBackendProvider() throws Exception {
-        TaskTool taskTool = new TaskTool(placeholderRegistry());
+    public void taskToolRunsOnNonBackendProvider() throws Exception {
+        CapturingExecutor executor = new CapturingExecutor();
+        TaskTool taskTool = new TaskTool(placeholderRegistry(), new ProfileRouter(), executor);
         previousRegistry = installRegistry(registryWithLegacyProvider(new FakeProvider()));
 
         ToolResult result = taskTool.execute(Map.of("prompt", "Исследуй код", "profile", "explore")).join(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
 
-        assertFalse(result.isSuccess());
-        assertTrue(result.getErrorMessage().contains("CodePilot Account backend")); //$NON-NLS-1$
+        // The CodePilot-backend restriction was lifted: sub-agents run on any configured provider.
+        assertTrue(result.isSuccess());
+        assertEquals("Исследуй код", executor.prompt); //$NON-NLS-1$
     }
 
     @Test

@@ -56,16 +56,19 @@ public class DelegateToAgentToolTest {
     }
 
     @Test
-    public void delegateToolRejectsNonBackendProvider() throws Exception {
-        DelegateToAgentTool tool = new DelegateToAgentTool(placeholderRegistry());
+    public void delegateToolRunsOnNonBackendProvider() throws Exception {
+        CapturingExecutor executor = new CapturingExecutor();
+        TaskTool taskTool = new TaskTool(placeholderRegistry(), new ProfileRouter(), executor);
+        DelegateToAgentTool tool = new DelegateToAgentTool(taskTool, new ProfileRouter());
         previousRegistry = installRegistry(registryWithLegacyProvider(new FakeProvider()));
 
         ToolResult result = tool.execute(Map.of(
                 "agentType", "metadata", //$NON-NLS-1$ //$NON-NLS-2$
                 "task", "Создай справочник Товары")).join(); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertFalse(result.isSuccess());
-        assertTrue(result.getErrorMessage().contains("CodePilot Account backend")); //$NON-NLS-1$
+        // The CodePilot-backend restriction was lifted: delegation runs on any configured provider.
+        assertTrue(result.isSuccess());
+        assertEquals(MetadataBuildProfile.ID, executor.config.getProfileName());
     }
 
     @Test
