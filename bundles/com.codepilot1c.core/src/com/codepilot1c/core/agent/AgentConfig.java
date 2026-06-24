@@ -46,6 +46,7 @@ public class AgentConfig {
     private final Set<String> requestedSkills;
     private final boolean toolGraphEnabled;
     private final com.codepilot1c.core.agent.graph.ToolGraphPolicy toolGraphPolicy;
+    private final boolean gsdMode;
 
     private AgentConfig(Builder builder) {
         this.maxSteps = builder.maxSteps;
@@ -59,6 +60,7 @@ public class AgentConfig {
         this.requestedSkills = Collections.unmodifiableSet(new HashSet<>(builder.requestedSkills));
         this.toolGraphEnabled = builder.toolGraphEnabled;
         this.toolGraphPolicy = builder.toolGraphPolicy;
+        this.gsdMode = builder.gsdMode;
     }
 
     /**
@@ -182,6 +184,16 @@ public class AgentConfig {
     }
 
     /**
+     * Whether the GSD phase lifecycle (DISCUSS→PLAN→EXECUTE→VERIFY) is active.
+     * Off by default; toggled per session/request so trivial edits skip phases.
+     *
+     * @return true if GSD mode is enabled
+     */
+    public boolean isGsdMode() {
+        return gsdMode;
+    }
+
+    /**
      * Проверяет, разрешен ли инструмент с учетом enabled/disabled списков.
      *
      * @param toolName имя инструмента
@@ -226,6 +238,7 @@ public class AgentConfig {
         private boolean toolGraphEnabled = true;
         private com.codepilot1c.core.agent.graph.ToolGraphPolicy toolGraphPolicy =
                 com.codepilot1c.core.agent.graph.ToolGraphPolicy.ADVISORY;
+        private boolean gsdMode = false;
 
         private Builder() {
         }
@@ -249,6 +262,7 @@ public class AgentConfig {
                 this.requestedSkills = new HashSet<>(config.requestedSkills);
                 this.toolGraphEnabled = config.toolGraphEnabled;
                 this.toolGraphPolicy = config.toolGraphPolicy;
+                this.gsdMode = config.gsdMode;
             }
             return this;
         }
@@ -416,6 +430,17 @@ public class AgentConfig {
             if (policy != null) {
                 this.toolGraphPolicy = policy;
             }
+            return this;
+        }
+
+        /**
+         * Enables/disables the GSD phase lifecycle for this run.
+         *
+         * @param enabled true to run DISCUSS→PLAN→EXECUTE→VERIFY
+         * @return this builder
+         */
+        public Builder gsdMode(boolean enabled) {
+            this.gsdMode = enabled;
             return this;
         }
 

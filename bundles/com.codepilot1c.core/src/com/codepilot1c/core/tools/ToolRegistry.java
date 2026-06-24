@@ -93,6 +93,7 @@ public class ToolRegistry {
 
     private void registerDefaultTools() {
         // OSS default tools (commodity)
+        register(new com.codepilot1c.core.tools.gsd.GsdPlanTool());
         register(new ReadFileTool());
         register(new ListFilesTool());
         register(new EditFileTool());

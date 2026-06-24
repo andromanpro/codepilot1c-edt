@@ -20,6 +20,30 @@ public final class AgentPromptTemplates {
         // Utility class.
     }
 
+    /**
+     * GSD phase-lifecycle protocol, appended to the system prompt only when GSD
+     * mode is enabled ({@code AgentConfig.isGsdMode()}). Phase 1 establishes the
+     * contract the agent must follow; the orchestrator/gates that enforce it land
+     * in later phases.
+     *
+     * @return the GSD protocol block
+     */
+    public static String buildGsdPhaseProtocol() {
+        return """
+
+                ## Режим GSD (фазовый цикл)
+                Работай строго по фазам: DISCUSS → PLAN → EXECUTE → VERIFY → DONE. Не перескакивай вперёд.
+
+                1. DISCUSS — сначала пойми цель. Задавай уточняющие вопросы ТОЛЬКО про реально неоднозначные и влияющие на результат решения (какой объект и куда, имена, поведение, объём правок); не задавай шаблонных/очевидных вопросов и не дроби — собери 1–3 ключевых вопроса в ОДНО сообщение и дождись ответа. Если всё однозначно — не выдумывай вопросы, кратко подтверди понимание и иди в PLAN. Каждое принятое решение фиксируй через gsd_plan add_decision. Не начинай мутации в этой фазе.
+                2. PLAN — сформулируй цель одной фразой и разбей её на атомарные задачи. У каждой задачи: что делает, какие файлы/объекты затрагивает, критерии приёмки (acceptance). Покажи план до исполнения.
+                3. EXECUTE — выполняй задачи по плану по одной. Для мутаций EDT соблюдай порядок inspect → edt_validate_request → мутация → get_diagnostics.
+                4. VERIFY — проверяй ДОСТИЖЕНИЕ ЦЕЛИ, а не «задачи сделаны». Принцип «существует ≠ работает». ОБЯЗАТЕЛЬНО прогони get_diagnostics по затронутым файлам (и qa/смоук, если применимо) и зафиксируй каждый критерий через record_verification с реальным evidence (вывод инструмента). Голый PASS без evidence гейт не пропустит. Объект/реквизит/форма должны быть реально созданы и связаны.
+                5. Гейты и no-silent-caps: НИКОГДА не деградируй молча. Немедленно остановись и сообщи, если: упёрся в лимит (шаги/контекст/время); инструмент не сработал 2+ раза подряд; не хватает прав/данных/доступа; задача неоднозначна; результат выходит частичным. В сообщении дай: (а) что уже сделано, (б) точный блокер, (в) что нужно или варианты — и жди ответа. Не обрезай объём, не выдумывай данные, не помечай задачу/проверку выполненной без доказательства. Если VERIFY нашёл пробелы — вернись в PLAN/EXECUTE и закрой их.
+                6. Не объявляй задачу выполненной, пока VERIFY не подтвердил цель.
+
+                """; //$NON-NLS-1$
+    }
+
     public static String adaptForBackend(String prompt, boolean backendSelectedInUi) {
         if (backendSelectedInUi || prompt == null || prompt.isBlank()) {
             return prompt;

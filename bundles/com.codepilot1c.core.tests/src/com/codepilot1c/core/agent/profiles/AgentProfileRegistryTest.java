@@ -168,8 +168,9 @@ public class AgentProfileRegistryTest {
         assertNotNull("recovery profile", registry.getProfile("recovery").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("plan profile", registry.getProfile("plan").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("explore profile", registry.getProfile("explore").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd profile", registry.getProfile("gsd").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertEquals("Registry should have 11 profiles", 11, registry.getAllProfiles().size()); //$NON-NLS-1$
+        assertEquals("Registry should have 12 profiles", 12, registry.getAllProfiles().size()); //$NON-NLS-1$
     }
 
     @Test

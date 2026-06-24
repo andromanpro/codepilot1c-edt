@@ -467,6 +467,34 @@ public class BrowserChatPanel extends Composite {
     }
 
     /**
+     * Removes the last message if it is an empty assistant placeholder (blank content
+     * and blank reasoning).
+     *
+     * <p>Each streaming round-trip adds an empty assistant bubble up front; on a
+     * tool-call-only turn it never gets filled and would otherwise leave a blank row
+     * in the transcript. GSD mode produces many such turns, so these accumulate.
+     * Removal targets the bubble by its DOM id, so tool-call cards are never touched.</p>
+     */
+    public void removeLastMessageIfEmptyAssistant() {
+        if (messages.isEmpty()) {
+            return;
+        }
+        int idx = messages.size() - 1;
+        ChatMessageData last = messages.get(idx);
+        boolean emptyAssistant = last.isAssistant && !last.isSystem
+                && (last.content == null || last.content.isBlank())
+                && (last.reasoning == null || last.reasoning.isBlank());
+        if (!emptyAssistant) {
+            return;
+        }
+        String id = last.id;
+        messages.remove(idx);
+        if (browserReady && browser != null && !browser.isDisposed()) {
+            browser.execute("var el = document.getElementById('" + id + "'); if (el) { el.remove(); }"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    /**
      * Обновляет последнее сообщение с контентом и ходом рассуждений (для streaming с thinking mode).
      *
      * @param content содержимое ответа

@@ -44,6 +44,7 @@ import com.codepilot1c.core.agent.graph.ToolGraphRouter;
 import com.codepilot1c.core.agent.graph.ToolGraphToolFilter;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.agent.prompts.ToolPromptRenderer;
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
@@ -386,6 +387,11 @@ public class AgentRunner implements IAgentRunner {
             if (chunk.hasReasoningField()) {
                 reasoningFieldSeen[0] = true;
                 reasoningBuilder.append(chunk.getReasoningContent());
+                if (chunk.getReasoningContent() != null && !chunk.getReasoningContent().isEmpty()) {
+                    // Stream reasoning live so a UI driven by AgentRunner events can show
+                    // "thinking" as it arrives (V2: required to match ChatView's current UX).
+                    emit(StreamChunkEvent.partialReasoning(step, chunk.getReasoningContent()));
+                }
             }
 
             if (chunk.isComplete()) {
@@ -722,9 +728,15 @@ public class AgentRunner implements IAgentRunner {
      * Строит системный промпт.
      */
     private String buildSystemPrompt(String prompt, AgentConfig config) {
+        String addition = config.getSystemPromptAddition();
+        if (config.isGsdMode()) {
+            // Append the GSD phase-lifecycle protocol so toggling gsdMode changes behavior.
+            String gsd = AgentPromptTemplates.buildGsdPhaseProtocol();
+            addition = (addition == null || addition.isBlank()) ? gsd : addition + "\n" + gsd; //$NON-NLS-1$
+        }
         return SystemPromptAssembler.getInstance().assembleDetailedForCurrentSession(
                 systemPrompt,
-                config.getSystemPromptAddition(),
+                addition,
                 config.getProfileName(),
                 List.copyOf(config.getRequestedSkills()),
                 prompt).prompt();
