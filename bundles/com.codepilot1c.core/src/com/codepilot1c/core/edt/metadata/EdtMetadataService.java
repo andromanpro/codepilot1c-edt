@@ -107,6 +107,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+import com._1c.g5.v8.dt.platform.version.Version;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessor;
 import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
@@ -4859,7 +4860,7 @@ public class EdtMetadataService {
             Object generatorFormType = resolveFormGeneratorType(owner, usage, formTypeClass);
             ScriptVariant scriptVariant = resolveScriptVariant(configuration);
             String languageCode = resolveLanguageCode(scriptVariant);
-            Object runtimeVersion = resolveRuntimeVersion(configuration, versionClass, opId);
+            Object runtimeVersion = resolveRuntimeVersion(project, configuration, versionClass, opId);
 
             Method getFieldsMethod = formFieldGeneratorClass.getMethod(
                     "getFormGeneratorFields", //$NON-NLS-1$
@@ -5029,8 +5030,23 @@ public class EdtMetadataService {
         return RU_LANGUAGE;
     }
 
-    private Object resolveRuntimeVersion(Configuration configuration, Class<?> versionClass, String opId)
+    private Object resolveRuntimeVersion(IProject project, Configuration configuration, Class<?> versionClass, String opId)
             throws ReflectiveOperationException {
+        // Primary: the project's actual runtime version via IV8ProjectManager. Correct for BOTH
+        // base configs and extensions. Extension configurations expose only
+        // configurationExtensionCompatibilityMode, so Configuration.getCompatibilityMode() is null
+        // for them and the compatibility-mode branch below would fall back to Version.LATEST.
+        // A form generated for LATEST emits newer enum literals (group "Auto", windowOpeningMode
+        // "LockOwner") that an older target platform's Form XDTO schema rejects on Designer export
+        // (XDTO property 'Group' mismatch).
+        try {
+            Version projectVersion = gateway.resolvePlatformVersion(project);
+            if (projectVersion != null && projectVersion != Version.LATEST) {
+                return projectVersion;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("[%s] resolvePlatformVersion unavailable, trying compatibility mode: %s", opId, e.getMessage()); //$NON-NLS-1$
+        }
         if (configuration != null && configuration.getCompatibilityMode() != null) {
             try {
                 Method parseCompatibilityMode = versionClass.getMethod(
