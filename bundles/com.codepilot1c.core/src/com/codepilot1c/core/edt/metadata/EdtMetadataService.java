@@ -6351,6 +6351,18 @@ public class EdtMetadataService {
             setAttributeType(feature, typeItem, typeSpec, transaction);
             return;
         }
+        // Special case: "type" on a Constant is also a containment TypeDescription reference, but a
+        // Constant is not a BasicFeature, so the branch above skips it. Route it through the shared
+        // type-application helper (primitives + reference types), instead of failing on the generic
+        // containment-reference path below.
+        if ("type".equalsIgnoreCase(fieldName) //$NON-NLS-1$
+                && target instanceof com._1c.g5.v8.dt.metadata.mdclass.Constant constant) {
+            TypeSpec typeSpec = normalizeTypeSpec(value);
+            TypeItem preResolved = resolveTypeItemForConstant(
+                    constant, configuration, typeSpec.typeQuery(), preResolvedTypes);
+            applyResolvedTypeDescription(constant, constant.getType(), preResolved, typeSpec, transaction);
+            return;
+        }
         String resolvedFieldName = normalizeMetadataFieldAlias(fieldName);
         EStructuralFeature eFeature = resolveFeatureIgnoreCase(target, resolvedFieldName);
         if (eFeature == null) {
@@ -6393,19 +6405,37 @@ public class EdtMetadataService {
             TypeSpec typeSpec,
             IBmPlatformTransaction transaction
     ) {
+        applyResolvedTypeDescription(feature, feature.getType(), preResolvedTypeItem, typeSpec, transaction);
+    }
+
+    /**
+     * Resolves a type query into a {@link TypeDescription} (with number/string/date qualifiers) and
+     * assigns it to {@code typeHolder}. Works for any MdObject that owns a {@code type} TypeDescription
+     * containment reference — {@link BasicFeature} (attribute/dimension/resource) and
+     * {@code Constant} alike. {@code existingType} supplies qualifier defaults for in-place updates.
+     * The final assignment goes through {@link #setTypeDescriptionOnEObject(EObject, TypeDescription)},
+     * which is behaviourally identical to {@code feature.setType(...)} for a BasicFeature.
+     */
+    private void applyResolvedTypeDescription(
+            EObject typeHolder,
+            TypeDescription existingType,
+            TypeItem preResolvedTypeItem,
+            TypeSpec typeSpec,
+            IBmPlatformTransaction transaction
+    ) {
         TypeItem txTypeItem = null;
         if (preResolvedTypeItem != null) {
             try {
                 txTypeItem = transaction.toTransactionObject(preResolvedTypeItem);
             } catch (RuntimeException e) {
-                LOG.debug("setAttributeType: toTransactionObject failed for type=%s feature=%s: %s", //$NON-NLS-1$
+                LOG.debug("applyResolvedTypeDescription: toTransactionObject failed for type=%s holder=%s: %s", //$NON-NLS-1$
                         typeSpec == null ? null : typeSpec.typeQuery(),
-                        feature == null ? null : feature.eClass().getName(),
+                        typeHolder == null ? null : typeHolder.eClass().getName(),
                         e.getMessage());
             }
         }
         if (txTypeItem == null) {
-            txTypeItem = resolveTypeItemInCurrentNamespace(transaction, feature, typeSpec, preResolvedTypeItem);
+            txTypeItem = resolveTypeItemInCurrentNamespace(transaction, typeHolder, typeSpec, preResolvedTypeItem);
         }
         if (txTypeItem == null) {
             txTypeItem = resolveTypeItemInCandidateNamespace(transaction, preResolvedTypeItem, typeSpec);
@@ -6424,7 +6454,6 @@ public class EdtMetadataService {
         typeDesc.getTypes().add(txTypeItem);
 
         String typeName = resolveTypeNameForQualifiers(preResolvedTypeItem, typeSpec);
-        TypeDescription existingType = feature.getType();
         if (isNumberType(typeName)) {
             NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
             Integer precision = typeSpec == null ? null : typeSpec.numberPrecision();
@@ -6459,8 +6488,10 @@ public class EdtMetadataService {
             typeDesc.setDateQualifiers(dq);
         }
 
-        feature.setType(typeDesc);
-        fixNullNumberFillValue(feature, typeName);
+        setTypeDescriptionOnEObject(typeHolder, typeDesc);
+        if (typeHolder instanceof BasicFeature feature) {
+            fixNullNumberFillValue(feature, typeName);
+        }
     }
 
     /**
@@ -6482,6 +6513,38 @@ public class EdtMetadataService {
             LOG.debug("fixNullNumberFillValue: fixed null BigDecimal in FillValue for %s", //$NON-NLS-1$
                     feature.eClass().getName());
         }
+    }
+
+    /**
+     * Resolves a type query for a {@code Constant} to a pre-resolved {@link TypeItem}. Primitive
+     * types (String/Number/Date/Boolean) are matched from configuration; reference types (e.g.
+     * {@code EnumRef.X}) return {@code null} here and are resolved through the transaction namespace
+     * chain in {@link #applyResolvedTypeDescription}.
+     */
+    private TypeItem resolveTypeItemForConstant(
+            com._1c.g5.v8.dt.metadata.mdclass.Constant constant,
+            Configuration configuration,
+            String typeQuery,
+            Map<String, TypeItem> preResolvedTypes
+    ) {
+        if (constant == null || typeQuery == null || typeQuery.isBlank()) {
+            return null;
+        }
+        // Primitives (String/Number/Date/Boolean) and reference types alike resolve through the
+        // platform type provider bound to the constant's own `type` reference — the same path a
+        // BasicFeature uses. The namespace chain in applyResolvedTypeDescription does not surface
+        // bare primitives, so this must run first.
+        TypeItem fromProvider = resolveTypeItemFromTypeProvider(constant, configuration, typeQuery);
+        if (fromProvider != null) {
+            cacheResolvedTypeItem(preResolvedTypes, typeQuery, fromProvider);
+            return fromProvider;
+        }
+        TypeItem fromConfiguration = resolveSimpleTypeItemFromConfiguration(configuration, typeQuery);
+        if (fromConfiguration != null) {
+            cacheResolvedTypeItem(preResolvedTypes, typeQuery, fromConfiguration);
+            return fromConfiguration;
+        }
+        return lookupPreResolvedTypeItem(preResolvedTypes, typeQuery);
     }
 
     private TypeItem resolveExternalTypeItemCandidate(
@@ -6825,26 +6888,26 @@ public class EdtMetadataService {
         return null;
     }
 
-    private TypeItem resolveTypeItemFromTypeProvider(BasicFeature feature, EObject context, String typeQuery) {
-        if (feature == null || typeQuery == null || typeQuery.isBlank()) {
+    private TypeItem resolveTypeItemFromTypeProvider(MdObject typeHolder, EObject context, String typeQuery) {
+        if (typeHolder == null || typeQuery == null || typeQuery.isBlank()) {
             return null;
         }
-        EReference typeReference = resolveTypeReference(feature);
+        EReference typeReference = resolveTypeReference(typeHolder);
         if (typeReference == null) {
             return null;
         }
         Set<String> queries = expandTypeQueries(typeQuery);
         try {
             TypeDescriptionInfoWithTypeInfo info = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(typeHolder, typeReference, null);
             TypeItem direct = findTypeItemInTypeInfo(info, queries);
             if (direct != null) {
                 return direct;
             }
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService resolve failed for type=%s feature=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService resolve failed for type=%s holder=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    typeHolder.eClass().getName(),
                     e.getMessage());
         }
         if (context == null) {
@@ -6852,20 +6915,20 @@ public class EdtMetadataService {
         }
         try {
             TypeDescriptionInfoWithTypeInfo contextualInfo = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, context, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(typeHolder, context, typeReference, null);
             TypeItem contextual = findTypeItemInTypeInfo(contextualInfo, queries);
             if (contextual != null) {
                 return contextual;
             }
-            LOG.debug("TypeProviderService returned no matching types for type=%s feature=%s context=%s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService returned no matching types for type=%s holder=%s context=%s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    typeHolder.eClass().getName(),
                     context.eClass().getName());
             return null;
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService contextual resolve failed for type=%s feature=%s context=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService contextual resolve failed for type=%s holder=%s context=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    typeHolder.eClass().getName(),
                     context.eClass().getName(),
                     e.getMessage());
             return null;
@@ -6990,11 +7053,11 @@ public class EdtMetadataService {
         }
     }
 
-    private EReference resolveTypeReference(BasicFeature feature) {
-        if (feature == null) {
+    private EReference resolveTypeReference(MdObject typeHolder) {
+        if (typeHolder == null) {
             return null;
         }
-        EStructuralFeature resolved = resolveFeatureIgnoreCase(feature, "type"); //$NON-NLS-1$
+        EStructuralFeature resolved = resolveFeatureIgnoreCase(typeHolder, "type"); //$NON-NLS-1$
         if (resolved instanceof EReference reference) {
             return reference;
         }
