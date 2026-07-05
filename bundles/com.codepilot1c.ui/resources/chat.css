@@ -408,6 +408,7 @@ em {
     background: #ffffff;
     box-shadow: 0 8px 24px rgba(18, 28, 45, 0.08);
     animation: fadeIn 0.18s ease-out;
+    min-height: 36px;
 }
 
 body.dark .tool-call,
@@ -427,6 +428,7 @@ body.dark .tool-calls-group {
     background: linear-gradient(180deg, #ffffff 0%, #f5f7fb 100%);
     cursor: pointer;
     user-select: none;
+    box-sizing: border-box;
 }
 
 body.dark .tool-call-header,
@@ -534,11 +536,20 @@ body.dark .tool-call-status.error { color: #fca5a5; }
     transform: rotate(90deg);
 }
 
+.tool-call.expanded,
+.tool-calls-group.expanded {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+}
+
 .tool-call-body {
     display: none;
     padding: 9px 10px 10px;
     border-top: 1px solid var(--border-color);
     background: #ffffff;
+    min-height: 44px;
+    overflow: visible;
 }
 
 body.dark .tool-call-body {
@@ -547,6 +558,9 @@ body.dark .tool-call-body {
 
 .tool-call.expanded .tool-call-body {
     display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
 }
 
 .tool-call-section,
@@ -623,6 +637,8 @@ body.dark .tool-call-result-preview {
     padding: 6px;
     border-top: 1px solid var(--border-color);
     background: #f8fafc;
+    min-height: 44px;
+    overflow: visible;
 }
 
 body.dark .tool-calls-group-body {
@@ -631,6 +647,9 @@ body.dark .tool-calls-group-body {
 
 .tool-calls-group.expanded .tool-calls-group-body {
     display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
 }
 
 .tool-calls-group-body .tool-call {
@@ -640,12 +659,13 @@ body.dark .tool-calls-group-body {
 
 .typing-indicator {
     flex: 0 0 auto;
+    order: 2147483647;
     display: flex;
     align-items: center;
     justify-content: flex-start;
     gap: 10px;
     width: min(100%, var(--message-max-width));
-    margin: 4px 0 0;
+    margin: 12px 0 0;
     padding: 10px 12px;
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
@@ -653,6 +673,8 @@ body.dark .tool-calls-group-body {
     color: var(--text-secondary);
     box-shadow: var(--message-shadow);
     animation: fadeIn 0.18s ease-out;
+    position: static;
+    z-index: auto;
 }
 
 .typing-content {
