@@ -3990,6 +3990,12 @@ public class EdtMetadataService {
         if (kind == ModuleArtifactKind.OBJECT) {
             return "ObjectModule.bsl"; //$NON-NLS-1$
         }
+        if (kind == ModuleArtifactKind.COMMAND) {
+            return "CommandModule.bsl"; //$NON-NLS-1$
+        }
+        if ("CommonCommand".equals(className)) { //$NON-NLS-1$
+            return "CommandModule.bsl"; //$NON-NLS-1$
+        }
         if ("CommonModule".equals(className) || (className != null && className.contains("Form"))) { //$NON-NLS-1$ //$NON-NLS-2$
             return "Module.bsl"; //$NON-NLS-1$
         }
@@ -6259,6 +6265,9 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
+            if (applyTypeDescriptionProperty(target, reference, value)) {
+                return;
+            }
             applyReferenceValue(configuration, target, reference, value);
             return;
         }
@@ -6275,6 +6284,21 @@ public class EdtMetadataService {
 
         Object converted = convertAttributeValue(attribute, value);
         target.eSet(eFeature, converted);
+    }
+
+    private boolean applyTypeDescriptionProperty(MdObject target, EReference reference, Object value) {
+        if (target == null || reference == null || !reference.isContainment()) {
+            return false;
+        }
+        if (!"type".equalsIgnoreCase(reference.getName()) //$NON-NLS-1$
+                && !"commandParameterType".equalsIgnoreCase(reference.getName())) { //$NON-NLS-1$
+            return false;
+        }
+        if (value instanceof TypeDescription typeDescription) {
+            setTypeDescriptionOnEObject(target, typeDescription);
+            return true;
+        }
+        return false;
     }
 
     /**

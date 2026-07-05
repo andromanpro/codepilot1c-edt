@@ -50,6 +50,9 @@ import com.codepilot1c.core.logging.VibeLogger;
  */
 public class EdtRoleRightsService {
 
+    private static final String UNSUPPORTED_IN_EXTENSION = "UNSUPPORTED_IN_EXTENSION"; //$NON-NLS-1$
+    private static final String AVAILABLE_CONFIG_RIGHTS_DIAGNOSTIC = "available configuration rights"; //$NON-NLS-1$
+
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtRoleRightsService.class);
     private static final String ROLE_PREFIX = "Role."; //$NON-NLS-1$
 

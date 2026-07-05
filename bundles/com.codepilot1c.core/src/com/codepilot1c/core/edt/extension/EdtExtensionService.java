@@ -600,6 +600,7 @@ public class EdtExtensionService {
             case "webservice", "webсервиспубликация" -> configuration.getWebServices(); //$NON-NLS-1$ //$NON-NLS-2$
             case "httpservice", "httpсервис" -> configuration.getHttpServices(); //$NON-NLS-1$ //$NON-NLS-2$
             case "integrationservice", "сервисинтеграции" -> configuration.getIntegrationServices(); //$NON-NLS-1$ //$NON-NLS-2$
+            case "bot", "бот" -> configuration.getBots(); //$NON-NLS-1$ //$NON-NLS-2$
             case "externdatasource", "externaldatasource", "внешнийисточникданных" -> configuration.getExternalDataSources(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "eventsubscription", "подписканасобытие" -> configuration.getEventSubscriptions(); //$NON-NLS-1$ //$NON-NLS-2$
             default -> Collections.emptyList();
