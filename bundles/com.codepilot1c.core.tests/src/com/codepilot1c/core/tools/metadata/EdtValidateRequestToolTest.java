@@ -30,7 +30,7 @@ public class EdtValidateRequestToolTest {
                         "command", "create_report", //$NON-NLS-1$ //$NON-NLS-2$
                         "project", "DemoConfiguration", //$NON-NLS-1$ //$NON-NLS-2$
                         "external_project", "ExtReports", //$NON-NLS-1$ //$NON-NLS-2$
-                        "name", "SalesReport" //$NON-NLS-1$ //$NON-NLS-2$
+                        "name", "SalesReport" //$NON-NLS-1$
                 ))).join();
 
         assertTrue(result.isSuccess());
@@ -61,6 +61,39 @@ public class EdtValidateRequestToolTest {
         JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
         assertEquals("extension_manage", json.get("operation").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("token-1", json.get("validationToken").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void createMetadataValidationReportsEffectiveExtensionName() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        Map<String, Object> payload = service.normalizeCreatePayload(
+                "ДО.Артель", //$NON-NLS-1$
+                "Bot", //$NON-NLS-1$
+                "аи_МастерБотАртель", //$NON-NLS-1$
+                null,
+                null,
+                Map.of());
+
+        assertEquals("ар_аи_МастерБотАртель", payload.get("effectiveName")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Bot.ар_аи_МастерБотАртель", payload.get("effectiveFqn")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(Boolean.TRUE, payload.get("autoPrefixed")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void updateMetadataValidationNormalizesStandardCommandGroupFullName() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        Map<String, Object> payload = service.normalizeUpdatePayload(
+                "ДО.Артель", //$NON-NLS-1$
+                "CommonCommand.аи_ОтправитьНаАнализИИ", //$NON-NLS-1$
+                Map.of("set", Map.of("group", "StandardCommandGroup.FormCommandBarImportant"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changes = (Map<String, Object>) payload.get("changes"); //$NON-NLS-1$
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) changes.get("set"); //$NON-NLS-1$
+        assertEquals("FormCommandBarImportant", set.get("group")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static final class StubValidationService extends MetadataRequestValidationService {
