@@ -291,21 +291,27 @@ public class EdtMetadataService {
             return null;
         });
         rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
-        forceExportTopLevelObject(project, fqn, opId);
+        boolean derivedDataReady = forceExportTopLevelObject(project, fqn, opId);
         verifyTopLevelPersisted(project, fqn, opId);
         verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
         refreshProjectSafely(project);
-        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
+        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s derivedDataReady=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                fqn);
+                fqn,
+                Boolean.valueOf(derivedDataReady));
 
+        String message = derivedDataReady
+                ? "Metadata object created successfully" //$NON-NLS-1$
+                : "Metadata object created successfully. Derived-data recomputation is still in progress, " //$NON-NLS-1$
+                        + "so the project may briefly report PROJECT_NOT_READY; re-run reads " //$NON-NLS-1$
+                        + "(scan_metadata_index/get_diagnostics) shortly. Do NOT recreate this object."; //$NON-NLS-1$
         return new MetadataOperationResult(
                 true,
                 request.projectName(),
                 request.kind().name(),
                 request.name(),
                 fqn,
-                "Metadata object created successfully"); //$NON-NLS-1$
+                message);
     }
 
     public CreateFormResult createForm(CreateFormRequest request) {
@@ -7649,6 +7655,14 @@ public class EdtMetadataService {
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Property '" + rawKey + "' is managed by dedicated create_metadata arguments", false); //$NON-NLS-1$ //$NON-NLS-2$
             }
+            if (isChildCollectionProperty(rawKey)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "create_metadata creates only the top-level object; child collections such as '" //$NON-NLS-1$
+                                + rawKey + "' are not supported here. Create the object first, then add each " //$NON-NLS-1$
+                                + "child with add_metadata_child (e.g. child_kind=EnumValue to add enum values).", //$NON-NLS-1$
+                        false);
+            }
             String resolvedField = resolveTopLevelPropertyField(target, kind, rawKey);
             setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes);
             applied.add(rawKey + "->" + resolvedField); //$NON-NLS-1$
@@ -7668,6 +7682,48 @@ public class EdtMetadataService {
                 || "synonym".equals(token) //$NON-NLS-1$
                 || "comment".equals(token) //$NON-NLS-1$
                 || "uuid".equals(token); //$NON-NLS-1$
+    }
+
+    private boolean isChildCollectionProperty(String key) {
+        String token = normalizeToken(key);
+        return "children".equals(token) //$NON-NLS-1$
+                || "enumvalues".equals(token) //$NON-NLS-1$
+                || "attributes".equals(token) //$NON-NLS-1$
+                || "tabularsections".equals(token); //$NON-NLS-1$
+    }
+
+    /**
+     * Resolves the effective top-level object name for a configuration extension that declares a
+     * "Name Prefix" (the 1C SU189 policy, e.g. "ар_"): prepends the prefix when {@code name} does
+     * not already start with it. Returns {@code name} unchanged for base configurations (blank
+     * prefix), projects without a resolvable {@link Configuration}, or when the prefix is already
+     * present.
+     *
+     * <p>Applied by the agent-facing create tool so agent-created top-level objects comply with
+     * SU189. Programmatic callers that need exact names call {@link #createMetadata} directly and
+     * are intentionally not rewritten — the service stays a faithful executor. Scope is limited to
+     * independent top-level objects; SU189 does not apply to subordinate children (attributes, enum
+     * values, forms, …), so child creation never routes through here.
+     */
+    public String applyExtensionNamePrefix(String projectName, String name) {
+        if (name == null || name.isBlank()) {
+            return name;
+        }
+        IProject project = gateway.resolveProject(projectName);
+        if (project == null || !project.exists()) {
+            return name;
+        }
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        if (configuration == null) {
+            return name;
+        }
+        String prefix = configuration.getNamePrefix();
+        if (prefix == null || prefix.isBlank() || name.startsWith(prefix)) {
+            return name;
+        }
+        String prefixedName = prefix + name;
+        LOG.info("Extension name prefix '%s' applied (SU189): %s -> %s", prefix, name, prefixedName); //$NON-NLS-1$
+        return prefixedName;
     }
 
     private String resolveTopLevelPropertyField(MdObject target, MetadataKind kind, String requestedKey) {
@@ -9031,7 +9087,14 @@ public class EdtMetadataService {
                 opId, fqn, configFile.getFullPath());
     }
 
-    private void forceExportTopLevelObject(IProject project, String fqn, String opId) {
+    /**
+     * Schedules the export/derived-data recompute for a just-committed top-level object and waits
+     * for it to settle. The BM commit is authoritative, so this method never fails the operation on
+     * a derived-data timeout; it returns {@code false} to signal that the recompute is still running
+     * in the background (project may briefly report {@code PROJECT_NOT_READY}), and {@code true} when
+     * derived data settled within the timeout.
+     */
+    private boolean forceExportTopLevelObject(IProject project, String fqn, String opId) {
         IBmModelManager modelManager = gateway.getBmModelManager();
         IDtProjectManager projectManager = gateway.getDtProjectManager();
         IDtProject dtProject = projectManager.getDtProject(project);
@@ -9069,10 +9132,12 @@ public class EdtMetadataService {
         }
 
         LOG.debug("[%s] forceExport targets=%s result=%s", opId, targets, exported); //$NON-NLS-1$
-        waitExportDerivedData(dtProject, opId, fqn);
-        flushDerivedDataPipeline(dtProject, opId, fqn);
+        // Non-short-circuiting so the flush step always runs even if the first wait timed out.
+        boolean derivedDataReady = waitExportDerivedData(dtProject, opId, fqn);
+        derivedDataReady &= flushDerivedDataPipeline(dtProject, opId, fqn);
         modelManager.waitModelSynchronization(project);
         LOG.debug("[%s] waitModelSynchronization completed for project=%s", opId, project.getName()); //$NON-NLS-1$
+        return derivedDataReady;
     }
 
     private List<String> buildExportTargets(String fqn) {
@@ -9084,7 +9149,7 @@ public class EdtMetadataService {
         return List.copyOf(targets);
     }
 
-    private void waitExportDerivedData(IDtProject dtProject, String opId, String fqn) {
+    private boolean waitExportDerivedData(IDtProject dtProject, String opId, String fqn) {
         IDerivedDataManager ddManager = gateway.getDerivedDataManagerProvider().get(dtProject);
         if (ddManager == null) {
             throw new MetadataOperationException(
@@ -9099,11 +9164,18 @@ public class EdtMetadataService {
                     EXPORT_SEGMENT_BLOBS);
             LOG.debug("[%s] waitComputation(EXP_O,EXP_B) for %s: %s", opId, fqn, done); //$NON-NLS-1$
             if (!done) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                        "Timed out waiting export derived-data for " + fqn + " in " + EXPORT_DERIVED_WAIT_MS + "ms", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                        true);
+                // The BM commit is authoritative for the operation result. A derived-data export that
+                // does not settle in time (e.g. because the EDT scheduler is blocked on another
+                // operation such as 'Sort-MD-objects') must NOT fail the already-committed mutation:
+                // the object exists and the export finishes in the background. Report a soft lag
+                // instead of throwing, so callers can surface a "pending" status rather than a
+                // misleading hard failure that tempts the agent to recreate the object.
+                LOG.warn("[%s] Export derived-data still pending for %s after %dms; " //$NON-NLS-1$
+                        + "BM object is committed, operation treated as successful " //$NON-NLS-1$
+                        + "(derived-data recompute continues in background).", //$NON-NLS-1$
+                        opId, fqn, EXPORT_DERIVED_WAIT_MS);
             }
+            return done;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new MetadataOperationException(
@@ -9112,7 +9184,7 @@ public class EdtMetadataService {
         }
     }
 
-    private void flushDerivedDataPipeline(IDtProject dtProject, String opId, String fqn) {
+    private boolean flushDerivedDataPipeline(IDtProject dtProject, String opId, String fqn) {
         IDerivedDataManager ddManager = gateway.getDerivedDataManagerProvider().get(dtProject);
         if (ddManager == null) {
             throw new MetadataOperationException(
@@ -9126,6 +9198,7 @@ public class EdtMetadataService {
             if (!importantDone) {
                 LOG.warn("[%s] waitImportantDataComputations timed out for %s in %dms", opId, fqn, EXPORT_DERIVED_WAIT_MS); //$NON-NLS-1$
             }
+            return importantDone;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new MetadataOperationException(

@@ -91,7 +91,7 @@ public class CreateMetadataTool extends AbstractTool {
                 },
                 "name": {
                   "type": "string",
-                  "description": "Имя нового top-level объекта. Не используйте reserved names платформы для конфликтующих сценариев."
+                  "description": "Имя нового top-level объекта. В проекте-расширении с заданным префиксом имён префикс подставляется автоматически, если имя его не содержит (SU189); передавайте базовое имя без чужого префикса. Не используйте reserved names платформы."
                 },
                 "synonym": {
                   "type": "string",
@@ -185,10 +185,14 @@ public class CreateMetadataTool extends AbstractTool {
                 String validatedSynonym = asOptionalString(validatedPayload, "synonym"); //$NON-NLS-1$
                 String validatedComment = asOptionalString(validatedPayload, "comment"); //$NON-NLS-1$
                 Map<String, Object> validatedProperties = parameterMap(validatedPayload.get("properties")); //$NON-NLS-1$
+                // Extension name-prefix policy (SU189): agent-created top-level objects get the
+                // extension's configured prefix. Applied at this tool layer so programmatic callers
+                // of createMetadata keep exact names.
+                String effectiveName = metadataService.applyExtensionNamePrefix(projectName, validatedName);
                 CreateMetadataRequest request = new CreateMetadataRequest(
-                        projectName, kind, validatedName, validatedSynonym, validatedComment, validatedProperties);
+                        projectName, kind, effectiveName, validatedSynonym, validatedComment, validatedProperties);
                 LOG.info("[%s] Calling EdtMetadataService.createMetadata(project=%s, kind=%s, name=%s)", // $NON-NLS-1$
-                        opId, projectName, kind, validatedName);
+                        opId, projectName, kind, effectiveName);
                 MetadataOperationResult result = metadataService.createMetadata(request);
                 LOG.info("[%s] SUCCESS in %s, fqn=%s", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
