@@ -85,22 +85,21 @@ public final class CommandGroupResolver {
         if (definition.isEmpty()) {
             return Optional.empty();
         }
-        if (resourceSet == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "Cannot resolve StandardCommandGroup without EDT resource set: " + definition.get().name(), //$NON-NLS-1$
-                    true);
+        if (resourceSet != null) {
+            Resource resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, false);
+            if (resource == null) {
+                try {
+                    resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, true);
+                } catch (RuntimeException e) {
+                    resource = null;
+                }
+            }
+            CommandGroup group = findStandardCommandGroup(resource, definition.get());
+            if (group != null) {
+                return Optional.of(group);
+            }
         }
-        Resource resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, true);
-        CommandGroup group = findStandardCommandGroup(resource, definition.get());
-        if (group == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "StandardCommandGroup resource " + STANDARD_GROUP_RESOURCE //$NON-NLS-1$
-                            + " does not contain " + definition.get().name(), //$NON-NLS-1$
-                    true);
-        }
-        return Optional.of(group);
+        return Optional.of(createDetachedGroup(definition.get()));
     }
 
     private Optional<Definition> resolveDefinition(Object value) {

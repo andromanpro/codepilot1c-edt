@@ -99,4 +99,23 @@ public class CommandGroupResolverTest {
         assertTrue(resolved.isPresent());
         assertSame(expected, resolved.get());
     }
+
+    @Test
+    public void fallsBackToDetachedStandardGroupWhenEdtResourceSetDoesNotContainValue() {
+        ResourceSetImpl resourceSet = new ResourceSetImpl();
+        Resource resource = new ResourceImpl(URI.createURI("v8:/CommandGroup/Std")); //$NON-NLS-1$
+        resourceSet.getResources().add(resource);
+
+        Optional<CommandGroup> resolved = resolver.resolveStandardCommandGroup(
+                resourceSet,
+                "StandardCommandGroup.FormCommandBarImportant"); //$NON-NLS-1$
+
+        assertTrue(resolved.isPresent());
+        assertTrue(resolved.get() instanceof StandardCommandGroup);
+        StandardCommandGroup group = (StandardCommandGroup) resolved.get();
+        assertEquals("FormCommandBarImportant", group.getName()); //$NON-NLS-1$
+        assertEquals("Важное", group.getNameRu()); //$NON-NLS-1$
+        assertEquals(CommandGroupCategory.FORM_COMMAND_BAR, group.getCategory());
+        assertEquals(1, group.getPriority());
+    }
 }
