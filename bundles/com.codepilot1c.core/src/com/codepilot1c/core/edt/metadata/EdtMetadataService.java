@@ -113,6 +113,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
+import com._1c.g5.v8.dt.metadata.mdclass.BasicCommand;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
@@ -204,6 +205,7 @@ public class EdtMetadataService {
     private final EdtMetadataGateway gateway;
     private final MetadataProjectReadinessChecker readinessChecker;
     private final FormOwnerStrategy formOwnerStrategy;
+    private final CommandGroupResolver commandGroupResolver;
 
     private record TypeSpec(
             String typeQuery,
@@ -227,6 +229,7 @@ public class EdtMetadataService {
         this.gateway = gateway;
         this.readinessChecker = new MetadataProjectReadinessChecker(gateway);
         this.formOwnerStrategy = FormOwnerStrategy.defaultStrategy();
+        this.commandGroupResolver = new CommandGroupResolver();
     }
 
     public boolean isEdtAvailable() {
@@ -257,6 +260,9 @@ public class EdtMetadataService {
 
         String fqn = request.kind().getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
         LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
+
+        Map<String, TypeItem> topLevelPropertyTypes = preResolveTopLevelPropertyTypes(project, request.properties());
+        final Map<String, TypeItem> capturedTopLevelPropertyTypes = topLevelPropertyTypes;
 
         executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
@@ -289,6 +295,7 @@ public class EdtMetadataService {
                     request.kind(),
                     request.properties(),
                     transaction,
+                    capturedTopLevelPropertyTypes,
                     opId,
                     fqn);
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
@@ -3279,6 +3286,10 @@ public class EdtMetadataService {
                         MetadataOperationCode.METADATA_NOT_FOUND,
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
+            if ("group".equalsIgnoreCase(fieldName) && target.eClass() != null //$NON-NLS-1$
+                    && "CommonCommand".equals(target.eClass().getName())) { //$NON-NLS-1$
+                return standardCommandGroupCandidates(request.projectName(), request.targetFqn(), fieldName, limit);
+            }
             EStructuralFeature feature = resolveFeatureIgnoreCase(target, fieldName);
             if (!(feature instanceof EReference typeReference)) {
                 throw new MetadataOperationException(
@@ -3316,6 +3327,20 @@ public class EdtMetadataService {
                     total,
                     allCandidates);
         });
+    }
+
+    private FieldTypeCandidatesResult standardCommandGroupCandidates(String projectName, String targetFqn,
+            String fieldName, int limit) {
+        List<FieldTypeCandidate> candidates = new ArrayList<>();
+        for (String group : commandGroupResolver.availableStandardCommandGroups()) {
+            candidates.add(new FieldTypeCandidate(group, null, "StandardCommandGroup." + group, //$NON-NLS-1$
+                    null, "StandardCommandGroup", true)); //$NON-NLS-1$
+        }
+        int total = candidates.size();
+        if (candidates.size() > limit) {
+            candidates = new ArrayList<>(candidates.subList(0, limit));
+        }
+        return new FieldTypeCandidatesResult(projectName, targetFqn, fieldName, total, candidates);
     }
 
     /**
@@ -5781,6 +5806,42 @@ public class EdtMetadataService {
         return preResolvedTypes;
     }
 
+    private Map<String, TypeItem> preResolveTopLevelPropertyTypes(
+            IProject project,
+            Map<String, Object> properties
+    ) {
+        Set<String> typeStrings = collectTopLevelPropertyTypeStrings(properties);
+        if (typeStrings.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
+        executeRead(project, readTx -> {
+            for (String typeString : typeStrings) {
+                TypeItem item = resolveTypeItem(typeString, readTx);
+                if (item == null && !isSimpleTypeQuery(typeString)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
+                }
+                if (item != null) {
+                    cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                }
+            }
+            return null;
+        });
+        return preResolvedTypes;
+    }
+
+    private Set<String> collectTopLevelPropertyTypeStrings(Map<String, Object> properties) {
+        Set<String> typeStrings = new LinkedHashSet<>();
+        if (properties == null || properties.isEmpty()) {
+            return typeStrings;
+        }
+        addTypeStringIfPresent(typeStrings, properties, "type"); //$NON-NLS-1$
+        addTypeStringIfPresent(typeStrings, properties, "commandParameterType"); //$NON-NLS-1$
+        return typeStrings;
+    }
+
     @SuppressWarnings("unchecked")
     private Set<String> collectChildTypeStrings(AddMetadataChildRequest request) {
         Set<String> typeStrings = new LinkedHashSet<>();
@@ -6619,6 +6680,9 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
+            if (applyCommandGroupValue(target, reference, value)) {
+                return;
+            }
             applyReferenceValue(configuration, target, reference, value);
             return;
         }
@@ -6635,6 +6699,120 @@ public class EdtMetadataService {
 
         Object converted = convertAttributeValue(attribute, value);
         target.eSet(eFeature, converted);
+    }
+
+    private boolean applyCommandGroupValue(MdObject target, EReference reference, Object value) {
+        if (!(target instanceof BasicCommand command) || reference == null
+                || !"group".equalsIgnoreCase(reference.getName())) { //$NON-NLS-1$
+            return false;
+        }
+        if (value == null || String.valueOf(value).trim().isBlank()) {
+            command.setGroup(null);
+            return true;
+        }
+        return commandGroupResolver.resolveStandardCommandGroup(value)
+                .map(group -> {
+                    command.setGroup(group);
+                    return Boolean.TRUE;
+                })
+                .orElse(Boolean.FALSE)
+                .booleanValue();
+    }
+
+    private boolean applyTypeDescriptionProperty(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+        if (target == null || reference == null || !reference.isContainment()) {
+            return false;
+        }
+        if (!"type".equalsIgnoreCase(reference.getName()) //$NON-NLS-1$
+                && !"commandParameterType".equalsIgnoreCase(reference.getName())) { //$NON-NLS-1$
+            return false;
+        }
+        if (value instanceof TypeDescription typeDescription) {
+            setTypeDescriptionOnEObject(target, typeDescription);
+            return true;
+        }
+        TypeDescription typeDescription = createTypeDescription(configuration, target, reference, value,
+                transaction, preResolvedTypes);
+        target.eSet(reference, typeDescription);
+        return true;
+    }
+
+    private TypeDescription createTypeDescription(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+        List<TypeSpec> specs = normalizeTypeSpecs(value);
+        if (specs.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "TypeDescription field '" + reference.getName() + "' requires at least one type", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        TypeDescription description = McoreFactory.eINSTANCE.createTypeDescription();
+        for (TypeSpec spec : specs) {
+            TypeItem item = lookupPreResolvedTypeItem(preResolvedTypes, spec.typeQuery());
+            if (item == null && target instanceof BasicFeature feature) {
+                item = resolveTypeItemForFeature(feature, configuration, spec.typeQuery(), preResolvedTypes);
+            }
+            if (item == null) {
+                item = resolveSimpleTypeItemFromConfiguration(configuration, spec.typeQuery());
+            }
+            TypeItem txItem = toTransactionTypeItem(transaction, item, spec);
+            if (txItem == null) {
+                throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type not found for field '" + reference.getName() + "': " + spec.typeQuery(), false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            description.getTypes().add(txItem);
+        }
+        TypeSpec first = specs.get(0);
+        String typeName = resolveTypeNameForQualifiers(description.getTypes().isEmpty() ? null : description.getTypes().get(0), first);
+        if (isNumberType(typeName)) {
+            NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
+            nq.setPrecision(firstPositive(first.numberPrecision(), null, 15));
+            nq.setScale(firstNonNegative(first.numberScale(), null, 2));
+            nq.setNonNegative(first.numberNonNegative() != null && first.numberNonNegative().booleanValue());
+            description.setNumberQualifiers(nq);
+        } else if (isStringType(typeName)) {
+            StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
+            sq.setLength(resolveStringLength(first.stringLength(), null, 150));
+            sq.setFixed(first.stringFixed() != null && first.stringFixed().booleanValue());
+            description.setStringQualifiers(sq);
+        } else if (isDateType(typeName)) {
+            DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
+            dq.setDateFractions(first.dateFractions() != null ? first.dateFractions() : DateFractions.DATE_TIME);
+            description.setDateQualifiers(dq);
+        }
+        return description;
+    }
+
+    private TypeItem toTransactionTypeItem(IBmPlatformTransaction transaction, TypeItem item, TypeSpec spec) {
+        if (item == null) {
+            return null;
+        }
+        try {
+            TypeItem txItem = transaction.toTransactionObject(item);
+            if (txItem != null) {
+                return txItem;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("toTransactionTypeItem failed for type=%s: %s", //$NON-NLS-1$
+                    spec == null ? null : spec.typeQuery(), e.getMessage());
+        }
+        return resolveExternalTypeItemCandidate(transaction, item, spec);
+    }
+
+    private List<TypeSpec> normalizeTypeSpecs(Object value) {
+        if (value instanceof List<?> list) {
+            List<TypeSpec> specs = new ArrayList<>();
+            for (Object item : list) {
+                specs.addAll(normalizeTypeSpecs(item));
+            }
+            return specs;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Object types = getMapValueIgnoreCase(map, "types"); //$NON-NLS-1$
+            if (types != null) {
+                return normalizeTypeSpecs(types);
+            }
+        }
+        return List.of(normalizeTypeSpec(value));
     }
 
     /**
@@ -7546,15 +7724,11 @@ public class EdtMetadataService {
     @SuppressWarnings("unchecked")
     private Set<String> collectTypeStrings(Map<String, Object> changes) {
         Set<String> typeStrings = new LinkedHashSet<>();
-        // Top-level set.type
+        // Top-level set.type / set.commandParameterType
         Map<String, Object> setMap = extractSetMap(changes);
         if (setMap != null) {
-            if (hasMapKeyIgnoreCase(setMap, "type")) { //$NON-NLS-1$
-                String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(setMap, "type")); //$NON-NLS-1$
-                if (typeStr != null && !typeStr.isBlank()) {
-                    typeStrings.add(typeStr);
-                }
-            }
+            addTypeStringIfPresent(typeStrings, setMap, "type"); //$NON-NLS-1$
+            addTypeStringIfPresent(typeStrings, setMap, "commandParameterType"); //$NON-NLS-1$
             // Also scan set values that are Maps containing "type"
             // (auto-redirect case: {"set":{"AttrName":{"type":"CatalogRef.Foo"}}})
             for (Object val : setMap.values()) {
@@ -7605,6 +7779,16 @@ public class EdtMetadataService {
             }
         }
         return typeStrings;
+    }
+
+    private void addTypeStringIfPresent(Set<String> typeStrings, Map<String, Object> map, String key) {
+        if (typeStrings == null || map == null || key == null || !hasMapKeyIgnoreCase(map, key)) {
+            return;
+        }
+        String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(map, key));
+        if (typeStr != null && !typeStr.isBlank()) {
+            typeStrings.add(typeStr);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -8046,13 +8230,13 @@ public class EdtMetadataService {
             MetadataKind kind,
             Map<String, Object> properties,
             IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
             String opId,
             String targetFqn
     ) {
         if (target == null || properties == null || properties.isEmpty()) {
             return;
         }
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
         List<String> applied = new ArrayList<>();
         for (Map.Entry<String, Object> entry : properties.entrySet()) {
             String rawKey = entry.getKey();
