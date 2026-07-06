@@ -1,6 +1,7 @@
 package com.codepilot1c.core.tools.metadata;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
@@ -81,6 +82,47 @@ public class EdtValidateRequestToolTest {
     }
 
     @Test
+    public void createMetadataValidationRejectsAutoPrefixWhenDisabled() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        try {
+            service.normalizeCreatePayload(
+                    "ДО.Артель", //$NON-NLS-1$
+                    "Bot", //$NON-NLS-1$
+                    "аи_МастерБотАртель", //$NON-NLS-1$
+                    null,
+                    null,
+                    Map.of("allow_auto_prefix", Boolean.FALSE)); //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage().contains("auto-prefix")); //$NON-NLS-1$
+            assertTrue(e.getMessage().contains("ар_аи_МастерБотАртель")); //$NON-NLS-1$
+            return;
+        }
+        assertFalse("allow_auto_prefix=false must reject an unprefixed extension name", true); //$NON-NLS-1$
+    }
+
+    @Test
+    public void createMetadataValidationRejectsTopLevelAutoPrefixWhenDisabled() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        try {
+            service.normalizeCreatePayload(
+                    "ДО.Артель", //$NON-NLS-1$
+                    "Bot", //$NON-NLS-1$
+                    "аи_МастерБотАртель", //$NON-NLS-1$
+                    null,
+                    null,
+                    Map.of(),
+                    Boolean.FALSE);
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage().contains("auto-prefix")); //$NON-NLS-1$
+            assertTrue(e.getMessage().contains("ар_аи_МастерБотАртель")); //$NON-NLS-1$
+            return;
+        }
+        assertFalse("top-level allow_auto_prefix=false must reject an unprefixed extension name", true); //$NON-NLS-1$
+    }
+
+    @Test
     public void updateMetadataValidationNormalizesStandardCommandGroupFullName() {
         MetadataRequestValidationService service = new MetadataRequestValidationService();
 
@@ -94,6 +136,100 @@ public class EdtValidateRequestToolTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> set = (Map<String, Object>) changes.get("set"); //$NON-NLS-1$
         assertEquals("FormCommandBarImportant", set.get("group")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void updateMetadataValidationPreservesCustomCommandGroupNames() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        Map<String, Object> payload = service.normalizeUpdatePayload(
+                "ДО.Артель", //$NON-NLS-1$
+                "CommonCommand.аи_ОтправитьНаАнализИИ", //$NON-NLS-1$
+                Map.of("set", Map.of("group", "CommandGroup.MyCustomGroup"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changes = (Map<String, Object>) payload.get("changes"); //$NON-NLS-1$
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) changes.get("set"); //$NON-NLS-1$
+        assertEquals("CommandGroup.MyCustomGroup", set.get("group")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void updateMetadataValidationAcceptsAllPublicStandardCommandGroups() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        Map<String, Object> payload = service.normalizeUpdatePayload(
+                "ДО.Артель", //$NON-NLS-1$
+                "CommonCommand.аи_ОтправитьНаАнализИИ", //$NON-NLS-1$
+                Map.of("set", Map.of("group", "StandardCommandGroup.NavigationPanelOrdinary"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changes = (Map<String, Object>) payload.get("changes"); //$NON-NLS-1$
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) changes.get("set"); //$NON-NLS-1$
+        assertEquals("NavigationPanelOrdinary", set.get("group")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void updateMetadataValidationRejectsUnknownStandardCommandGroup() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        try {
+            service.normalizeUpdatePayload(
+                    "ДО.Артель", //$NON-NLS-1$
+                    "CommonCommand.аи_ОтправитьНаАнализИИ", //$NON-NLS-1$
+                    Map.of("set", Map.of("group", "StandardCommandGroup.UnknownGroup"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage().contains("Unknown StandardCommandGroup")); //$NON-NLS-1$
+            assertTrue(e.getMessage().contains("FormCommandBarImportant")); //$NON-NLS-1$
+            return;
+        }
+        assertFalse("Unknown StandardCommandGroup must be rejected", true); //$NON-NLS-1$
+    }
+
+    @Test
+    public void createMetadataValidationRejectsInvalidTypeDescription() {
+        MetadataRequestValidationService service = new MetadataRequestValidationService();
+
+        try {
+            service.normalizeCreatePayload(
+                    "ДО.Артель", //$NON-NLS-1$
+                    "Constant", //$NON-NLS-1$
+                    "ар_AuditInvalidType", //$NON-NLS-1$
+                    null,
+                    null,
+                    Map.of("type", "NotAType")); //$NON-NLS-1$ //$NON-NLS-2$
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage().contains("Invalid TypeDescription")); //$NON-NLS-1$
+            assertTrue(e.getMessage().contains("NotAType")); //$NON-NLS-1$
+            return;
+        }
+        assertFalse("Invalid TypeDescription must be rejected", true); //$NON-NLS-1$
+    }
+
+    @Test
+    public void acceptsMutateRoleRightsOperationAndKeepsOperationName() {
+        StubValidationService validationService = new StubValidationService();
+        EdtValidateRequestTool tool = new EdtValidateRequestTool(validationService);
+
+        ToolResult result = tool.execute(Map.of(
+                "project", "ДО.Артель", //$NON-NLS-1$ //$NON-NLS-2$
+                "operation", "mutate_role_rights", //$NON-NLS-1$ //$NON-NLS-2$
+                "payload", Map.of(
+                        "project", "ДО.Артель", //$NON-NLS-1$ //$NON-NLS-2$
+                        "role", "ар_ОсновнаяРоль", //$NON-NLS-1$ //$NON-NLS-2$
+                        "operations", List.of(Map.of(
+                                "op", "set_config_right", //$NON-NLS-1$ //$NON-NLS-2$
+                                "right", "Administration", //$NON-NLS-1$ //$NON-NLS-2$
+                                "value", "allow" //$NON-NLS-1$ //$NON-NLS-2$
+                        ))
+                ))).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals(ValidationOperation.MUTATE_ROLE_RIGHTS, validationService.lastRequest.operation());
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("mutate_role_rights", json.get("operation").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("token-1", json.get("validationToken").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static final class StubValidationService extends MetadataRequestValidationService {
