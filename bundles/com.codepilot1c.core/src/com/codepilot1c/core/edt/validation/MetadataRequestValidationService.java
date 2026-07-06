@@ -21,6 +21,7 @@ import com.codepilot1c.core.edt.dcs.DcsUpsertCalculatedFieldRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertParameterRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertQueryDatasetRequest;
 import com.codepilot1c.core.edt.metadata.AddMetadataChildRequest;
+import com.codepilot1c.core.edt.metadata.CommandGroupResolver;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
@@ -51,19 +52,35 @@ public class MetadataRequestValidationService {
     private static final Set<String> TYPE_KEY_CANDIDATES = Set.of(
             "type", "types", "value", "name", "nameRu", "code", "codeRu",
             "catalog", "document", "enumeration", "enum", "fqn"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$ //$NON-NLS-10$ //$NON-NLS-11$
+    private static final Set<String> SIMPLE_TYPE_TOKENS = Set.of(
+            "string", "строка", //$NON-NLS-1$ //$NON-NLS-2$
+            "number", "число", //$NON-NLS-1$ //$NON-NLS-2$
+            "date", "дата", //$NON-NLS-1$ //$NON-NLS-2$
+            "boolean", "булево", "bool", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "valuestorage", "хранилищезначения", //$NON-NLS-1$ //$NON-NLS-2$
+            "uniqueidentifier", "уникальныйидентификатор", "uuid", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "binarydata", "двоичныеданные" //$NON-NLS-1$ //$NON-NLS-2$
+    );
 
     private final EdtMetadataGateway gateway;
     private final MetadataProjectReadinessChecker readinessChecker;
     private final ValidationTokenStore tokenStore;
+    private final CommandGroupResolver commandGroupResolver;
 
     public MetadataRequestValidationService() {
-        this(new EdtMetadataGateway(), ValidationTokenStore.getInstance());
+        this(new EdtMetadataGateway(), ValidationTokenStore.getInstance(), new CommandGroupResolver());
     }
 
     MetadataRequestValidationService(EdtMetadataGateway gateway, ValidationTokenStore tokenStore) {
-        this.gateway = gateway;
-        this.tokenStore = tokenStore;
-        this.readinessChecker = new MetadataProjectReadinessChecker(gateway);
+        this(gateway, tokenStore, new CommandGroupResolver());
+    }
+
+    MetadataRequestValidationService(EdtMetadataGateway gateway, ValidationTokenStore tokenStore,
+            CommandGroupResolver commandGroupResolver) {
+        this.gateway = gateway == null ? new EdtMetadataGateway() : gateway;
+        this.tokenStore = tokenStore == null ? ValidationTokenStore.getInstance() : tokenStore;
+        this.readinessChecker = new MetadataProjectReadinessChecker(this.gateway);
+        this.commandGroupResolver = commandGroupResolver == null ? new CommandGroupResolver() : commandGroupResolver;
     }
 
     public boolean isEdtAvailable() {
@@ -126,6 +143,18 @@ public class MetadataRequestValidationService {
             String comment,
             Map<String, Object> properties
     ) {
+        return normalizeCreatePayload(projectName, kindValue, name, synonym, comment, properties, null);
+    }
+
+    public Map<String, Object> normalizeCreatePayload(
+            String projectName,
+            String kindValue,
+            String name,
+            String synonym,
+            String comment,
+            Map<String, Object> properties,
+            Boolean allowAutoPrefix
+    ) {
         MetadataKind kind = MetadataKind.fromString(kindValue);
         CreateMetadataRequest request = new CreateMetadataRequest(projectName, kind, name, synonym, comment, properties);
         request.validate();
@@ -141,6 +170,7 @@ public class MetadataRequestValidationService {
             payload.put("comment", comment); //$NON-NLS-1$
         }
         if (properties != null && !properties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
             payload.put("properties", properties); //$NON-NLS-1$
         }
         return payload;
@@ -172,6 +202,7 @@ public class MetadataRequestValidationService {
             payload.put("comment", comment); //$NON-NLS-1$
         }
         if (properties != null && !properties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
             payload.put("properties", properties); //$NON-NLS-1$
         }
         return payload;
@@ -571,9 +602,101 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("target_fqn", targetFqn); //$NON-NLS-1$
         if (changes != null && !changes.isEmpty()) {
-            payload.put("changes", new LinkedHashMap<>(changes)); //$NON-NLS-1$
+            validateUpdateTypeDescriptionValues(changes);
+            payload.put("changes", normalizeStandardCommandGroupChanges(changes)); //$NON-NLS-1$
         }
         return payload;
+    }
+
+    private Map<String, Object> normalizeStandardCommandGroupChanges(Map<String, Object> changes) {
+        Map<String, Object> normalized = new LinkedHashMap<>(changes);
+        Object rawSet = normalized.get("set"); //$NON-NLS-1$
+        if (rawSet instanceof Map<?, ?> setMap) {
+            Map<String, Object> set = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : setMap.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                Object value = entry.getValue();
+                if ("group".equalsIgnoreCase(key) && value instanceof String group) { //$NON-NLS-1$
+                    value = normalizeStandardCommandGroup(group);
+                }
+                set.put(key, value);
+            }
+            normalized.put("set", set); //$NON-NLS-1$
+        }
+        return normalized;
+    }
+
+    private void validateUpdateTypeDescriptionValues(Map<String, Object> changes) {
+        Object rawSet = changes.get("set"); //$NON-NLS-1$
+        if (!(rawSet instanceof Map<?, ?> setMap)) {
+            return;
+        }
+        Map<String, Object> set = asMap(setMap);
+        validateTypeDescriptionValue(getMapValueIgnoreCase(set, "type"), "changes.set.type"); //$NON-NLS-1$ //$NON-NLS-2$
+        validateTypeDescriptionValue(getMapValueIgnoreCase(set, "commandParameterType"), //$NON-NLS-1$
+                "changes.set.commandParameterType"); //$NON-NLS-1$
+    }
+
+    private String normalizeStandardCommandGroup(String rawValue) {
+        return commandGroupResolver.normalizeForValidation(rawValue);
+    }
+
+    private void validateTypeDescriptionValue(Object typeValue, String fieldName) {
+        if (typeValue == null) {
+            return;
+        }
+        if (typeValue instanceof List<?> list) {
+            if (list.isEmpty()) {
+                throw invalidType(fieldName, typeValue, "must contain at least one type"); //$NON-NLS-1$
+            }
+            for (Object item : list) {
+                validateTypeDescriptionValue(item, fieldName);
+            }
+            return;
+        }
+        if (typeValue instanceof Map<?, ?> map) {
+            Map<String, Object> typed = asMap(map);
+            Object nested = getMapValueIgnoreCase(typed, "types"); //$NON-NLS-1$
+            if (nested == null) {
+                nested = getMapValueIgnoreCase(typed, "type"); //$NON-NLS-1$
+            }
+            if (nested == null) {
+                nested = pickFirstTypeToken(typed);
+            }
+            if (nested == null) {
+                throw invalidType(fieldName, typeValue, "map must include type or types"); //$NON-NLS-1$
+            }
+            validateTypeDescriptionValue(nested, fieldName);
+            return;
+        }
+        String raw = String.valueOf(typeValue).trim();
+        if (raw.isBlank()) {
+            throw invalidType(fieldName, typeValue, "must be non-empty"); //$NON-NLS-1$
+        }
+        if (!isValidTypeLookupToken(raw)) {
+            throw invalidType(fieldName, typeValue,
+                    "unknown type; use a scalar platform type or a qualified metadata type such as CatalogRef.Name"); //$NON-NLS-1$
+        }
+    }
+
+    private MetadataOperationException invalidType(String fieldName, Object value, String reason) {
+        return new MetadataOperationException(
+                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                "Invalid TypeDescription for " + fieldName + ": " + value + " (" + reason + ")", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                false);
+    }
+
+    private boolean isValidTypeLookupToken(String raw) {
+        String value = raw.trim();
+        int open = value.indexOf('(');
+        if (open > 0) {
+            value = value.substring(0, open).trim();
+        }
+        if (value.contains(".")) { //$NON-NLS-1$
+            String[] parts = value.split("\\."); //$NON-NLS-1$
+            return parts.length >= 2 && !parts[0].isBlank() && !parts[1].isBlank();
+        }
+        return SIMPLE_TYPE_TOKENS.contains(normalizeTypeToken(value));
     }
 
     public Map<String, Object> normalizeEnsureModuleArtifactPayload(
@@ -939,7 +1062,8 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("name")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("synonym")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("comment")), //$NON-NLS-1$
-                        asMap(request.payload().get("properties"))); //$NON-NLS-1$
+                        asMap(request.payload().get("properties")), //$NON-NLS-1$
+                        asOptionalBoolean(request.payload().get("allow_auto_prefix"))); //$NON-NLS-1$
                 checks.add("Операция create_metadata валидирована по обязательным полям и имени."); //$NON-NLS-1$
                 yield payload;
             }
