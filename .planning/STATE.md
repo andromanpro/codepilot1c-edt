@@ -2,48 +2,55 @@
 gsd_state_version: 1.0
 milestone: v0.1.9
 milestone_name: EDT Extension Native Migration Tooling
-status: planning
-last_updated: "2026-07-05T17:57:31.519Z"
-last_activity: 2026-07-05
+status: implemented
+last_updated: "2026-07-06T06:25:49+03:00"
+last_activity: 2026-07-06
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 3
   total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_plans: 3
+  percent: 100
 ---
 
 # State
 
 ## Current Point
 
-Phase: Not started (planning complete for milestone bootstrap)
-Plan: —
-Status: Ready to start Phase 1 research/RED tests
-Last activity: 2026-07-05 — Milestone v0.1.9 started from 1C-agent migration tooling findings
+Phase: 3 complete
+Plan: 03-01 complete
+Status: Implementation complete; focused verification passed. Release/update-site smoke remains a ship activity.
+Last activity: 2026-07-06 — GSD autonomous run completed all three v0.1.9 phases.
 
 ## Completed This Session
 
-- Switched current GSD milestone to `v0.1.9 EDT Extension Native Migration Tooling`.
-- Cleared previous milestone phase directory via `gsd-sdk query phases.clear --confirm`.
-- Created research summary from repository inspection and EDT/BM API code paths.
-- Defined requirements `EDTEXT-01` through `EDTEXT-08` from the 10 reported migration tooling issues.
-- Created a 3-phase roadmap and executable phase plans:
-  - Phase 1: EDT API contracts and RED tests.
-  - Phase 2: low-level EDT mutation/diagnostics fixes.
-  - Phase 3: high-level dry-run native extension migration planner.
+- Ran GSD autonomous discovery for v0.1.9.
+- Completed Phase 1 contract/RED-test coverage for reported EDT extension migration defects.
+- Completed Phase 2 low-level fixes:
+  - generic TypeDescription containment handling,
+  - extension effective name/FQN validation and auto-prefix guard,
+  - CommonCommand `CommandModule.bsl` and BSL command-module context,
+  - StandardCommandGroup alias/candidates,
+  - Bot lookup coverage,
+  - role/config-right diagnostic payloads.
+- Completed Phase 3 dry-run native extension migration planner/tool:
+  - `migrate_to_extension_native`,
+  - ordered operation plan,
+  - effective target FQNs,
+  - representative InformationRegister/Catalog/HTTPService/CommonCommand/ScheduledJob/Bot/Role fixtures,
+  - apply-mode gating and no source deletion.
 
 ## Verification
 
-- `gsd-sdk query init.phase-op 1` resolved `.planning/phases/01-edt-api-contracts-and-red-tests` and found context + plan.
-- `gsd-sdk query init.plan-phase 1` resolved Phase 1 requirements: `EDTEXT-01, EDTEXT-02, EDTEXT-04, EDTEXT-05, EDTEXT-06, EDTEXT-08`.
-- Mechanical artifact check confirmed all expected planning files exist and every `EDTEXT-*` requirement appears in both requirements and roadmap.
+- Focused targeted gate:
+  - `mvn -pl bundles/com.codepilot1c.core.tests -am -Dtest='*Extension*Test,*Migration*Test,*Metadata*Test,*ModuleArtifact*Test,*RoleRights*Test,*ValidateRequest*Test' test`
+  - Result: BUILD SUCCESS; Tests run: 30, Failures: 0, Errors: 0, Skipped: 0.
 
 ## Notes
 
-- Product source files were already dirty before this milestone bootstrap; this session only intended to change `.planning/` milestone artifacts.
-- `.planning/` is git-ignored in this repository and requires `git add -f` if these artifacts should be committed.
+- Full release/update-site gate is still required before delivery: `mvn -DskipTests package`, install from `repositories/com.codepilot1c.update/target/repository`, then real EDT visual/smoke verification.
+- Apply-mode native migration intentionally remains gated: the new high-level tool plans operations and refuses apply without dry-run review/validation-token composition.
 
 ## Next Step
 
-Start Phase 1 plan `01-01`: add RED tests and service seams for the migration tooling defects before implementing fixes.
+Run the release/ship gate when ready: full reactor package, update-site install, and live EDT smoke for the new planner and low-level primitives.

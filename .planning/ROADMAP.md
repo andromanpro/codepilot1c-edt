@@ -2,9 +2,9 @@
 
 ## Phases
 
-- [ ] **Phase 1: Research EDT API Contracts and Lock Failure Reproductions** - Convert the 10 1C-agent findings into service-level contracts, fakeable EDT API seams, and RED tests.
-- [ ] **Phase 2: Implement Low-Level EDT Mutation and Diagnostics Fixes** - Fix TypeDescription mutation, effective-name validation, CommonCommand module semantics, command groups, Bot adopt diagnostics, and extension role-right diagnostics.
-- [ ] **Phase 3: Add Dry-Run Native Extension Migration Planner** - Build the high-level migration planner/tool on top of corrected primitives and verify it against representative Artel object classes.
+- [x] **Phase 1: Research EDT API Contracts and Lock Failure Reproductions** - Convert the 10 1C-agent findings into service-level contracts, fakeable EDT API seams, and RED tests.
+- [x] **Phase 2: Implement Low-Level EDT Mutation and Diagnostics Fixes** - Fix TypeDescription mutation, effective-name validation, CommonCommand module semantics, command groups, Bot adopt diagnostics, and extension role-right diagnostics.
+- [x] **Phase 3: Add Dry-Run Native Extension Migration Planner** - Build the high-level migration planner/tool on top of corrected primitives and verify it against representative Artel object classes.
 
 ## Phase Details
 
@@ -19,7 +19,7 @@
 **Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: Add research-backed RED tests and service seams for extension migration tooling defects.
+- [x] 01-01: Add research-backed RED tests and service seams for extension migration tooling defects.
 
 ### Phase 2: Implement Low-Level EDT Mutation and Diagnostics Fixes
 **Goal**: Make existing tools correct and explicit for the low-level operations needed by native extension migration.
@@ -34,7 +34,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: Implement low-level EDT mutation primitives and diagnostics fixes with targeted tests.
+- [x] 02-01: Implement low-level EDT mutation primitives and diagnostics fixes with targeted tests.
 
 ### Phase 3: Add Dry-Run Native Extension Migration Planner
 **Goal**: Provide a high-level, dry-run-first migration tool that composes corrected primitives into safe native extension cloning.
@@ -49,7 +49,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: Implement `migrate_to_extension_native` dry-run/apply planner and verification fixtures.
+- [x] 03-01: Implement `migrate_to_extension_native` dry-run/apply planner and verification fixtures.
 
 ## Progress
 
@@ -58,6 +58,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Research EDT API Contracts and Lock Failure Reproductions | 0/1 | Not started | - |
-| 2. Implement Low-Level EDT Mutation and Diagnostics Fixes | 0/1 | Not started | - |
-| 3. Add Dry-Run Native Extension Migration Planner | 0/1 | Not started | - |
+| 1. Research EDT API Contracts and Lock Failure Reproductions | 1/1 | Complete | 2026-07-06 |
+| 2. Implement Low-Level EDT Mutation and Diagnostics Fixes | 1/1 | Complete | 2026-07-06 |
+| 3. Add Dry-Run Native Extension Migration Planner | 1/1 | Complete | 2026-07-06 |
