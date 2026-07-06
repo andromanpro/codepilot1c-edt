@@ -72,6 +72,7 @@ public class BuildAgentProfile implements AgentProfile {
             "edt_get_symbol_info",
             "dcs_manage",
             "extension_manage",
+            "migrate_to_extension_native",
             "external_manage",
             "edt_external_smoke",
             "edt_extension_smoke",
@@ -234,6 +235,9 @@ public class BuildAgentProfile implements AgentProfile {
                         .forAllResources(),
                 PermissionRule.ask("extension_manage")
                         .withDescription("Управление расширениями конфигурации EDT")
+                        .forAllResources(),
+                PermissionRule.ask("migrate_to_extension_native")
+                        .withDescription("Планирование native migration в расширение EDT")
                         .forAllResources(),
                 PermissionRule.ask("external_manage")
                         .withDescription("Управление внешними обработками и отчётами EDT")

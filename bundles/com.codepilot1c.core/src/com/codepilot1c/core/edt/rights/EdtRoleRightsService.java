@@ -224,7 +224,7 @@ public class EdtRoleRightsService {
         Right right = findRight(available, rightName.trim());
         if (right == null) {
             throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
-                    "Right '" + rightName + "' is not available for " + eClass.getName(), false); //$NON-NLS-1$ //$NON-NLS-2$
+                    unsupportedRightMessage(txObject, eClass, rightName, available), false);
         }
         ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(txObject, roleDescription);
         RightValue defaultValue = RightsModelUtil.getDefaultRightValue(txObject, txRole);
@@ -341,6 +341,27 @@ public class EdtRoleRightsService {
         }
         throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
                 "Object not found: " + fqn, false); //$NON-NLS-1$
+    }
+
+    private String unsupportedRightMessage(EObject txObject, EClass eClass, String requestedRight, Set<Right> available) {
+        List<String> availableRights = new ArrayList<>();
+        if (available != null) {
+            for (Right candidate : available) {
+                if (candidate != null && candidate.getName() != null) {
+                    availableRights.add(candidate.getName());
+                }
+            }
+        }
+        boolean configurationTarget = txObject instanceof Configuration;
+        boolean extensionProject = configurationTarget
+                && ((Configuration) txObject).getNamePrefix() != null
+                && !((Configuration) txObject).getNamePrefix().isBlank();
+        String diagnostic = configurationTarget && extensionProject ? UNSUPPORTED_IN_EXTENSION : "RIGHT_NOT_AVAILABLE"; //$NON-NLS-1$
+        return "{\"error\":\"" + diagnostic + "\",\"right\":\"" + requestedRight //$NON-NLS-1$ //$NON-NLS-2$
+                + "\",\"targetKind\":\"" + eClass.getName() //$NON-NLS-1$
+                + "\",\"isExtensionProject\":" + extensionProject //$NON-NLS-1$
+                + ",\"availableRights\":\"" + String.join(",", availableRights) //$NON-NLS-1$ //$NON-NLS-2$
+                + "\",\"hint\":\"" + AVAILABLE_CONFIG_RIGHTS_DIAGNOSTIC + "\"}"; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private Right findRight(Set<Right> available, String name) {

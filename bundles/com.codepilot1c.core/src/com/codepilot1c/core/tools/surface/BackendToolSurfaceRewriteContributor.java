@@ -97,6 +97,7 @@ public final class BackendToolSurfaceRewriteContributor implements ToolSurfaceCo
             // Composite tools
             case "dcs_manage" -> "Управляет СКД: get_summary/list_nodes/create_schema/upsert datasets/params/fields. Никогда не пиши DCS XML/MXL через file tools. Для мутаций сначала edt_validate_request; при INVALID_VALIDATION_TOKEN запроси новый токен."; //$NON-NLS-1$
             case "extension_manage" -> "Управляет расширениями EDT: показывает проекты и объекты, создаёт расширение, заимствует объект из базы и меняет состояние свойства."; //$NON-NLS-1$
+            case "migrate_to_extension_native" -> "Планирует dry-run native migration объектов базы в расширение EDT; source deletion не выполняет."; //$NON-NLS-1$
             case "external_manage" -> "Управляет внешними обработками/отчётами. object_fqn: ПОЛНЫЙ FQN (ExternalDataProcessor.МояОбработка, ExternalReport.МойОтчёт). НЕ используй короткое имя без типа."; //$NON-NLS-1$
             case "edt_diagnostics" -> "Запускает EDT диагностику и runtime-команды: smoke, trace export, разбор ошибок, обновление инфобазы и запуск приложения."; //$NON-NLS-1$
             case "qa_inspect" -> "Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation."; //$NON-NLS-1$

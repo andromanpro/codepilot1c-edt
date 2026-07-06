@@ -37,7 +37,7 @@ public class ToolContextGate {
             "dcs_manage"); //$NON-NLS-1$
 
     private static final Set<String> EXTENSION_TOOLS = Set.of(
-            "extension_manage"); //$NON-NLS-1$
+            "extension_manage", "migrate_to_extension_native"); //$NON-NLS-1$ //$NON-NLS-2$
 
     private static final Set<String> EXTERNAL_TOOLS = Set.of(
             "external_manage"); //$NON-NLS-1$

@@ -170,6 +170,7 @@ public class ToolRegistry {
         register(new GetInfobaseCredentialsTool());
         register(new TailEdtLogsTool());
         register(new ExtensionManageTool());
+        register(new MigrateToExtensionNativeTool());
         register(new EdtExtensionSmokeTool());
         register(new DcsManageTool());
         register(new ExternalManageTool());

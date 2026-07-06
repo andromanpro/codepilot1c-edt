@@ -36,6 +36,7 @@ public class ExtensionBuildProfile implements AgentProfile {
             "list_files",
             // Extension composite tool + smoke
             "extension_manage",
+            "migrate_to_extension_native",
             "edt_extension_smoke",
             // External composite tool + smoke
             "external_manage",
@@ -84,6 +85,7 @@ public class ExtensionBuildProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(),
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("extension_manage").forAllResources(),
+                PermissionRule.allow("migrate_to_extension_native").forAllResources(),
                 PermissionRule.allow("edt_extension_smoke").forAllResources(),
                 PermissionRule.allow("external_manage").forAllResources(),
                 PermissionRule.allow("edt_external_smoke").forAllResources(),

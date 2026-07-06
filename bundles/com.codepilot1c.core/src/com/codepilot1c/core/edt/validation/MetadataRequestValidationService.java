@@ -9,6 +9,8 @@ import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
 
+import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -134,12 +136,20 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("kind", kind.name()); //$NON-NLS-1$
         payload.put("name", name); //$NON-NLS-1$
-        if (projectName != null && projectName.contains(".") && name != null && !name.startsWith("ар_")) { //$NON-NLS-1$ //$NON-NLS-2$
-            String effectiveName = "ар_" + name; //$NON-NLS-1$
-            payload.put("effectiveName", effectiveName); //$NON-NLS-1$
-            payload.put("effectiveFqn", kind.getFqnPrefix() + "." + effectiveName); //$NON-NLS-1$ //$NON-NLS-2$
-            payload.put("autoPrefixed", Boolean.TRUE); //$NON-NLS-1$
+        payload.put("requestedName", name); //$NON-NLS-1$
+        payload.put("requestedFqn", kind.getFqnPrefix() + "." + name); //$NON-NLS-1$ //$NON-NLS-2$
+        EffectiveName effective = resolveEffectiveName(projectName, name);
+        boolean autoPrefixed = !safeEquals(name, effective.name());
+        if (autoPrefixed && Boolean.FALSE.equals(asOptionalBoolean(getMapValueIgnoreCase(properties, "allow_auto_prefix")))) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "Extension project would auto-prefix name '" + name + "' to '" + effective.name() //$NON-NLS-1$ //$NON-NLS-2$
+                            + "'; pass allow_auto_prefix=true or use the effective name explicitly", //$NON-NLS-1$
+                    false);
         }
+        payload.put("effectiveName", effective.name()); //$NON-NLS-1$
+        payload.put("effectiveFqn", kind.getFqnPrefix() + "." + effective.name()); //$NON-NLS-1$ //$NON-NLS-2$
+        payload.put("autoPrefixed", Boolean.valueOf(autoPrefixed)); //$NON-NLS-1$
         if (synonym != null && !synonym.isBlank()) {
             payload.put("synonym", synonym); //$NON-NLS-1$
         }
@@ -1381,5 +1391,42 @@ public class MetadataRequestValidationService {
             }
         }
         return null;
+    }
+
+    private EffectiveName resolveEffectiveName(String projectName, String name) {
+        if (name == null || name.isBlank()) {
+            return new EffectiveName(name);
+        }
+        String prefix = resolveExtensionNamePrefix(projectName);
+        if (prefix == null || prefix.isBlank() || name.startsWith(prefix)) {
+            return new EffectiveName(name);
+        }
+        return new EffectiveName(prefix + name);
+    }
+
+    private String resolveExtensionNamePrefix(String projectName) {
+        if (projectName == null || projectName.isBlank()) {
+            return null;
+        }
+        try {
+            IProject project = gateway.resolveProject(projectName);
+            if (project != null && project.exists()) {
+                Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+                if (configuration != null && configuration.getNamePrefix() != null
+                        && !configuration.getNamePrefix().isBlank()) {
+                    return configuration.getNamePrefix();
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("Cannot resolve extension name prefix for %s: %s", projectName, e.getMessage()); //$NON-NLS-1$
+        }
+        return projectName.contains(".") ? "ар_" : null; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private boolean safeEquals(String left, String right) {
+        return left == null ? right == null : left.equals(right);
+    }
+
+    private record EffectiveName(String name) {
     }
 }

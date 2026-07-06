@@ -3105,6 +3105,10 @@ public class EdtMetadataService {
                         MetadataOperationCode.METADATA_NOT_FOUND,
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
+            if ("group".equalsIgnoreCase(fieldName) && target.eClass() != null //$NON-NLS-1$
+                    && "CommonCommand".equals(target.eClass().getName())) { //$NON-NLS-1$
+                return standardCommandGroupCandidates(request.projectName(), request.targetFqn(), fieldName, limit);
+            }
             EStructuralFeature feature = resolveFeatureIgnoreCase(target, fieldName);
             if (!(feature instanceof EReference typeReference)) {
                 throw new MetadataOperationException(
@@ -3142,6 +3146,28 @@ public class EdtMetadataService {
                     total,
                     allCandidates);
         });
+    }
+
+    private FieldTypeCandidatesResult standardCommandGroupCandidates(String projectName, String targetFqn,
+            String fieldName, int limit) {
+        List<String> groups = List.of(
+                "FormCommandBarImportant", //$NON-NLS-1$
+                "FormCommandBarNavigation", //$NON-NLS-1$
+                "FormCommandBarMore", //$NON-NLS-1$
+                "FormNavigationPanel", //$NON-NLS-1$
+                "FormCommandPanel", //$NON-NLS-1$
+                "FormItemCommandBar" //$NON-NLS-1$
+        );
+        List<FieldTypeCandidate> candidates = new ArrayList<>();
+        for (String group : groups) {
+            candidates.add(new FieldTypeCandidate(group, null, "StandardCommandGroup." + group, //$NON-NLS-1$
+                    null, "StandardCommandGroup", true)); //$NON-NLS-1$
+        }
+        int total = candidates.size();
+        if (candidates.size() > limit) {
+            candidates = new ArrayList<>(candidates.subList(0, limit));
+        }
+        return new FieldTypeCandidatesResult(projectName, targetFqn, fieldName, total, candidates);
     }
 
     /**
@@ -6265,7 +6291,7 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
-            if (applyTypeDescriptionProperty(target, reference, value)) {
+            if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction, preResolvedTypes)) {
                 return;
             }
             applyReferenceValue(configuration, target, reference, value);
@@ -6286,7 +6312,8 @@ public class EdtMetadataService {
         target.eSet(eFeature, converted);
     }
 
-    private boolean applyTypeDescriptionProperty(MdObject target, EReference reference, Object value) {
+    private boolean applyTypeDescriptionProperty(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
         if (target == null || reference == null || !reference.isContainment()) {
             return false;
         }
@@ -6298,7 +6325,87 @@ public class EdtMetadataService {
             setTypeDescriptionOnEObject(target, typeDescription);
             return true;
         }
-        return false;
+        TypeDescription typeDescription = createTypeDescription(configuration, target, reference, value,
+                transaction, preResolvedTypes);
+        target.eSet(reference, typeDescription);
+        return true;
+    }
+
+    private TypeDescription createTypeDescription(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+        List<TypeSpec> specs = normalizeTypeSpecs(value);
+        if (specs.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "TypeDescription field '" + reference.getName() + "' requires at least one type", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        TypeDescription description = McoreFactory.eINSTANCE.createTypeDescription();
+        for (TypeSpec spec : specs) {
+            TypeItem item = lookupPreResolvedTypeItem(preResolvedTypes, spec.typeQuery());
+            if (item == null && target instanceof BasicFeature feature) {
+                item = resolveTypeItemForFeature(feature, configuration, spec.typeQuery(), preResolvedTypes);
+            }
+            if (item == null) {
+                item = resolveSimpleTypeItemFromConfiguration(configuration, spec.typeQuery());
+            }
+            TypeItem txItem = toTransactionTypeItem(transaction, item, spec);
+            if (txItem == null) {
+                throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type not found for field '" + reference.getName() + "': " + spec.typeQuery(), false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            description.getTypes().add(txItem);
+        }
+        TypeSpec first = specs.get(0);
+        String typeName = resolveTypeNameForQualifiers(description.getTypes().isEmpty() ? null : description.getTypes().get(0), first);
+        if (isNumberType(typeName)) {
+            NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
+            nq.setPrecision(firstPositive(first.numberPrecision(), null, 15));
+            nq.setScale(firstNonNegative(first.numberScale(), null, 2));
+            nq.setNonNegative(first.numberNonNegative() != null && first.numberNonNegative().booleanValue());
+            description.setNumberQualifiers(nq);
+        } else if (isStringType(typeName)) {
+            StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
+            sq.setLength(resolveStringLength(first.stringLength(), null, 150));
+            sq.setFixed(first.stringFixed() != null && first.stringFixed().booleanValue());
+            description.setStringQualifiers(sq);
+        } else if (isDateType(typeName)) {
+            DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
+            dq.setDateFractions(first.dateFractions() != null ? first.dateFractions() : DateFractions.DATE_TIME);
+            description.setDateQualifiers(dq);
+        }
+        return description;
+    }
+
+    private TypeItem toTransactionTypeItem(IBmPlatformTransaction transaction, TypeItem item, TypeSpec spec) {
+        if (item == null) {
+            return null;
+        }
+        try {
+            TypeItem txItem = transaction.toTransactionObject(item);
+            if (txItem != null) {
+                return txItem;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("toTransactionTypeItem failed for type=%s: %s", //$NON-NLS-1$
+                    spec == null ? null : spec.typeQuery(), e.getMessage());
+        }
+        return resolveExternalTypeItemCandidate(transaction, item, spec);
+    }
+
+    private List<TypeSpec> normalizeTypeSpecs(Object value) {
+        if (value instanceof List<?> list) {
+            List<TypeSpec> specs = new ArrayList<>();
+            for (Object item : list) {
+                specs.addAll(normalizeTypeSpecs(item));
+            }
+            return specs;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Object types = getMapValueIgnoreCase(map, "types"); //$NON-NLS-1$
+            if (types != null) {
+                return normalizeTypeSpecs(types);
+            }
+        }
+        return List.of(normalizeTypeSpec(value));
     }
 
     /**
