@@ -2,7 +2,6 @@ package com.codepilot1c.core.edt.metadata;
 
 import static org.junit.Assert.assertTrue;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -34,19 +33,21 @@ public class EdtMetadataServiceTypeDescriptionTest {
                                 || source.contains("setTypeDescriptionProperty"))); //$NON-NLS-1$
     }
 
-    private String readCoreSource(String relativePath) throws Exception {
-        Path repoRoot = findRepoRoot();
-        return Files.readString(repoRoot.resolve(relativePath), StandardCharsets.UTF_8);
+    @Test
+    public void updateMetadataPreResolvesCommandParameterTypeStrings() throws Exception {
+        String source = readCoreSource(
+                "bundles/com.codepilot1c.core/src/com/codepilot1c/core/edt/metadata/EdtMetadataService.java"); //$NON-NLS-1$
+
+        assertTrue(
+                "update_metadata must pre-resolve commandParameterType string values before the write transaction, matching edt_field_type_candidates resolver semantics", //$NON-NLS-1$
+                source.contains("addTypeStringIfPresent(typeStrings, setMap, \"commandParameterType\")")); //$NON-NLS-1$
     }
 
-    private Path findRepoRoot() {
-        Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize(); //$NON-NLS-1$
-        while (current != null) {
-            if (Files.isDirectory(current.resolve("bundles")) && Files.isDirectory(current.resolve(".planning"))) { //$NON-NLS-1$ //$NON-NLS-2$
-                return current;
-            }
-            current = current.getParent();
+    private String readCoreSource(String relativePath) throws Exception {
+        Path path = Path.of(relativePath);
+        if (!Files.exists(path)) {
+            path = Path.of("../..", relativePath); //$NON-NLS-1$
         }
-        throw new IllegalStateException("Cannot locate repository root"); //$NON-NLS-1$
+        return Files.readString(path);
     }
 }
