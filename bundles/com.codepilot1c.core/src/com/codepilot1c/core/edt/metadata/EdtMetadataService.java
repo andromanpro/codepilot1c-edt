@@ -6359,7 +6359,9 @@ public class EdtMetadataService {
             command.setGroup(null);
             return true;
         }
-        return commandGroupResolver.resolveStandardCommandGroup(value)
+        org.eclipse.emf.ecore.resource.ResourceSet resourceSet = target.eResource() == null
+                ? null : target.eResource().getResourceSet();
+        return commandGroupResolver.resolveStandardCommandGroup(resourceSet, value)
                 .map(group -> {
                     command.setGroup(group);
                     return Boolean.TRUE;
