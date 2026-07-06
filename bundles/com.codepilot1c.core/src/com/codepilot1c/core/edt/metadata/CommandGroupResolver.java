@@ -2,11 +2,13 @@ package com.codepilot1c.core.edt.metadata;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.eclipse.emf.common.util.TreeIterator;
 import org.eclipse.emf.common.util.URI;
@@ -16,7 +18,6 @@ import org.eclipse.emf.ecore.resource.ResourceSet;
 
 import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.mcore.CommandGroupCategory;
-import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.StandardCommandGroup;
 import com._1c.g5.v8.dt.platform.IEObjectStandardCommandGroupNames;
 
@@ -26,7 +27,8 @@ import com._1c.g5.v8.dt.platform.IEObjectStandardCommandGroupNames;
 public final class CommandGroupResolver {
 
     private static final String STANDARD_PREFIX = "StandardCommandGroup."; //$NON-NLS-1$
-    private static final URI STANDARD_GROUP_RESOURCE = URI.createURI("v8:/CommandGroup/Std"); //$NON-NLS-1$
+    private static final String STANDARD_GROUP_RESOURCE_PREFIX = "v8:/CommandGroup/Std"; //$NON-NLS-1$
+    private static final URI STANDARD_GROUP_RESOURCE = URI.createURI(STANDARD_GROUP_RESOURCE_PREFIX);
 
     private static final List<Definition> DEFINITIONS = List.of(
             new Definition(IEObjectStandardCommandGroupNames.STD_GROUP_NAVIGATION_PANEL_IMPORTANT,
@@ -77,29 +79,44 @@ public final class CommandGroupResolver {
     }
 
     public Optional<CommandGroup> resolveStandardCommandGroup(Object value) {
-        return resolveDefinition(value).map(this::createDetachedGroup);
+        return Optional.empty();
     }
 
     public Optional<CommandGroup> resolveStandardCommandGroup(ResourceSet resourceSet, Object value) {
+        return resolveStandardCommandGroup(resourceSet, value, null);
+    }
+
+    public Optional<CommandGroup> resolveStandardCommandGroup(ResourceSet resourceSet, Object value, String platformVersion) {
         Optional<Definition> definition = resolveDefinition(value);
         if (definition.isEmpty()) {
             return Optional.empty();
         }
         if (resourceSet != null) {
-            Resource resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, false);
-            if (resource == null) {
-                try {
-                    resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, true);
-                } catch (RuntimeException e) {
-                    resource = null;
-                }
-            }
-            CommandGroup group = findStandardCommandGroup(resource, definition.get());
+            List<URI> resourceUris = standardGroupResourceUris(resourceSet, platformVersion);
+            CommandGroup group = resolveByEObjectUri(resourceSet, resourceUris, definition.get());
             if (group != null) {
                 return Optional.of(group);
             }
+            for (URI resourceUri : resourceUris) {
+                Resource resource = resourceSet.getResource(resourceUri, false);
+                if (resource == null) {
+                    try {
+                        resource = resourceSet.getResource(resourceUri, true);
+                    } catch (RuntimeException e) {
+                        resource = null;
+                    }
+                }
+                group = findStandardCommandGroup(resource, definition.get());
+                if (group != null) {
+                    return Optional.of(group);
+                }
+            }
         }
-        return Optional.of(createDetachedGroup(definition.get()));
+        return Optional.empty();
+    }
+
+    public boolean isStandardCommandGroup(Object value) {
+        return resolveDefinition(value).isPresent();
     }
 
     private Optional<Definition> resolveDefinition(Object value) {
@@ -126,13 +143,45 @@ public final class CommandGroupResolver {
         return definition.category();
     }
 
-    private CommandGroup createDetachedGroup(Definition definition) {
-        StandardCommandGroup group = McoreFactory.eINSTANCE.createStandardCommandGroup();
-        group.setName(definition.name());
-        group.setNameRu(definition.nameRu());
-        group.setCategory(definition.category());
-        group.setPriority(definition.priority());
-        return group;
+    private CommandGroup resolveByEObjectUri(ResourceSet resourceSet, List<URI> resourceUris, Definition definition) {
+        for (URI resourceUri : resourceUris) {
+            URI groupUri = resourceUri.appendFragment("/" + definition.name()); //$NON-NLS-1$
+            EObject object;
+            try {
+                object = resourceSet.getEObject(groupUri, true);
+            } catch (RuntimeException e) {
+                object = null;
+            }
+            CommandGroup group = matchingCommandGroup(object, definition);
+            if (group != null) {
+                return group;
+            }
+        }
+        return null;
+    }
+
+    private List<URI> standardGroupResourceUris(ResourceSet resourceSet, String platformVersion) {
+        Set<String> uris = new LinkedHashSet<>();
+        String normalizedVersion = normalizePlatformVersion(platformVersion);
+        if (normalizedVersion != null) {
+            uris.add(STANDARD_GROUP_RESOURCE_PREFIX + "/" + normalizedVersion); //$NON-NLS-1$
+        }
+        for (Resource resource : resourceSet.getResources()) {
+            URI uri = resource.getURI();
+            if (uri != null && uri.trimFragment().toString().startsWith(STANDARD_GROUP_RESOURCE_PREFIX)) {
+                uris.add(uri.trimFragment().toString());
+            }
+        }
+        uris.add(STANDARD_GROUP_RESOURCE.toString());
+        return uris.stream().map(URI::createURI).toList();
+    }
+
+    private String normalizePlatformVersion(String platformVersion) {
+        if (platformVersion == null || platformVersion.isBlank()) {
+            return null;
+        }
+        String trimmed = platformVersion.trim();
+        return trimmed.startsWith("v") ? trimmed : "v" + trimmed; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private CommandGroup findStandardCommandGroup(Resource resource, Definition definition) {
