@@ -2,6 +2,7 @@ package com.codepilot1c.core.edt.metadata;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -9,11 +10,14 @@ import java.util.List;
 import java.util.Optional;
 
 import org.eclipse.emf.common.util.URI;
-import org.eclipse.emf.ecore.InternalEObject;
+import org.eclipse.emf.ecore.resource.Resource;
+import org.eclipse.emf.ecore.resource.impl.ResourceImpl;
+import org.eclipse.emf.ecore.resource.impl.ResourceSetImpl;
 import org.junit.Test;
 
 import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.mcore.CommandGroupCategory;
+import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.StandardCommandGroup;
 import com._1c.g5.v8.dt.platform.IEObjectStandardCommandGroupNames;
 
@@ -80,19 +84,19 @@ public class CommandGroupResolverTest {
     }
 
     @Test
-    public void createsPlatformProxyForStandardGroupWithoutVersionSuffix() {
+    public void resolvesStandardGroupFromEdtResourceSet() {
+        ResourceSetImpl resourceSet = new ResourceSetImpl();
+        Resource resource = new ResourceImpl(URI.createURI("v8:/CommandGroup/Std")); //$NON-NLS-1$
+        resourceSet.getResources().add(resource);
+        StandardCommandGroup expected = McoreFactory.eINSTANCE.createStandardCommandGroup();
+        expected.setName("FormCommandBarImportant"); //$NON-NLS-1$
+        resource.getContents().add(expected);
+
         Optional<CommandGroup> resolved = resolver.resolveStandardCommandGroup(
+                resourceSet,
                 "StandardCommandGroup.FormCommandBarImportant"); //$NON-NLS-1$
 
         assertTrue(resolved.isPresent());
-        assertTrue(resolved.get() instanceof StandardCommandGroup);
-        StandardCommandGroup group = (StandardCommandGroup) resolved.get();
-        assertEquals("FormCommandBarImportant", group.getName()); //$NON-NLS-1$
-        assertEquals(CommandGroupCategory.FORM_COMMAND_BAR, group.getCategory());
-        assertEquals(1, group.getPriority());
-        assertTrue(((InternalEObject) group).eIsProxy());
-
-        URI uri = ((InternalEObject) group).eProxyURI();
-        assertEquals("v8:/CommandGroup/Std#/FormCommandBarImportant", uri.toString()); //$NON-NLS-1$
+        assertSame(expected, resolved.get());
     }
 }

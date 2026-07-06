@@ -8,8 +8,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
+import org.eclipse.emf.common.util.TreeIterator;
 import org.eclipse.emf.common.util.URI;
-import org.eclipse.emf.ecore.InternalEObject;
+import org.eclipse.emf.ecore.EObject;
+import org.eclipse.emf.ecore.resource.Resource;
+import org.eclipse.emf.ecore.resource.ResourceSet;
 
 import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.mcore.CommandGroupCategory;
@@ -74,6 +77,33 @@ public final class CommandGroupResolver {
     }
 
     public Optional<CommandGroup> resolveStandardCommandGroup(Object value) {
+        return resolveDefinition(value).map(this::createDetachedGroup);
+    }
+
+    public Optional<CommandGroup> resolveStandardCommandGroup(ResourceSet resourceSet, Object value) {
+        Optional<Definition> definition = resolveDefinition(value);
+        if (definition.isEmpty()) {
+            return Optional.empty();
+        }
+        if (resourceSet == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Cannot resolve StandardCommandGroup without EDT resource set: " + definition.get().name(), //$NON-NLS-1$
+                    true);
+        }
+        Resource resource = resourceSet.getResource(STANDARD_GROUP_RESOURCE, true);
+        CommandGroup group = findStandardCommandGroup(resource, definition.get());
+        if (group == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "StandardCommandGroup resource " + STANDARD_GROUP_RESOURCE //$NON-NLS-1$
+                            + " does not contain " + definition.get().name(), //$NON-NLS-1$
+                    true);
+        }
+        return Optional.of(group);
+    }
+
+    private Optional<Definition> resolveDefinition(Object value) {
         String raw = rawString(value);
         if (raw == null || raw.isBlank()) {
             return Optional.empty();
@@ -86,7 +116,7 @@ public final class CommandGroupResolver {
             }
             return Optional.empty();
         }
-        return Optional.of(createProxy(definition));
+        return Optional.of(definition);
     }
 
     public CommandGroupCategory categoryFor(String name) {
@@ -97,14 +127,40 @@ public final class CommandGroupResolver {
         return definition.category();
     }
 
-    private CommandGroup createProxy(Definition definition) {
+    private CommandGroup createDetachedGroup(Definition definition) {
         StandardCommandGroup group = McoreFactory.eINSTANCE.createStandardCommandGroup();
         group.setName(definition.name());
         group.setNameRu(definition.nameRu());
         group.setCategory(definition.category());
         group.setPriority(definition.priority());
-        ((InternalEObject) group).eSetProxyURI(STANDARD_GROUP_RESOURCE.appendFragment("/" + definition.name())); //$NON-NLS-1$
         return group;
+    }
+
+    private CommandGroup findStandardCommandGroup(Resource resource, Definition definition) {
+        if (resource == null) {
+            return null;
+        }
+        for (EObject root : resource.getContents()) {
+            CommandGroup direct = matchingCommandGroup(root, definition);
+            if (direct != null) {
+                return direct;
+            }
+            TreeIterator<EObject> contents = root.eAllContents();
+            while (contents.hasNext()) {
+                CommandGroup nested = matchingCommandGroup(contents.next(), definition);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    private CommandGroup matchingCommandGroup(EObject object, Definition definition) {
+        if (object instanceof StandardCommandGroup group && definition.name().equals(group.getName())) {
+            return group;
+        }
+        return null;
     }
 
     private MetadataOperationException unknownStandardGroup(String value) {
