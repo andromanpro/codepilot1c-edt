@@ -50,6 +50,11 @@ import com.codepilot1c.core.logging.VibeLogger;
  */
 public class EdtRoleRightsService {
 
+    private static final String RIGHT_NOT_AVAILABLE = "RIGHT_NOT_AVAILABLE"; //$NON-NLS-1$
+    private static final String AVAILABLE_CONFIG_RIGHTS_DIAGNOSTIC = "available configuration rights"; //$NON-NLS-1$
+    private static final List<String> FALLBACK_EXTENSION_CONFIG_RIGHTS = List.of(
+            "ThinClient", "WebClient", "ExternalConnection", "Automation", "MobileClient", "DesktopClient"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtRoleRightsService.class);
     private static final String ROLE_PREFIX = "Role."; //$NON-NLS-1$
 
@@ -168,28 +173,29 @@ public class EdtRoleRightsService {
             Role txRole = transaction.toTransactionObject(roleObject);
             RoleDescription roleDescription = getOrCreateRoleDescription(transaction, project, txRole);
             for (Map<String, Object> operation : operations) {
-                applyOperation(transaction, txRole, roleDescription, configuration, rightInfos, operation, applied);
+                applyOperation(transaction, projectName, roleFqn, txRole, roleDescription, configuration,
+                        rightInfos, operation, applied);
             }
         });
         LOG.info("mutateRoleRights role=%s applied=%d", roleFqn, Integer.valueOf(applied.size())); //$NON-NLS-1$
         return new MutateResult(projectName, roleFqn, applied.size(), applied);
     }
 
-    private void applyOperation(IBmPlatformTransaction transaction, Role txRole, RoleDescription roleDescription,
-            Configuration configuration, IRightInfosService rightInfos, Map<String, Object> operation,
-            List<String> applied) {
+    private void applyOperation(IBmPlatformTransaction transaction, String projectName, String roleFqn, Role txRole,
+            RoleDescription roleDescription, Configuration configuration, IRightInfosService rightInfos,
+            Map<String, Object> operation, List<String> applied) {
         String type = operation.get("op") == null //$NON-NLS-1$
                 ? "" : String.valueOf(operation.get("op")).trim().toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$
         switch (type) {
             case "set_right" -> { //$NON-NLS-1$
                 MdObject canonical = resolveTopObjectByFqn(configuration, asString(operation.get("object_fqn"))); //$NON-NLS-1$
                 EObject txObject = transaction.toTransactionObject(canonical);
-                setRightOnObject(roleDescription, txRole, txObject, rightInfos,
+                setRightOnObject(projectName, roleFqn, roleDescription, txRole, txObject, rightInfos,
                         asString(operation.get("right")), operation.get("value"), applied); //$NON-NLS-1$ //$NON-NLS-2$
             }
             case "set_config_right" -> { //$NON-NLS-1$
                 Configuration txConfiguration = transaction.toTransactionObject(configuration);
-                setRightOnObject(roleDescription, txRole, txConfiguration, rightInfos,
+                setRightOnObject(projectName, roleFqn, roleDescription, txRole, txConfiguration, rightInfos,
                         asString(operation.get("right")), operation.get("value"), applied); //$NON-NLS-1$ //$NON-NLS-2$
             }
             case "set_flags" -> applyFlags(roleDescription, operation, applied); //$NON-NLS-1$
@@ -209,7 +215,7 @@ public class EdtRoleRightsService {
         }
     }
 
-    private void setRightOnObject(RoleDescription roleDescription, Role txRole, EObject txObject,
+    private void setRightOnObject(String projectName, String roleFqn, RoleDescription roleDescription, Role txRole, EObject txObject,
             IRightInfosService rightInfos, String rightName, Object valueRaw, List<String> applied) {
         if (rightName == null || rightName.isBlank()) {
             throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
@@ -220,8 +226,7 @@ public class EdtRoleRightsService {
         Set<Right> available = rightInfos.getEClassRights(txObject, eClass);
         Right right = findRight(available, rightName.trim());
         if (right == null) {
-            throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
-                    "Right '" + rightName + "' is not available for " + eClass.getName(), false); //$NON-NLS-1$ //$NON-NLS-2$
+            throw unsupportedRightException(projectName, roleFqn, txObject, rightName, available);
         }
         ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(txObject, roleDescription);
         RightValue defaultValue = RightsModelUtil.getDefaultRightValue(txObject, txRole);
@@ -338,6 +343,78 @@ public class EdtRoleRightsService {
         }
         throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
                 "Object not found: " + fqn, false); //$NON-NLS-1$
+    }
+
+    private String unsupportedRightMessage(String projectName, String roleFqn, EObject txObject, EClass eClass,
+            String requestedRight, Set<Right> available) {
+        List<String> availableRights = new ArrayList<>();
+        if (available != null) {
+            for (Right candidate : available) {
+                if (candidate != null && candidate.getName() != null) {
+                    availableRights.add(candidate.getName());
+                }
+            }
+        }
+        boolean configurationTarget = txObject instanceof Configuration;
+        boolean extensionProject = isExtensionConfigurationTarget(txObject);
+        if (availableRights.isEmpty() && configurationTarget && extensionProject) {
+            availableRights.addAll(FALLBACK_EXTENSION_CONFIG_RIGHTS);
+        }
+        String diagnostic = configurationTarget && extensionProject
+                ? MetadataOperationCode.UNSUPPORTED_IN_EXTENSION.name()
+                : RIGHT_NOT_AVAILABLE;
+        return "{\"error\":\"" + escapeJson(diagnostic) + "\",\"project\":\"" + escapeJson(projectName) //$NON-NLS-1$ //$NON-NLS-2$
+                + "\",\"role\":\"" + escapeJson(roleFqn) //$NON-NLS-1$
+                + "\",\"right\":\"" + escapeJson(requestedRight) //$NON-NLS-1$
+                + "\",\"targetKind\":\"" + escapeJson(eClass.getName()) //$NON-NLS-1$
+                + "\",\"isExtensionProject\":" + extensionProject //$NON-NLS-1$
+                + ",\"availableRights\":\"" + escapeJson(String.join(",", availableRights)) //$NON-NLS-1$ //$NON-NLS-2$
+                + "\",\"hint\":\"" + escapeJson(AVAILABLE_CONFIG_RIGHTS_DIAGNOSTIC) + "\"}"; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    MetadataOperationException unsupportedRightException(String projectName, String roleFqn, EObject txObject,
+            String requestedRight, Set<Right> available) {
+        EClass eClass = txObject == null ? null : txObject.eClass();
+        String targetKind = eClass == null ? "" : eClass.getName(); //$NON-NLS-1$
+        EClass effectiveClass = eClass;
+        if (effectiveClass == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "{\"error\":\"" + RIGHT_NOT_AVAILABLE + "\",\"project\":\"" + escapeJson(projectName) //$NON-NLS-1$ //$NON-NLS-2$
+                            + "\",\"role\":\"" + escapeJson(roleFqn) //$NON-NLS-1$
+                            + "\",\"right\":\"" + escapeJson(requestedRight) //$NON-NLS-1$
+                            + "\",\"targetKind\":\"" + escapeJson(targetKind) //$NON-NLS-1$
+                            + "\",\"isExtensionProject\":false,\"availableRights\":\"\",\"hint\":\"" //$NON-NLS-1$
+                            + escapeJson(AVAILABLE_CONFIG_RIGHTS_DIAGNOSTIC) + "\"}", //$NON-NLS-1$
+                    false);
+        }
+        boolean unsupportedExtensionConfigRight = isExtensionConfigurationTarget(txObject);
+        return new MetadataOperationException(unsupportedExtensionConfigRight
+                ? MetadataOperationCode.UNSUPPORTED_IN_EXTENSION
+                : MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                unsupportedRightMessage(projectName, roleFqn, txObject, effectiveClass, requestedRight, available),
+                false);
+    }
+
+    private boolean isExtensionConfigurationTarget(EObject txObject) {
+        return txObject instanceof Configuration configuration
+                && configuration.getNamePrefix() != null
+                && !configuration.getNamePrefix().isBlank();
+    }
+
+    static List<String> fallbackExtensionConfigRights() {
+        return FALLBACK_EXTENSION_CONFIG_RIGHTS;
+    }
+
+    static String escapeJson(String value) {
+        if (value == null) {
+            return ""; //$NON-NLS-1$
+        }
+        return value
+                .replace("\\", "\\\\") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\"", "\\\"") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\n", "\\n") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\r", "\\r"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private Right findRight(Set<Right> available, String name) {

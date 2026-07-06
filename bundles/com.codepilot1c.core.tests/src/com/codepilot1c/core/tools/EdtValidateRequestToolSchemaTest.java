@@ -13,4 +13,10 @@ public class EdtValidateRequestToolSchemaTest {
         String schema = new EdtValidateRequestTool().getParameterSchema();
         assertTrue(schema.contains("\"ensure_module_artifact\"")); //$NON-NLS-1$
     }
+
+    @Test
+    public void schemaListsMutateRoleRightsOperation() {
+        String schema = new EdtValidateRequestTool().getParameterSchema();
+        assertTrue(schema.contains("\"mutate_role_rights\"")); //$NON-NLS-1$
+    }
 }
