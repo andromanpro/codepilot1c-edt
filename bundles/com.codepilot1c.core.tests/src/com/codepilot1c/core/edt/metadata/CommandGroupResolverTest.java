@@ -6,10 +6,12 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 import org.eclipse.emf.common.util.URI;
+import org.eclipse.emf.ecore.EObject;
 import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.resource.impl.ResourceImpl;
 import org.eclipse.emf.ecore.resource.impl.ResourceSetImpl;
@@ -101,7 +103,34 @@ public class CommandGroupResolverTest {
     }
 
     @Test
-    public void fallsBackToDetachedStandardGroupWhenEdtResourceSetDoesNotContainValue() {
+    public void resolvesStandardGroupByVersionedPlatformUriFragment() {
+        StandardCommandGroup expected = McoreFactory.eINSTANCE.createStandardCommandGroup();
+        expected.setName("FormCommandBarImportant"); //$NON-NLS-1$
+        List<URI> requestedUris = new ArrayList<>();
+        ResourceSetImpl resourceSet = new ResourceSetImpl() {
+            @Override
+            public EObject getEObject(URI uri, boolean loadOnDemand) {
+                requestedUris.add(uri);
+                if ("v8:/CommandGroup/Std/v8.3.27".equals(uri.trimFragment().toString()) //$NON-NLS-1$
+                        && "/FormCommandBarImportant".equals(uri.fragment())) { //$NON-NLS-1$
+                    return expected;
+                }
+                return null;
+            }
+        };
+
+        Optional<CommandGroup> resolved = resolver.resolveStandardCommandGroup(
+                resourceSet,
+                "StandardCommandGroup.FormCommandBarImportant", //$NON-NLS-1$
+                "8.3.27"); //$NON-NLS-1$
+
+        assertTrue(resolved.isPresent());
+        assertSame(expected, resolved.get());
+        assertFalse(requestedUris.isEmpty());
+    }
+
+    @Test
+    public void returnsEmptyWhenStandardGroupIsAbsentFromEdtResourceSet() {
         ResourceSetImpl resourceSet = new ResourceSetImpl();
         Resource resource = new ResourceImpl(URI.createURI("v8:/CommandGroup/Std")); //$NON-NLS-1$
         resourceSet.getResources().add(resource);
@@ -110,12 +139,6 @@ public class CommandGroupResolverTest {
                 resourceSet,
                 "StandardCommandGroup.FormCommandBarImportant"); //$NON-NLS-1$
 
-        assertTrue(resolved.isPresent());
-        assertTrue(resolved.get() instanceof StandardCommandGroup);
-        StandardCommandGroup group = (StandardCommandGroup) resolved.get();
-        assertEquals("FormCommandBarImportant", group.getName()); //$NON-NLS-1$
-        assertEquals("Важное", group.getNameRu()); //$NON-NLS-1$
-        assertEquals(CommandGroupCategory.FORM_COMMAND_BAR, group.getCategory());
-        assertEquals(1, group.getPriority());
+        assertFalse(resolved.isPresent());
     }
 }

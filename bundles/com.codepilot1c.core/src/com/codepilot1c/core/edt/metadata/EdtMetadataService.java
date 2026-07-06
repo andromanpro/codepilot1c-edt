@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.IdentityHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -87,6 +88,7 @@ import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
@@ -231,6 +233,11 @@ public class EdtMetadataService {
         return gateway.isEdtAvailable();
     }
 
+    private String resolvePlatformVersionString(IProject project) {
+        Object version = gateway.resolvePlatformVersion(project);
+        return version == null ? null : version.toString();
+    }
+
     public MetadataOperationResult createMetadata(CreateMetadataRequest request) {
         String opId = LogSanitizer.newId("edt-create"); //$NON-NLS-1$
         long startedAt = System.currentTimeMillis();
@@ -258,6 +265,7 @@ public class EdtMetadataService {
 
         Map<String, TypeItem> topLevelPropertyTypes = preResolveTopLevelPropertyTypes(project, request.properties());
         final Map<String, TypeItem> capturedTopLevelPropertyTypes = topLevelPropertyTypes;
+        final String platformVersion = resolvePlatformVersionString(project);
 
         executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
@@ -291,6 +299,7 @@ public class EdtMetadataService {
                     request.properties(),
                     transaction,
                     capturedTopLevelPropertyTypes,
+                    platformVersion,
                     opId,
                     fqn);
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
@@ -3051,6 +3060,7 @@ public class EdtMetadataService {
             });
         }
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
+        final String platformVersion = resolvePlatformVersionString(project);
 
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -3066,7 +3076,7 @@ public class EdtMetadataService {
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
             applyObjectChanges(txConfiguration, target, request.changes(), request.targetFqn(),
-                    transaction, capturedTypes);
+                    transaction, capturedTypes, platformVersion);
             ensureUuidsRecursively(target, opId, request.targetFqn());
             return request.targetFqn();
         });
@@ -5777,7 +5787,8 @@ public class EdtMetadataService {
             Map<String, Object> changes,
             String targetFqn,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            String platformVersion
     ) {
         Map<String, Object> setChanges = normalizeSetChangesForTarget(target, asMap(changes.get("set"))); //$NON-NLS-1$
         List<?> unsetChanges = changes.get("unset") instanceof List<?> list ? list : List.of(); //$NON-NLS-1$
@@ -5842,7 +5853,8 @@ public class EdtMetadataService {
             if (consumedSetKeys.contains(key)) {
                 continue;
             }
-            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes,
+                    platformVersion);
         }
 
         for (Object rawKey : unsetChanges) {
@@ -5873,7 +5885,7 @@ public class EdtMetadataService {
             allChildOps = new ArrayList<>(childOps);
             allChildOps.addAll(syntheticChildOps);
         }
-        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes);
+        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes, platformVersion);
     }
 
     private Map<String, Object> normalizeSetChangesForTarget(MdObject target, Map<String, Object> rawSetChanges) {
@@ -6089,7 +6101,8 @@ public class EdtMetadataService {
             String parentTargetFqn,
             List<Map<String, Object>> childOps,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            String platformVersion
     ) {
         for (Map<String, Object> op : childOps) {
             String opType = asString(op.get("op")); //$NON-NLS-1$
@@ -6163,7 +6176,7 @@ public class EdtMetadataService {
                         }
                     }
                     applyObjectChanges(configuration, child, nestedChanges, childFqn,
-                            transaction, preResolvedTypes);
+                            transaction, preResolvedTypes, platformVersion);
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -6292,7 +6305,7 @@ public class EdtMetadataService {
     }
 
     private void setFeatureValue(Configuration configuration, MdObject target, String fieldName, Object value,
-            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes, String platformVersion) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -6326,7 +6339,7 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
-            if (applyCommandGroupValue(target, reference, value)) {
+            if (applyCommandGroupValue(target, reference, value, platformVersion)) {
                 return;
             }
             if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction, preResolvedTypes)) {
@@ -6350,7 +6363,7 @@ public class EdtMetadataService {
         target.eSet(eFeature, converted);
     }
 
-    private boolean applyCommandGroupValue(MdObject target, EReference reference, Object value) {
+    private boolean applyCommandGroupValue(MdObject target, EReference reference, Object value, String platformVersion) {
         if (!(target instanceof BasicCommand command) || reference == null
                 || !"group".equalsIgnoreCase(reference.getName())) { //$NON-NLS-1$
             return false;
@@ -6361,13 +6374,22 @@ public class EdtMetadataService {
         }
         org.eclipse.emf.ecore.resource.ResourceSet resourceSet = target.eResource() == null
                 ? null : target.eResource().getResourceSet();
-        return commandGroupResolver.resolveStandardCommandGroup(resourceSet, value)
-                .map(group -> {
-                    command.setGroup(group);
-                    return Boolean.TRUE;
-                })
-                .orElse(Boolean.FALSE)
-                .booleanValue();
+        Optional<CommandGroup> group = commandGroupResolver.resolveStandardCommandGroup(
+                resourceSet,
+                value,
+                platformVersion);
+        if (group.isPresent()) {
+            command.setGroup(group.get());
+            return true;
+        }
+        if (commandGroupResolver.isStandardCommandGroup(value)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Standard command group is not available in EDT platform resource: " + value //$NON-NLS-1$
+                            + " (platformVersion=" + (platformVersion == null ? "" : platformVersion) + ")", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    false);
+        }
+        return false;
     }
 
     private boolean applyTypeDescriptionProperty(Configuration configuration, MdObject target, EReference reference,
@@ -7833,6 +7855,7 @@ public class EdtMetadataService {
             Map<String, Object> properties,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
+            String platformVersion,
             String opId,
             String targetFqn
     ) {
@@ -7859,7 +7882,8 @@ public class EdtMetadataService {
                         false);
             }
             String resolvedField = resolveTopLevelPropertyField(target, kind, rawKey);
-            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes,
+                    platformVersion);
             applied.add(rawKey + "->" + resolvedField); //$NON-NLS-1$
         }
         if (!applied.isEmpty()) {
