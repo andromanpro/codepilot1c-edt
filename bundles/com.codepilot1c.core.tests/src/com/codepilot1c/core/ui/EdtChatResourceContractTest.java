@@ -94,12 +94,14 @@ public class EdtChatResourceContractTest {
     public void toolCallCardsAttachToCurrentAssistantMessage() throws Exception {
         String source = readRepoFile("bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/BrowserChatPanel.java"); //$NON-NLS-1$
         String method = extractMethod(source,
-                "public void addToolCallCards(List<ToolCallDisplayData> toolCalls)"); //$NON-NLS-1$
+                "private String buildInsertToolCallsScript(String escapedOwnerMessageId, String escapedHtml)"); //$NON-NLS-1$
         String css = readRepoFile("bundles/com.codepilot1c.ui/resources/chat.css"); //$NON-NLS-1$
 
-        assertTrue(method.contains("querySelectorAll('.message.assistant .message-content')")); //$NON-NLS-1$
-        assertTrue(method.contains("assistantContents[assistantContents.length - 1]")); //$NON-NLS-1$
+        assertTrue(method.contains("document.getElementById(ownerId)")); //$NON-NLS-1$
+        assertTrue(method.contains("owner.querySelector('.message-content')")); //$NON-NLS-1$
+        assertTrue(method.contains("target.insertAdjacentHTML('beforeend'")); //$NON-NLS-1$
         assertTrue(method.contains("insertMessageFlowHtml")); //$NON-NLS-1$
+        assertTrue(method.contains("ensureTypingIndicatorAtBottom")); //$NON-NLS-1$
         assertTrue(css.contains(".message .tool-call")); //$NON-NLS-1$
         assertTrue(css.contains(".message .tool-calls-group")); //$NON-NLS-1$
     }
@@ -135,7 +137,8 @@ public class EdtChatResourceContractTest {
         assertTrue(js.contains("typing.insertAdjacentHTML('beforebegin', html)")); //$NON-NLS-1$
         assertTrue(addMessage.contains("insertMessageFlowHtml")); //$NON-NLS-1$
         assertFalse(updateLastMessage.contains(".message:last-child")); //$NON-NLS-1$
-        assertTrue(updateLastMessage.contains("querySelectorAll('#messages .message')")); //$NON-NLS-1$
+        assertTrue(updateLastMessage.contains("updateMessageWithReasoning")); //$NON-NLS-1$
+        assertTrue(js.contains("document.querySelectorAll('.message.assistant')")); //$NON-NLS-1$
     }
 
     @Test
