@@ -421,13 +421,11 @@ function updateMessageWithReasoning(reasoningHtml, contentHtml) {
         }
     });
 
-    var insertionPoint = toolNodes.length ? toolNodes[0] : null;
-
     if (reasoningHtml && reasoningHtml.trim()) {
         var reasoningWrapper = document.createElement('div');
         reasoningWrapper.innerHTML = reasoningHtml;
         Array.prototype.slice.call(reasoningWrapper.childNodes).forEach(function(node) {
-            contentEl.insertBefore(node, insertionPoint);
+            contentEl.appendChild(node);
         });
     }
 
@@ -435,7 +433,7 @@ function updateMessageWithReasoning(reasoningHtml, contentHtml) {
         var textEl = document.createElement('div');
         textEl.className = 'message-text';
         textEl.innerHTML = contentHtml;
-        contentEl.insertBefore(textEl, insertionPoint);
+        contentEl.appendChild(textEl);
     }
 
     // Re-highlight code blocks

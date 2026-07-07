@@ -153,6 +153,10 @@ public class BrowserChatPanelToolCallTest {
                 "streamed message text was not updated"); //$NON-NLS-1$
         assertEquals(1, number("return document.querySelectorAll('.message.assistant .tool-call').length;")); //$NON-NLS-1$
         assertTrue(booleanValue("return document.querySelector('[data-tool-call-id=\"call_stream\"]') !== null;")); //$NON-NLS-1$
+        assertTrue(booleanValue("var tool = document.querySelector('[data-tool-call-id=\"call_stream\"]');" //$NON-NLS-1$
+                + "var text = document.querySelector('.message.assistant .message-text');" //$NON-NLS-1$
+                + "return !!(tool && text && (tool.compareDocumentPosition(text) " //$NON-NLS-1$
+                + "& Node.DOCUMENT_POSITION_FOLLOWING));")); //$NON-NLS-1$
     }
 
     @Test
