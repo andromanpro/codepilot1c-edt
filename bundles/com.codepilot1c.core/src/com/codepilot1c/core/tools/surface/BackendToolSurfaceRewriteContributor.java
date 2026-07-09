@@ -42,6 +42,8 @@ public final class BackendToolSurfaceRewriteContributor implements ToolSurfaceCo
             case "grep" -> "Search plain text or regex across workspace files. Use it for string occurrences only; prefer EDT semantic tools for symbols, metadata, and platform behavior."; //$NON-NLS-1$
             case "edit_file" -> "Edit existing workspace text files; create only project-root Code.md. Never edit .mdo/.form/.mxl/DCS artifacts directly; use metadata/form/dcs/template tools."; //$NON-NLS-1$
             case "write_file" -> "Overwrite existing workspace text files; can create project-root Code.md. Never write .mdo/.form/.mxl/DCS artifacts directly; use semantic EDT tools."; //$NON-NLS-1$
+            case "workspace_copy_transform" -> "Copy one workspace text file with plain/regex replacements, dry-run, safety checks, and refresh. Use it for moving BSL modules without full-content edits."; //$NON-NLS-1$
+            case "workspace_copy_transform_batch" -> "Copy multiple workspace text files with shared replacements and per-file results. Use dry_run first for BSL module migration batches."; //$NON-NLS-1$
             case "workspace_import_project" -> "Import an existing Eclipse/EDT project directory into the current workspace. Inspect repository and project state first, then import only when a .project-based project already exists."; //$NON-NLS-1$
             case "git_inspect" -> "Показывает состояние git-репозитория через безопасные read-only операции. Для EDT проекта предпочитай project_name; repo_path используй только как явный override."; //$NON-NLS-1$
             case "git_mutate" -> "Выполняет разрешённые git-изменения. Для существующего EDT проекта передавай project_name, а для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$

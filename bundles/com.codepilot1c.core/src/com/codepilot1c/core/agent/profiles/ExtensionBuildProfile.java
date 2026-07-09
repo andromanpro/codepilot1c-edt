@@ -31,6 +31,8 @@ public class ExtensionBuildProfile implements AgentProfile {
             "read_file",
             "edit_file",
             "write_file",
+            "workspace_copy_transform",
+            "workspace_copy_transform_batch",
             "glob",
             "grep",
             "list_files",
@@ -105,6 +107,12 @@ public class ExtensionBuildProfile implements AgentProfile {
                         .forAllResources(),
                 PermissionRule.ask("write_file")
                         .withDescription("Создание файлов")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform")
+                        .withDescription("Копирование workspace файла с заменами")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform_batch")
+                        .withDescription("Пакетное копирование workspace файлов с заменами")
                         .forAllResources(),
                 PermissionRule.ask("extension_manage")
                         .withDescription("Управление расширениями конфигурации")

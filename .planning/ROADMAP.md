@@ -2,62 +2,122 @@
 
 ## Phases
 
-- [x] **Phase 1: Research EDT API Contracts and Lock Failure Reproductions** - Convert the 10 1C-agent findings into service-level contracts, fakeable EDT API seams, and RED tests.
-- [x] **Phase 2: Implement Low-Level EDT Mutation and Diagnostics Fixes** - Fix TypeDescription mutation, effective-name validation, CommonCommand module semantics, command groups, Bot adopt diagnostics, and extension role-right diagnostics.
-- [x] **Phase 3: Add Dry-Run Native Extension Migration Planner** - Build the high-level migration planner/tool on top of corrected primitives and verify it against representative Artel object classes.
+- [x] **Phase 1: Research EDT API Contracts and Lock Failure Reproductions** - Convert the 10 1C-agent findings into service-level EDT contracts and regression tests.
+- [x] **Phase 2: Low-Level EDT Tooling Fixes** - Fix EDT-native mutation primitives that block extension migration.
+- [x] **Phase 3: Native Extension Migration Planner** - Add a dry-run-first high-level migration planner/tool over the fixed primitives.
+- [x] **Phase 4: Live EDT Audit Remediation** - Fix blocking defects found by live EDT audit after installing the extension.
+- [ ] **Phase 5: Release Install and Live EDT Closure Smoke** - Rebuild, install into EDT, and rerun live audit to close the milestone with runtime proof.
 
-## Phase Details
+## Phase 1 — Research EDT API Contracts and Lock Failure Reproductions
 
-### Phase 1: Research EDT API Contracts and Lock Failure Reproductions
-**Goal**: Establish exact EDT/BM API contracts behind the reported failures and create failing tests that preserve the desired behavior.
-**Depends on**: Nothing (first phase)
-**Requirements**: [EDTEXT-01, EDTEXT-02, EDTEXT-04, EDTEXT-05, EDTEXT-06, EDTEXT-08]
-**Success Criteria** (what must be TRUE):
-  1. Research notes identify current code paths and EDT API classes for each failure class.
-  2. RED tests reproduce misleading `METADATA_NOT_FOUND`, unsupported `TypeDescription`, wrong CommonCommand module path/type, missing standard group alias, and extension config-right ambiguity.
-  3. The tests avoid a live EDT workspace where possible by isolating service helpers and fake `IRightInfosService`/metadata models.
-**Plans**: 1 plan
+### Status
 
-Plans:
-- [x] 01-01: Add research-backed RED tests and service seams for extension migration tooling defects.
+completed
 
-### Phase 2: Implement Low-Level EDT Mutation and Diagnostics Fixes
-**Goal**: Make existing tools correct and explicit for the low-level operations needed by native extension migration.
-**Depends on**: Phase 1
-**Requirements**: [EDTEXT-01, EDTEXT-02, EDTEXT-03, EDTEXT-04, EDTEXT-05, EDTEXT-06, EDTEXT-08]
-**Success Criteria** (what must be TRUE):
-  1. `create_metadata(Constant, properties.type)` and `update_metadata(commandParameterType)` use a shared `TypeDescription` setter path.
-  2. Extension name prefixing is visible in validation and guarded by `allow_auto_prefix` when requested.
-  3. CommonCommand module materialization uses `CommandModule.bsl`, and BSL context/diagnostics see command-module semantics.
-  4. Bot adoption and extension role/config rights return explicit supported/unsupported diagnostics with available values.
-  5. Targeted core tests pass.
-**Plans**: 1 plan
+### Intent
 
-Plans:
-- [x] 02-01: Implement low-level EDT mutation primitives and diagnostics fixes with targeted tests.
+Create a reliable contract baseline from the external 1C-agent audit so implementation work targets EDT-native semantics instead of prompt-level workarounds.
 
-### Phase 3: Add Dry-Run Native Extension Migration Planner
-**Goal**: Provide a high-level, dry-run-first migration tool that composes corrected primitives into safe native extension cloning.
-**Depends on**: Phase 2
-**Requirements**: [EDTEXT-07, EDTEXT-08]
-**Success Criteria** (what must be TRUE):
-  1. Dry run accepts `source_project`, `extension_project`, and `source_fqns` and emits an ordered operation plan with effective names/FQNs.
-  2. Plan covers top-level object creation, children, TypeDescription fields, modules, forms, roles/rights, and reference rewrites as supported/skipped entries.
-  3. Apply mode is gated by validation tokens/confirmation and does not delete base objects.
-  4. Representative dry-run fixtures cover InformationRegister, Catalog, HTTPService, CommonCommand, ScheduledJob, Bot, and Role.
-  5. Full reactor build path remains documented for release/update-site delivery.
-**Plans**: 1 plan
+### Outcomes
 
-Plans:
-- [x] 03-01: Implement `migrate_to_extension_native` dry-run/apply planner and verification fixtures.
+- Captured service contracts and regression expectations for:
+  - extension object adopt/lookup;
+  - generic `TypeDescription` mutation;
+  - effective extension names/FQNs;
+  - CommonCommand module semantics;
+  - StandardCommandGroup aliases and candidates;
+  - extension role/config rights diagnostics;
+  - high-level dry-run-first migration planning.
+- Added/updated focused tests around metadata validation, type contracts, module artifact routing, role rights diagnostics, and extension planner behavior.
 
-## Progress
+## Phase 2 — Low-Level EDT Tooling Fixes
 
-**Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3
+### Status
 
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Research EDT API Contracts and Lock Failure Reproductions | 1/1 | Complete | 2026-07-06 |
-| 2. Implement Low-Level EDT Mutation and Diagnostics Fixes | 1/1 | Complete | 2026-07-06 |
-| 3. Add Dry-Run Native Extension Migration Planner | 1/1 | Complete | 2026-07-06 |
+completed
+
+### Intent
+
+Fix the primitives that actual EDT extension migration depends on.
+
+### Outcomes
+
+- `EdtMetadataService` handles TypeDescription-style property updates beyond the original narrow path.
+- `BslSemanticService` recognizes CommonCommand command modules from path/module context.
+- `EdtRoleRightsService` reports structured diagnostics instead of opaque right lookup failures.
+- Metadata validation normalizes extension names/FQNs and StandardCommandGroup input where applicable.
+
+## Phase 3 — Native Extension Migration Planner
+
+### Status
+
+completed
+
+### Intent
+
+Expose a high-level `migrate_to_extension_native` workflow that plans native EDT extension migration without unsafe direct source deletion.
+
+### Outcomes
+
+- Added `ExtensionMigrationPlanRequest` / `ExtensionMigrationPlanResult`.
+- Added `ExtensionMigrationPlanner`.
+- Added `MigrateToExtensionNativeTool`.
+- Registered the new tool in the tool registry and profile/tool-surface gates.
+- Added focused planner tests.
+- Verified targeted tests and full local update-site build.
+
+## Phase 4 — Live EDT Audit Remediation
+
+### Status
+
+completed
+
+### Intent
+
+Turn live EDT audit failures into concrete runtime/code fixes before closure.
+
+### Inputs
+
+- `.planning/audits/edt-extension-migration-live-audit-2026-07-06.md`
+- `.planning/audits/edt-extension-migration-live-audit-bot-2026-07-06.md`
+
+### Fixed issues
+
+- `EDTEXT-02`: `CommonCommand.commandParameterType` / TypeDescription values from candidate output were not pre-resolved in mutation paths.
+- `EDTEXT-03`: `allow_auto_prefix=false` is covered by regression test and rejects unprefixed extension names.
+- `EDTEXT-05`: `StandardCommandGroup.*` values are applied as standard command groups instead of metadata FQNs, with available-values diagnostics.
+- `EDTEXT-06`: `edt_validate_request` schema now exposes `mutate_role_rights`; token routing test verifies `ValidationOperation.MUTATE_ROLE_RIGHTS`.
+
+### Verification
+
+- Focused Phase 4 regression: `BUILD SUCCESS`, 12 tests.
+- Broader focused EDT metadata/extension suite: `BUILD SUCCESS`, 35 tests.
+- Full reactor update-site package: `mvn -DskipTests package` → `BUILD SUCCESS`.
+- Produced update-site qualifier: `0.1.7.20260706-0415`.
+
+## Phase 5 — Release Install and Live EDT Closure Smoke
+
+### Status
+
+planned
+
+### Intent
+
+Close the milestone only after runtime proof from the installed EDT plugin.
+
+### Required closure gates
+
+1. Install/update EDT from:
+   - `repositories/com.codepilot1c.update/target/repository`
+   - or `repositories/com.codepilot1c.update/target/com.codepilot1c.update-0.1.7-SNAPSHOT.zip`
+2. Restart EDT and verify installed CodePilot1C plugin qualifier is `0.1.7.20260706-0415` or newer.
+3. Rerun live audit in `/Volumes/T9/repo_edt/artel` for `ДО` / `ДО.Артель`.
+4. Confirm no recurrence of the Phase 4 blockers.
+5. Classify remaining diagnostics as pre-existing/unrelated or fix them before closing.
+
+## Current Verification Snapshot
+
+- Targeted Phase 4 regression: passed.
+- Broader focused EDT metadata/extension suite: passed.
+- Full reactor update-site build: passed.
+- Live EDT closure smoke: pending Phase 5.

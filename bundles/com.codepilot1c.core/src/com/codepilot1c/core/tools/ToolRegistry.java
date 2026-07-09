@@ -98,6 +98,8 @@ public class ToolRegistry {
         register(new ListFilesTool());
         register(new EditFileTool());
         register(new WriteTool());
+        register(new WorkspaceCopyTransformTool());
+        register(new WorkspaceCopyTransformBatchTool());
         register(new GrepTool());
         register(new GlobTool());
         register(new WorkspaceImportProjectTool());

@@ -55,8 +55,10 @@ import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IExternalObjectProject;
+import com._1c.g5.v8.dt.core.platform.IDependentProject;
 import com._1c.g5.v8.dt.core.platform.IDtProject;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
 import com._1c.g5.v8.dt.form.model.AbstractDataPath;
 import com._1c.g5.v8.dt.form.model.AbstractFormAttribute;
 import com._1c.g5.v8.dt.form.model.Button;
@@ -3042,23 +3044,7 @@ public class EdtMetadataService {
 
         // Pre-resolve all TypeItems from changes (top-level set and children_ops)
         Set<String> typeStrings = collectTypeStrings(request.changes());
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
-        if (!typeStrings.isEmpty()) {
-            executeRead(project, readTx -> {
-                for (String typeString : typeStrings) {
-                    TypeItem item = resolveTypeItem(typeString, readTx);
-                    if (item == null && !isSimpleTypeQuery(typeString)) {
-                        throw new MetadataOperationException(
-                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                                "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                    }
-                    if (item != null) {
-                        cacheResolvedTypeItem(preResolvedTypes, typeString, item);
-                    }
-                }
-                return null;
-            });
-        }
+        Map<String, TypeItem> preResolvedTypes = preResolveTypeStrings(project, typeStrings);
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
         final String platformVersion = resolvePlatformVersionString(project);
 
@@ -3150,6 +3136,7 @@ public class EdtMetadataService {
                                 typeReference,
                                 null));
             }
+            collectDependentParentTypeCandidates(unique, project);
 
             List<FieldTypeCandidate> allCandidates = new ArrayList<>(unique.values());
             int total = allCandidates.size();
@@ -5615,22 +5602,7 @@ public class EdtMetadataService {
         if (typeStrings.isEmpty()) {
             return Map.of();
         }
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
-        executeRead(project, readTx -> {
-            for (String typeString : typeStrings) {
-                TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
-                if (item != null) {
-                    cacheResolvedTypeItem(preResolvedTypes, typeString, item);
-                }
-            }
-            return null;
-        });
-        return preResolvedTypes;
+        return preResolveTypeStrings(project, typeStrings);
     }
 
     private Map<String, TypeItem> preResolveTopLevelPropertyTypes(
@@ -5641,22 +5613,81 @@ public class EdtMetadataService {
         if (typeStrings.isEmpty()) {
             return Map.of();
         }
+        return preResolveTypeStrings(project, typeStrings);
+    }
+
+    private Map<String, TypeItem> preResolveTypeStrings(IProject project, Set<String> typeStrings) {
+        if (typeStrings == null || typeStrings.isEmpty()) {
+            return Map.of();
+        }
         Map<String, TypeItem> preResolvedTypes = new HashMap<>();
+        Set<String> unresolved = new LinkedHashSet<>();
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                } else {
+                    unresolved.add(typeString);
                 }
             }
             return null;
         });
+
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject != null && !unresolved.isEmpty()) {
+            Set<String> stillUnresolved = new LinkedHashSet<>();
+            try {
+                readinessChecker.ensureReady(parentProject);
+                executeRead(parentProject, readTx -> {
+                    for (String typeString : unresolved) {
+                        TypeItem item = resolveTypeItem(typeString, readTx);
+                        if (item != null) {
+                            cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                        } else {
+                            stillUnresolved.add(typeString);
+                        }
+                    }
+                    return null;
+                });
+                unresolved.clear();
+                unresolved.addAll(stillUnresolved);
+            } catch (RuntimeException e) {
+                LOG.debug("preResolveTypeStrings: parent project type lookup failed for %s -> %s: %s", //$NON-NLS-1$
+                        project == null ? null : project.getName(),
+                        parentProject.getName(),
+                        e.getMessage());
+            }
+        }
+
+        for (String typeString : unresolved) {
+            if (!isSimpleTypeQuery(typeString)) {
+                LOG.debug("preResolveTypeStrings: deferring unresolved metadata type to contextual resolver: %s", //$NON-NLS-1$
+                        typeString);
+            }
+        }
         return preResolvedTypes;
+    }
+
+    private IProject resolveDependentParentProject(IProject project) {
+        if (project == null) {
+            return null;
+        }
+        try {
+            IV8Project v8Project = gateway.getV8ProjectManager().getProject(project);
+            if (v8Project instanceof IDependentProject dependentProject) {
+                IProject parentProject = dependentProject.getParentProject();
+                if (parentProject != null && parentProject.exists()
+                        && !parentProject.getName().equalsIgnoreCase(project.getName())) {
+                    return parentProject;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("resolveDependentParentProject failed for project=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    e.getMessage());
+        }
+        return null;
     }
 
     private Set<String> collectTopLevelPropertyTypeStrings(Map<String, Object> properties) {
@@ -6425,6 +6456,12 @@ public class EdtMetadataService {
                 item = resolveTypeItemForFeature(feature, configuration, spec.typeQuery(), preResolvedTypes);
             }
             if (item == null) {
+                item = resolveTypeItemFromTypeProvider(target, configuration, reference, spec.typeQuery());
+                if (item != null) {
+                    cacheResolvedTypeItem(preResolvedTypes, spec.typeQuery(), item);
+                }
+            }
+            if (item == null) {
                 item = resolveSimpleTypeItemFromConfiguration(configuration, spec.typeQuery());
             }
             TypeItem txItem = toTransactionTypeItem(transaction, item, spec);
@@ -6467,6 +6504,10 @@ public class EdtMetadataService {
         } catch (RuntimeException e) {
             LOG.debug("toTransactionTypeItem failed for type=%s: %s", //$NON-NLS-1$
                     spec == null ? null : spec.typeQuery(), e.getMessage());
+        }
+        TypeItem namespaceItem = resolveTypeItemInCandidateNamespace(transaction, item, spec);
+        if (namespaceItem != null) {
+            return namespaceItem;
         }
         return resolveExternalTypeItemCandidate(transaction, item, spec);
     }
@@ -6917,40 +6958,49 @@ public class EdtMetadataService {
         if (typeReference == null) {
             return null;
         }
+        return resolveTypeItemFromTypeProvider(feature, context, typeReference, typeQuery);
+    }
+
+    private TypeItem resolveTypeItemFromTypeProvider(EObject context, EObject parentContext,
+            EReference typeReference, String typeQuery) {
+        if (context == null || typeReference == null || typeQuery == null || typeQuery.isBlank()) {
+            return null;
+        }
         Set<String> queries = expandTypeQueries(typeQuery);
         try {
             TypeDescriptionInfoWithTypeInfo info = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, typeReference, null);
             TypeItem direct = findTypeItemInTypeInfo(info, queries);
             if (direct != null) {
                 return direct;
             }
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService resolve failed for type=%s feature=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService resolve failed for type=%s context=%s reference=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    context.eClass().getName(),
+                    typeReference.getName(),
                     e.getMessage());
         }
-        if (context == null) {
+        if (parentContext == null) {
             return null;
         }
         try {
             TypeDescriptionInfoWithTypeInfo contextualInfo = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, context, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, parentContext, typeReference, null);
             TypeItem contextual = findTypeItemInTypeInfo(contextualInfo, queries);
             if (contextual != null) {
                 return contextual;
             }
-            LOG.debug("TypeProviderService returned no matching types for type=%s feature=%s context=%s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService returned no matching types for type=%s context=%s parentContext=%s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
-                    context.eClass().getName());
+                    context.eClass().getName(),
+                    parentContext.eClass().getName());
             return null;
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService contextual resolve failed for type=%s feature=%s context=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService contextual resolve failed for type=%s context=%s parentContext=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
                     context.eClass().getName(),
+                    parentContext.eClass().getName(),
                     e.getMessage());
             return null;
         }
@@ -7028,6 +7078,55 @@ public class EdtMetadataService {
             String code = typeInfo.getCode() != null ? String.valueOf(typeInfo.getCode()) : ""; //$NON-NLS-1$
             String codeRu = typeInfo.getCodeRu() != null ? String.valueOf(typeInfo.getCodeRu()) : ""; //$NON-NLS-1$
             String typeClass = describeTypeClass(typeInfo.getTypeClass());
+            boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
+            String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
+        }
+    }
+
+    private void collectDependentParentTypeCandidates(Map<String, FieldTypeCandidate> sink, IProject project) {
+        if (sink == null || project == null) {
+            return;
+        }
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject == null) {
+            return;
+        }
+        try {
+            readinessChecker.ensureReady(parentProject);
+            executeRead(parentProject, tx -> {
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getTopObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getContainedObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                return null;
+            });
+        } catch (RuntimeException e) {
+            LOG.debug("collectDependentParentTypeCandidates failed for project=%s parent=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    parentProject.getName(),
+                    e.getMessage());
+        }
+    }
+
+    private void collectTypeCandidatesFromIterator(Map<String, FieldTypeCandidate> sink,
+            java.util.Iterator<IBmObject> iterator, String typeClass) {
+        if (sink == null || iterator == null) {
+            return;
+        }
+        while (iterator.hasNext()) {
+            IBmObject object = iterator.next();
+            if (!(object instanceof TypeItem type)) {
+                continue;
+            }
+            String name = firstNonBlank(type.getName(), McoreUtil.getTypeName(type), ""); //$NON-NLS-1$
+            String nameRu = firstNonBlank(type.getNameRu(), McoreUtil.getTypeNameRu(type), ""); //$NON-NLS-1$
+            String code = firstNonBlank(McoreUtil.getTypeName(type), type.getName(), ""); //$NON-NLS-1$
+            String codeRu = firstNonBlank(McoreUtil.getTypeNameRu(type), type.getNameRu(), ""); //$NON-NLS-1$
             boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
             String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
