@@ -1259,6 +1259,11 @@ public class EdtMetadataService {
         FormCommandHandlerContainer handlerContainer = FormFactory.eINSTANCE.createFormCommandHandlerContainer();
         handlerContainer.setHandler(handler);
         formCommand.setAction(handlerContainer);
+        // EDT UI always emits <use><common>true</common></use>; without it the command
+        // fails form model validation ("The value must be greater than zero" marker).
+        AdjustableBoolean use = MdClassFactory.eINSTANCE.createAdjustableBoolean();
+        use.setCommon(true);
+        formCommand.setUse(use);
         // Apply optional properties
         Map<String, Object> set = extractOperationSet(operation);
         Object modifiesStoredData = getMapValueIgnoreCase(set, "modifiesStoredData"); //$NON-NLS-1$
