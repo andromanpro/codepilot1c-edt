@@ -3148,6 +3148,18 @@ public class EdtMetadataService {
     private void applySimpleFeatureValue(EObject target, String fieldName, Object value) {
         EStructuralFeature feature = resolveStructuralFeatureIgnoreCase(target, fieldName);
         if (feature == null) {
+            // Ext-info properties (multiLine, horizontalStretch, width, height, ...)
+            // live on FormField.getExtInfo(), not on the FormField EObject itself —
+            // FormField declares no size/stretch features of its own. Resolution on
+            // the ext-info is the gate: typos still fail as Unknown form property.
+            if (target instanceof FormField formField) {
+                FieldExtInfo fieldExtInfo = ensureFormFieldExtInfo(formField);
+                if (fieldExtInfo != null
+                        && resolveStructuralFeatureIgnoreCase(fieldExtInfo, fieldName) != null) {
+                    applySimpleFeatureValue(fieldExtInfo, fieldName, value);
+                    return;
+                }
+            }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Unknown form property: " + fieldName, false); //$NON-NLS-1$
