@@ -9,7 +9,7 @@ Use these templates to create small, bounded tasks that fit:
 - focused verification
 - reviewable diff
 
-Templates live in [`templates/`](/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/templates).
+Templates live in [`templates/`](templates).
 
 Recommended workflow:
 
@@ -17,19 +17,19 @@ Recommended workflow:
 2. Create a queue task with:
 
    ```bash
-   bash /Users/alexorlik/repo/codepilot1c-oss/tools/new-qwen-codex-task.sh <template> "<task slug>"
+   bash tools/new-qwen-codex-task.sh <template> "<task slug>"
    ```
 
 3. Edit the generated file under `.runs/qwen-codex-queue/queue/todo/`.
 4. Run the queue:
 
    ```bash
-   bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-queue.sh
+   bash tools/run-qwen-codex-queue.sh
    ```
 
 If a task lands in `needs_human/`, the queue runner can automatically generate one or more `review-followup` tasks back into `todo/` from the latest Codex findings.
 
 Automation prompt templates live in:
 
-- [`automation/codex-app-queue-run.prompt.md`](/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/automation/codex-app-queue-run.prompt.md) for direct queue sweeps
-- [`automation/codex-app-plan-run.prompt.md`](/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/automation/codex-app-plan-run.prompt.md) for plan-driven background runs from a planning bundle
+- [`automation/codex-app-queue-run.prompt.md`](automation/codex-app-queue-run.prompt.md) for direct queue sweeps
+- [`automation/codex-app-plan-run.prompt.md`](automation/codex-app-plan-run.prompt.md) for plan-driven background runs from a planning bundle
