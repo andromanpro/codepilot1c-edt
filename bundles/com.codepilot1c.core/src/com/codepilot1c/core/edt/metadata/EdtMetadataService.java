@@ -79,6 +79,7 @@ import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.FieldExtInfo;
+import com._1c.g5.v8.dt.form.model.HtmlFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
 import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
@@ -1969,9 +1970,9 @@ public class EdtMetadataService {
     /**
      * Ensures the field carries a {@link FieldExtInfo} so that ext-info properties
      * (multiLine, passwordMode, extendedEdit, wrap, …) can be resolved on it.
-     * Mirrors {@link #ensureFormGroupExtInfo}. Only creates when absent — an
-     * existing ext-info (set by the EDT item-management service per field type)
-     * is kept as-is to avoid discarding model data.
+     * Mirrors {@link #ensureFormGroupExtInfo}. Keeps an existing ext-info only when it already
+     * matches the field type; otherwise recreates it so field-type changes do not leave stale
+     * type-specific data behind.
      */
     private FieldExtInfo ensureFormFieldExtInfo(FormField field) {
         if (field == null) {
@@ -2003,6 +2004,18 @@ public class EdtMetadataService {
         };
         if (existing != null && existing.getClass() == created.getClass()) {
             return existing;
+        }
+        if (created instanceof HtmlFieldExtInfo htmlFieldExtInfo) {
+            // A bare HtmlFieldExtInfo (EMF defaults: width/height 0, stretch false)
+            // survives the EDT model, but the EDT->Designer conversion serializes
+            // Width=0/Height=0/Stretch=false and the platform renders the field
+            // invisible. Mirror the geometry the EDT UI sets for a new HTML field.
+            htmlFieldExtInfo.setWidth(50);
+            htmlFieldExtInfo.setHeight(10);
+            htmlFieldExtInfo.setAutoMaxWidth(true);
+            htmlFieldExtInfo.setAutoMaxHeight(true);
+            htmlFieldExtInfo.setHorizontalStretch(true);
+            htmlFieldExtInfo.setVerticalStretch(true);
         }
         field.setExtInfo(created);
         return created;
