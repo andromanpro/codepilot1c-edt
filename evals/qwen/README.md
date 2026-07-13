@@ -10,22 +10,22 @@
 
 ## Как использовать
 
-Каждый сценарий описан JSON-файлом в [`evals/qwen/scenarios`](/Users/alexorlik/repo/codepilot1c-oss/evals/qwen/scenarios).
+Каждый сценарий описан JSON-файлом в [`evals/qwen/scenarios`](scenarios).
 
 Базовый runner:
 
 ```bash
 QWEN_MCP_SERVER=codepilot1clocal \
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-mcp-suite.sh \
-  --suite /Users/alexorlik/repo/codepilot1c-oss/evals/qwen/suite-greenfield-warehouse.json
+bash tools/run-qwen-mcp-suite.sh \
+  --suite evals/qwen/suite-greenfield-warehouse.json
 ```
 
 Точечный запуск одного сценария:
 
 ```bash
 QWEN_MCP_SERVER=codepilot1clocal \
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-mcp-suite.sh \
-  --suite /Users/alexorlik/repo/codepilot1c-oss/evals/qwen/suite-typical-accounting.json \
+bash tools/run-qwen-mcp-suite.sh \
+  --suite evals/qwen/suite-typical-accounting.json \
   --scenario-id BUH-002
 ```
 
@@ -44,7 +44,7 @@ Runner:
 
 ```bash
 PROJECT_DIR=/abs/path/to/edt-project \
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-local-edt-suite.sh
+bash tools/run-qwen-local-edt-suite.sh
 ```
 
 Этот wrapper:
