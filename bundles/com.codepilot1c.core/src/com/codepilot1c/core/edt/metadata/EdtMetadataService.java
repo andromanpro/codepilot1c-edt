@@ -75,6 +75,7 @@ import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.FormGroup;
 import com._1c.g5.v8.dt.form.model.FieldExtInfo;
+import com._1c.g5.v8.dt.form.model.HtmlFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.GroupExtInfo;
 import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
 import com._1c.g5.v8.dt.form.model.ManagedFormButtonType;
@@ -1588,6 +1589,18 @@ public class EdtMetadataService {
         };
         if (existing != null && existing.getClass() == created.getClass()) {
             return existing;
+        }
+        if (created instanceof HtmlFieldExtInfo htmlFieldExtInfo) {
+            // A bare HtmlFieldExtInfo (EMF defaults: width/height 0, stretch false)
+            // survives the EDT model, but the EDT->Designer conversion serializes
+            // Width=0/Height=0/Stretch=false and the platform renders the field
+            // invisible. Mirror the geometry the EDT UI sets for a new HTML field.
+            htmlFieldExtInfo.setWidth(50);
+            htmlFieldExtInfo.setHeight(10);
+            htmlFieldExtInfo.setAutoMaxWidth(true);
+            htmlFieldExtInfo.setAutoMaxHeight(true);
+            htmlFieldExtInfo.setHorizontalStretch(true);
+            htmlFieldExtInfo.setVerticalStretch(true);
         }
         field.setExtInfo(created);
         return created;
