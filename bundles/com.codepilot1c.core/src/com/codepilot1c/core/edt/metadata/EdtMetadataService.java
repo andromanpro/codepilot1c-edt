@@ -113,6 +113,7 @@ import com._1c.g5.v8.dt.mcore.StringQualifiers;
 import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.McoreUtil;
+import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
@@ -5270,6 +5271,13 @@ public class EdtMetadataService {
         }
         if (basicForm.getFormType() == null) {
             basicForm.setFormType(FormType.MANAGED);
+        }
+        // The platform treats an empty usePurposes list as "no purposes": the server
+        // part of an extension form is silently not activated (OnCreateAtServer is
+        // never called). EDT UI always creates forms with both purposes set.
+        if (basicForm.getUsePurposes().isEmpty()) {
+            basicForm.getUsePurposes().add(ApplicationUsePurpose.PERSONAL_COMPUTER);
+            basicForm.getUsePurposes().add(ApplicationUsePurpose.MOBILE_DEVICE);
         }
     }
 
