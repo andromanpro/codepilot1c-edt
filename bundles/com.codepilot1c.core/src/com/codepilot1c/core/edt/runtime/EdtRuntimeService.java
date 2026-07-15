@@ -11,6 +11,7 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseAccessType;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.RuntimeInstallations;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.MatchingRuntimeNotFound;
@@ -405,15 +406,23 @@ public class EdtRuntimeService {
         IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
         try {
             IResolvableRuntimeInstallation resolvable;
+            // First argument of resolve* is the RUNTIME TYPE (registry lookup key of
+            // IRuntimeInstallationManager, bound as "...runtimeType.EnterprisePlatform"),
+            // NOT a component type. Passing IRuntimeComponentTypes.THICK_CLIENT here made
+            // ServiceAccess look up a service registered under a non-existent name and fail with
+            // "Service ...IRuntimeInstallationManager is unavailable or not registered".
+            // Component types belong to resolvable.resolve(...) / resolveExecutor(...) below
+            // (same pattern as EDT's own AbstractInfobaseConnection.findRequired).
             if (versionMask != null && !versionMask.isBlank()) {
-                resolvable = installationManager.resolveByVersionOrMask(IRuntimeComponentTypes.THICK_CLIENT, versionMask);
+                resolvable = installationManager.resolveByVersionOrMask(
+                        RuntimeInstallations.ENTERPRISE_PLATFORM, versionMask);
             } else {
                 IProject project = gateway.getInfobaseAssociationManager()
                         .getAssociation(infobase)
                         .map(IInfobaseAssociation::getProject)
                         .orElse(null);
                 resolvable = installationManager.resolveByProjectAndInfobase(
-                        IRuntimeComponentTypes.THICK_CLIENT, project, infobase, InfobaseAccessType.CLIENT_LAUNCH);
+                        RuntimeInstallations.ENTERPRISE_PLATFORM, project, infobase, InfobaseAccessType.CLIENT_LAUNCH);
             }
             var installation = resolvable.resolve(List.of(IRuntimeComponentTypes.THICK_CLIENT), AppArch.AUTO);
             ComponentExecutorInfo<ILaunchableRuntimeComponent, IThickClientLauncher> executorInfo =
