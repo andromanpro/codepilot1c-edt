@@ -162,17 +162,23 @@ public class RunYaxunitTestsTool extends AbstractTool {
                     }
                 }
 
-                File paramsFile = writeParamsFile(runDir, filters, junitXmlFile, false);
+                // Canonical YAxUnit launch: /C "RunUnitTests=<config.json>". The config carries
+                // report path/format and the filter OBJECT ({modules:[...]}); the previous
+                // ";Filter=<string>" startup parameter was merged into the launch parameters as a
+                // plain string and crashed test loading inside ЮТФильтрацияСлужебный
+                // ("Значение не является значением объектного типа"). The config file is NOT a
+                // VAParams file, so nothing is passed to the Vanessa slot of the command builder.
+                File paramsFile = writeParamsFile(runDir, filters, junitXmlFile);
                 RuntimeExecutionCommandBuilder commandBuilder = runtimeService.buildTestManagerCommand(
                         projectName,
                         null,
-                        paramsFile,
+                        null,
                         workspaceRoot,
                         false,
                         true,
                         false,
                         logFile);
-                commandBuilder.startupOption(buildStartupOption(junitXmlFile, filters, false));
+                commandBuilder.startupOption(buildStartupOption(paramsFile));
 
                 ProcessBuilder processBuilder = commandBuilder.toProcessBuilder();
                 processBuilder.directory(workspaceRoot);
@@ -259,32 +265,45 @@ public class RunYaxunitTestsTool extends AbstractTool {
         return ToolResult.failure(pretty(result));
     }
 
-    private static File writeParamsFile(File runDir, String filters, File junitXmlFile, boolean debug)
+    /**
+     * Writes a canonical YAxUnit configuration file (the payload of
+     * {@code /C "RunUnitTests=<path>"}). Keys follow the documented YAxUnit config format:
+     * {@code filter} is an object with {@code modules} array (a raw comma-separated string
+     * crashes ЮТФильтрацияСлужебный), report is described by {@code reportFormat}/{@code reportPath}.
+     */
+    private static File writeParamsFile(File runDir, String filters, File junitXmlFile)
             throws IOException {
-        JsonObject params = new JsonObject();
-        params.addProperty("command", "RunUnitTests"); //$NON-NLS-1$ //$NON-NLS-2$
-        params.addProperty("output_file", junitXmlFile.getAbsolutePath()); //$NON-NLS-1$
-        params.addProperty("junit_xml_path", junitXmlFile.getAbsolutePath()); //$NON-NLS-1$
-        params.addProperty("debug", debug); //$NON-NLS-1$
+        JsonObject config = new JsonObject();
         if (filters != null && !filters.isBlank()) {
-            params.addProperty("filter", filters); //$NON-NLS-1$
+            config.add("filter", buildFilterObject(filters)); //$NON-NLS-1$
         }
-        File paramsFile = new File(runDir, "yaxunit-params.json"); //$NON-NLS-1$
-        Files.writeString(paramsFile.toPath(), pretty(params), StandardCharsets.UTF_8);
+        config.addProperty("reportFormat", "jUnit"); //$NON-NLS-1$ //$NON-NLS-2$
+        config.addProperty("reportPath", junitXmlFile.getAbsolutePath()); //$NON-NLS-1$
+        config.addProperty("closeAfterTests", true); //$NON-NLS-1$
+        config.addProperty("showReport", false); //$NON-NLS-1$
+        File paramsFile = new File(runDir, "yaxunit-config.json"); //$NON-NLS-1$
+        Files.writeString(paramsFile.toPath(), pretty(config), StandardCharsets.UTF_8);
         return paramsFile;
     }
 
-    static String buildStartupOption(File junitXmlFile, String filters, boolean debug) {
-        StringBuilder option = new StringBuilder("RunUnitTests"); //$NON-NLS-1$
-        option.append(";OutputFile=").append(junitXmlFile.getAbsolutePath()); //$NON-NLS-1$
-        option.append(";JUnitXml=").append(junitXmlFile.getAbsolutePath()); //$NON-NLS-1$
-        if (filters != null && !filters.isBlank()) {
-            option.append(";Filter=").append(filters.trim()); //$NON-NLS-1$
+    /**
+     * Builds the YAxUnit {@code filter} object from a comma-separated list of test module names.
+     */
+    static JsonObject buildFilterObject(String filters) {
+        JsonArray modules = new JsonArray();
+        for (String part : filters.split(",")) { //$NON-NLS-1$
+            String name = part.trim();
+            if (!name.isEmpty()) {
+                modules.add(name);
+            }
         }
-        if (debug) {
-            option.append(";Debug"); //$NON-NLS-1$
-        }
-        return option.toString();
+        JsonObject filter = new JsonObject();
+        filter.add("modules", modules); //$NON-NLS-1$
+        return filter;
+    }
+
+    static String buildStartupOption(File configFile) {
+        return "RunUnitTests=" + configFile.getAbsolutePath(); //$NON-NLS-1$
     }
 
     private static File resolveJunitXmlFile(File runDir, String requestedPath) {
