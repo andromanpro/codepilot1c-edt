@@ -66,14 +66,18 @@ public final class BackendToolSurfaceRewriteContributor implements ToolSurfaceCo
             case "create_metadata" -> "Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику."; //$NON-NLS-1$
             case "add_metadata_child" -> "Создаёт дочерний объект через BM API. Для batch передай properties.children=[{name,type,...}] и не передавай top-level name. Для Number(15,3) используй scale=3. Для макетов: child_kind=Template, template_type=spreadsheet — .mxl создаётся автоматически."; //$NON-NLS-1$
             case "ensure_module_artifact" -> "Ensure that a metadata-owned BSL module artifact exists and return its path. Use it after edt_validate_request and before edit_file or write_file when changing object-owned module code."; //$NON-NLS-1$
-            case "update_metadata" -> "Применяет изменения свойств через BM API. Формат changes: {\"set\":{\"field\":\"value\"}} — обёртка set ОБЯЗАТЕЛЬНА. Enum-поля: строки (Allow/Deny). НЕ используй: subsystems, name. После изменений запусти диагностику."; //$NON-NLS-1$
+            case "update_metadata" -> "Применяет изменения свойств через BM API. Формат: {\"set\":{\"field\":\"value\"}}. Для EventSubscription.source: {\"set\":{\"source\":{\"types\":[\"TaskObject.X\"]}}}. НЕ используй: subsystems, name. После изменений запусти диагностику."; //$NON-NLS-1$
             case "mutate_form_model" -> "Изменяет форму через operations:[{op:...}]. " //$NON-NLS-1$
                     + "op: add_field|add_group|add_command|add_button|set_item|remove_item|move_item|set_form_props. " //$NON-NLS-1$
                     + "add_field: ОБЯЗАТЕЛЬНО name+data_path, field_type=LABEL_FIELD|INPUT_FIELD. " //$NON-NLS-1$
                     + "add_command: name+action(обработчик)+title. add_button: name+command_name(ссылка на команду), parent автоматически=CommandBar. " //$NON-NLS-1$
                     + "set_item: ОБЯЗАТЕЛЬНО item_id(число) ИЛИ item_name(строка) + set:{...}. НЕ используй id или name вместо item_id/item_name. " //$NON-NLS-1$
                     + "Родитель: parent_item_id(число) ИЛИ parent_item_name(строка). НЕ используй parent_id или parent. " //$NON-NLS-1$
-                    + "Сначала вызови inspect_form_layout чтобы узнать ID элементов."; //$NON-NLS-1$
+                    + "Сначала вызови inspect_form_layout чтобы узнать ID элементов. " //$NON-NLS-1$
+                    + "op: add_event_handler|set_event_handler|remove_event_handler: event(имя события EN/RU)+" //$NON-NLS-1$
+                    + "target('form' для формы, иначе item_id/item_name)+handler_name(опционально, иначе {Item}{EventEn})+" //$NON-NLS-1$
+                    + "call_type(только для расширений: BEFORE|AFTER|OVERRIDE|CHANGE_AND_VALIDATE, по умолчанию BEFORE). " //$NON-NLS-1$
+                    + "Пример: {op:'add_event_handler', target:'form', event:'ПриОткрытии'}."; //$NON-NLS-1$
             case "delete_metadata" -> "Delete a metadata object through EDT BM APIs with an explicit validation_token. Use recursive or force only when the request truly requires it."; //$NON-NLS-1$
             case "render_template" -> "Генерирует содержимое макета (.mxl) из секций: Шапка, ШапкаТаблицы, СтрокаТаблицы, Подвал. " //$NON-NLS-1$
                     + "Каждая ячейка — либо статический текст, либо [Привязка]. " //$NON-NLS-1$
