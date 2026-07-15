@@ -152,12 +152,16 @@ public class DebugYaxunitTestsTool extends AbstractTool {
                 InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
                 EdtResolvedLaunchInputs inputs = projectResolver.resolveLaunchInputs(projectName, workspaceRoot);
                 EdtResolvedLaunchContext context = contextBuilder.build(inputs);
-                File paramsFile = writeParamsFile(runDir, filters, waitForDebugger);
+                // Canonical YAxUnit launch: /C "RunUnitTests=<config.json>" (+Debug flags).
+                // Filter goes into the config as an OBJECT ({modules:[...]}); the previous
+                // ";Filter=<string>" crashed test loading (see RunYaxunitTestsTool). The config
+                // is not a VAParams file, so the Vanessa slot of the command builder stays empty.
+                File paramsFile = writeParamsFile(runDir, filters);
 
                 RuntimeExecutionCommandBuilder commandBuilder = runtimeService.buildTestManagerCommand(
                         projectName,
                         null,
-                        paramsFile,
+                        null,
                         workspaceRoot,
                         true,
                         true,
@@ -165,7 +169,7 @@ public class DebugYaxunitTestsTool extends AbstractTool {
                         logFile,
                         context.runtimeVersion(),
                         context.accessSettings());
-                commandBuilder.startupOption(buildStartupOption(filters, waitForDebugger));
+                commandBuilder.startupOption(buildStartupOption(paramsFile, waitForDebugger));
 
                 ProcessBuilder processBuilder = commandBuilder.toProcessBuilder();
                 processBuilder.directory(workspaceRoot);
@@ -243,26 +247,27 @@ public class DebugYaxunitTestsTool extends AbstractTool {
         return ToolResult.failure(pretty(result));
     }
 
-    private static File writeParamsFile(File runDir, String filters, boolean waitForDebugger) throws IOException {
-        JsonObject params = new JsonObject();
-        params.addProperty("command", "RunUnitTests"); //$NON-NLS-1$ //$NON-NLS-2$
-        params.addProperty("debug", true); //$NON-NLS-1$
-        params.addProperty("wait_for_debugger", waitForDebugger); //$NON-NLS-1$
+    /**
+     * Writes a canonical YAxUnit configuration file for the debug launch. The {@code filter}
+     * key must be an object with a {@code modules} array — a raw string crashes test loading
+     * (see {@link RunYaxunitTestsTool#buildFilterObject}).
+     */
+    private static File writeParamsFile(File runDir, String filters) throws IOException {
+        JsonObject config = new JsonObject();
         if (filters != null && !filters.isBlank()) {
-            params.addProperty("filter", filters); //$NON-NLS-1$
+            config.add("filter", RunYaxunitTestsTool.buildFilterObject(filters)); //$NON-NLS-1$
         }
-        File paramsFile = new File(runDir, "yaxunit-debug-params.json"); //$NON-NLS-1$
-        Files.writeString(paramsFile.toPath(), pretty(params), StandardCharsets.UTF_8);
+        config.addProperty("closeAfterTests", false); //$NON-NLS-1$
+        File paramsFile = new File(runDir, "yaxunit-debug-config.json"); //$NON-NLS-1$
+        Files.writeString(paramsFile.toPath(), pretty(config), StandardCharsets.UTF_8);
         return paramsFile;
     }
 
-    private static String buildStartupOption(String filters, boolean waitForDebugger) {
-        StringBuilder option = new StringBuilder("RunUnitTests;Debug"); //$NON-NLS-1$
+    private static String buildStartupOption(File configFile, boolean waitForDebugger) {
+        StringBuilder option = new StringBuilder("RunUnitTests=").append(configFile.getAbsolutePath()); //$NON-NLS-1$
+        option.append(";Debug"); //$NON-NLS-1$
         if (waitForDebugger) {
             option.append(";WaitForDebugger"); //$NON-NLS-1$
-        }
-        if (filters != null && !filters.isBlank()) {
-            option.append(";Filter=").append(filters.trim()); //$NON-NLS-1$
         }
         return option.toString();
     }
