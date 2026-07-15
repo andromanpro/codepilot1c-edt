@@ -175,9 +175,39 @@ public class SearchReplaceFormat {
             if (block.getSearchText().contains("<<<<<<") || block.getSearchText().contains(">>>>>>>")) { //$NON-NLS-1$ //$NON-NLS-2$
                 errors.add(String.format("Блок %d: SEARCH текст содержит маркеры блоков", i + 1)); //$NON-NLS-1$
             }
+            if (block.getReplaceText().contains("<<<<<<") || block.getReplaceText().contains(">>>>>>>")) { //$NON-NLS-1$ //$NON-NLS-2$
+                errors.add(String.format("Блок %d: REPLACE текст содержит маркеры блоков", i + 1)); //$NON-NLS-1$
+            }
+
+            // A stray "=======" separator line inside a parsed block means the block was
+            // malformed (e.g. an extra separator): the non-greedy parser swallows everything
+            // up to the end marker, so the literal separator line would be written into the
+            // file as garbage. Reject instead of silently corrupting the target file.
+            if (containsSeparatorLine(block.getSearchText())) {
+                errors.add(String.format(
+                        "Блок %d: SEARCH текст содержит строку-разделитель '=======' - вероятно, лишний разделитель в блоке", i + 1)); //$NON-NLS-1$
+            }
+            if (containsSeparatorLine(block.getReplaceText())) {
+                errors.add(String.format(
+                        "Блок %d: REPLACE текст содержит строку-разделитель '=======' - вероятно, лишний разделитель в блоке", i + 1)); //$NON-NLS-1$
+            }
         }
 
         return errors;
+    }
+
+    /**
+     * Checks whether the content contains a line consisting solely of a
+     * {@code =======} separator (7+ equals signs, optional surrounding whitespace).
+     *
+     * @param content the block content to check
+     * @return true if a stray separator line is present
+     */
+    private static boolean containsSeparatorLine(String content) {
+        if (content == null || content.isEmpty()) {
+            return false;
+        }
+        return content.lines().anyMatch(line -> line.strip().matches("={7,}")); //$NON-NLS-1$
     }
 
     /**
