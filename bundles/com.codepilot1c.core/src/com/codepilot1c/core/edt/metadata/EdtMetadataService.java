@@ -3626,6 +3626,18 @@ public class EdtMetadataService {
                     return;
                 }
             }
+            // Same for groups: ext-info properties (group=Horizontal, representation,
+            // throughAlign, ...) live on FormGroup.getExtInfo() (UsualGroupExtInfo etc.),
+            // not on the FormGroup EObject itself.
+            if (target instanceof FormGroup formGroup) {
+                ensureFormGroupExtInfo(formGroup);
+                GroupExtInfo groupExtInfo = formGroup.getExtInfo();
+                if (groupExtInfo != null
+                        && resolveStructuralFeatureIgnoreCase(groupExtInfo, fieldName) != null) {
+                    applySimpleFeatureValue(groupExtInfo, fieldName, value);
+                    return;
+                }
+            }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Unknown form property: " + fieldName, false); //$NON-NLS-1$
