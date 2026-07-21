@@ -26,7 +26,9 @@ public class QwenRuntimeReferenceGuardTest {
             "Backend" + " note:", //$NON-NLS-1$ //$NON-NLS-2$
             "ProviderContext" + "Resolver", //$NON-NLS-1$ //$NON-NLS-2$
             "backend" + "Optimizations", //$NON-NLS-1$ //$NON-NLS-2$
-            "supportsBackend" + "Optimizations"); //$NON-NLS-1$ //$NON-NLS-2$
+            "supportsBackend" + "Optimizations", //$NON-NLS-1$ //$NON-NLS-2$
+            "raw tool " + "surface", //$NON-NLS-1$ //$NON-NLS-2$
+            "provider-" + "aware augmentation"); //$NON-NLS-1$ //$NON-NLS-2$
 
     @Test
     public void liveRuntimeAndInstructionsDoNotReferenceRemovedApis() throws Exception {

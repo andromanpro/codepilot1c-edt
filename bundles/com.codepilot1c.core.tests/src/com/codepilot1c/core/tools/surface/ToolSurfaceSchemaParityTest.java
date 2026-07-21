@@ -70,11 +70,22 @@ public class ToolSurfaceSchemaParityTest {
     }
 
     @Test
+    public void writeFileRequiresEveryRuntimeMandatoryArgument() {
+        JsonObject raw = parse(new WriteTool().getParameterSchema());
+        JsonObject effective = parse(ToolSurfaceSchemaNormalizer.normalizeBuiltIn(
+                "write_file", new WriteTool().getParameterSchema())); //$NON-NLS-1$
+        Set<String> runtimeRequired = Set.of("path", "content", "overwrite"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertEquals(runtimeRequired, requiredNames(raw));
+        assertEquals(runtimeRequired, requiredNames(effective));
+    }
+
+    @Test
     public void explicitNumericRangesMatchRuntimeLimits() {
         JsonObject read = parse(ToolSurfaceSchemaNormalizer.normalizeBuiltIn(
                 "read_file", new ReadFileTool().getParameterSchema())); //$NON-NLS-1$
         assertEquals(1, property(read, "start_line").get("minimum").getAsInt()); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals(1, property(read, "end_line").get("minimum").getAsInt()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(property(read, "end_line").has("minimum")); //$NON-NLS-1$ //$NON-NLS-2$
 
         JsonObject glob = parse(ToolSurfaceSchemaNormalizer.normalizeBuiltIn(
                 "glob", new GlobTool().getParameterSchema())); //$NON-NLS-1$

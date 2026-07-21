@@ -470,7 +470,7 @@ def collect_call_hierarchy_rows() -> list[dict[str, str]]:
             "stage_order": "1",
             "component": "ChatView.sendMessage/buildRequestWithTools",
             "source_file": str(UI_SRC / "com/codepilot1c/ui/views/ChatView.java"),
-            "role": "UI chat builds system prompt, conversation history, and raw tool surface from ToolRegistry.",
+            "role": "UI chat builds system prompt, conversation history, and effective tool surface from ToolRegistry.",
             "next_stage": "Provider.complete/streamComplete",
         },
         {

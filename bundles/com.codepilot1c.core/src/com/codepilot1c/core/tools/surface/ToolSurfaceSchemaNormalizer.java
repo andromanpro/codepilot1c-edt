@@ -40,7 +40,6 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "end_line": {
                           "type": "integer",
-                          "minimum": 1,
                           "description": "1-based inclusive end line for partial reads."
                         }
                       },
@@ -186,7 +185,7 @@ final class ToolSurfaceSchemaNormalizer {
                           "description": "Must be true to write empty content over an existing non-empty file."
                         }
                       },
-                      "required": ["path", "content"],
+                      "required": ["path", "content", "overwrite"],
                       "additionalProperties": false
                     }
                     """; //$NON-NLS-1$
