@@ -11,8 +11,8 @@
 .playwright-mcp/
 .scripts/
 tools/__pycache__/
-.planning/local/
-.planning/qwen35-optimization-*.md
+.qwen-runtime-surface/
+skills-lock.json
 
 # IDE / OS
 .idea/
@@ -37,17 +37,11 @@ tools/run_github_sync.sh
 # QA локальная конфигурация и результаты
 tests/qa/qa-config.json
 tests/results/
-.planning/
 .agents/
 _bmad*/
 e2e*
 output/
 
-# ── GSD baseline (auto-generated) ──
-.gsd
-.gsd-worktrees/
-.gsd-backups/
-.gsd-id
 .bg-shell/
 Thumbs.db
 nul

@@ -56,7 +56,6 @@ public class AgentProfileRegistry {
         register(new RecoveryProfile());
         register(new PlanAgentProfile());
         register(new ExploreAgentProfile());
-        register(new GsdAgentProfile());
     }
 
     /**
@@ -145,8 +144,7 @@ public class AgentProfileRegistry {
                 .maxSteps(maxSteps)
                 .timeoutMs(timeoutMs)
                 .systemPromptAddition(promptAddition)
-                .profileName(profile.getId())
-                .gsdMode(profile.isGsdMode());
+                .profileName(profile.getId());
 
         // Enable all profile tools
         for (String tool : profile.getAllowedTools()) {

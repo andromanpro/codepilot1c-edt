@@ -6,7 +6,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exec bash "$ROOT_DIR/tools/run-qwen-codex-plan.sh" "$1"
 fi
 
-PLAN_ROOT="${1:-${PLAN_ROOT:-$ROOT_DIR/.planning/local/qwen-runtime-surface}}"
+PLAN_ROOT="${1:-${PLAN_ROOT:-$ROOT_DIR/.qwen-runtime-surface}}"
 PLAN_KEY="${PLAN_KEY:-$(basename "$PLAN_ROOT")}"
 PLAN_RUNS_ROOT_DEFAULT="$ROOT_DIR/.runs/claude-codex-plan/$PLAN_KEY"
 

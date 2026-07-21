@@ -221,16 +221,16 @@ Versioned prompt для automation лежит в:
 Если source of truth лежит в planning bundle, например:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 ```
 
 используйте:
 
 ```bash
 bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 ```
 
 Этот runner:

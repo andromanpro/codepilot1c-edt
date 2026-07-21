@@ -729,11 +729,6 @@ public class AgentRunner implements IAgentRunner {
      */
     private String buildSystemPrompt(String prompt, AgentConfig config) {
         String addition = config.getSystemPromptAddition();
-        if (config.isGsdMode()) {
-            // Append the GSD phase-lifecycle protocol so toggling gsdMode changes behavior.
-            String gsd = AgentPromptTemplates.buildGsdPhaseProtocol();
-            addition = (addition == null || addition.isBlank()) ? gsd : addition + "\n" + gsd; //$NON-NLS-1$
-        }
         return SystemPromptAssembler.getInstance().assembleDetailedForCurrentSession(
                 systemPrompt,
                 addition,

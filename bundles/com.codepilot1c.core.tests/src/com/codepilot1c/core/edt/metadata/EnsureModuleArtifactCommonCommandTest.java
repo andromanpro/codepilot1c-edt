@@ -65,7 +65,7 @@ public class EnsureModuleArtifactCommonCommandTest {
     private Path findRepoRoot() {
         Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize(); //$NON-NLS-1$
         while (current != null) {
-            if (Files.isDirectory(current.resolve("bundles")) && Files.isDirectory(current.resolve(".planning"))) { //$NON-NLS-1$ //$NON-NLS-2$
+            if (Files.isDirectory(current.resolve("bundles")) && Files.isRegularFile(current.resolve("pom.xml"))) { //$NON-NLS-1$ //$NON-NLS-2$
                 return current;
             }
             current = current.getParent();

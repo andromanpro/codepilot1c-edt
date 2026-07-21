@@ -60,10 +60,6 @@ import org.eclipse.ui.part.ViewPart;
 
 import com.codepilot1c.core.diff.CodeDiffUtils;
 import com.codepilot1c.core.logging.VibeLogger;
-import com.codepilot1c.core.agent.gsd.PlanArtifact;
-import com.codepilot1c.core.agent.gsd.PlanArtifactStore;
-import com.codepilot1c.core.agent.gsd.TaskPhase;
-import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.skills.SkillMentionParser;
 import com.codepilot1c.core.model.LlmAttachment;
@@ -170,15 +166,6 @@ public class ChatView extends ViewPart {
      * close ({@link #dispose()}) and at clear-chat; restored on open via memento or most-recent.
      */
     private Session session;
-
-    /** GSD phase mode toggle (DISCUSS→PLAN→EXECUTE→VERIFY): off by default, per-view. */
-    private boolean gsdModeEnabled = false;
-
-    /** GSD toggle button; its label reflects the current plan phase (Phase 5 indicator). */
-    private Button gsdToggleButton;
-
-    /** Last GSD phase announced in the transcript, to detect phase transitions (Phase 5). */
-    private TaskPhase gsdLastAnnouncedPhase;
 
     /** Memento key for the per-view session id (restored across EDT restart). */
     private static final String MEMENTO_SESSION_ID = "sessionId"; //$NON-NLS-1$
@@ -486,21 +473,6 @@ public class ChatView extends ViewPart {
                 Messages.ChatView_ModelButtonTooltip, CHAT_MODEL_BUTTON_WIDTH);
         modelButton.addListener(SWT.Selection, e -> openModelSelectionDialog());
         updateModelButtonVisibility();
-
-        // GSD mode toggle — phase lifecycle DISCUSS→PLAN→EXECUTE→VERIFY with plan artifact + gates.
-        gsdToggleButton = new Button(buttonBar, SWT.TOGGLE);
-        gsdToggleButton.setText("GSD"); //$NON-NLS-1$
-        gsdToggleButton.setToolTipText(
-                "Режим GSD: работа по фазам DISCUSS→PLAN→EXECUTE→VERIFY с планом-артефактом и гейтами"); //$NON-NLS-1$
-        gsdToggleButton.setFont(theme.getFont());
-        gsdToggleButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
-        gsdToggleButton.addListener(SWT.Selection, e -> {
-            gsdModeEnabled = gsdToggleButton.getSelection();
-            appendSystemMessage(gsdModeEnabled
-                    ? "GSD-режим включён: ассистент будет работать по фазам (DISCUSS→PLAN→EXECUTE→VERIFY) и вести план через gsd_plan." //$NON-NLS-1$
-                    : "GSD-режим выключен."); //$NON-NLS-1$
-            refreshGsdPhaseIndicator();
-        });
 
         // Token usage label — hidden by default (Phase 2: replaced by budget indicator)
         tokenUsageLabel = new Label(buttonBar, SWT.NONE);
@@ -1440,7 +1412,7 @@ public class ChatView extends ViewPart {
 
                         // Update the displayed message with current content and reasoning.
                         // On a tool-call-only turn (no text/reasoning) drop the empty placeholder
-                        // bubble so it doesn't leave a blank row (frequent in GSD mode).
+                        // bubble so it doesn't leave a blank row in tool-heavy sessions.
                         if (USE_BROWSER_RENDERING && browserChatPanel != null) {
                             if (!accumulatedReasoning.isEmpty() || !accumulatedContent.isEmpty()) {
                                 browserChatPanel.updateLastMessageWithReasoning(accumulatedContent, accumulatedReasoning);
@@ -2467,136 +2439,11 @@ public class ChatView extends ViewPart {
             это контекст из активного редактора. Учитывайте его при ответе.
             """); //$NON-NLS-1$
 
-        if (gsdModeEnabled) {
-            // V1 integration: inject the GSD phase protocol into the main chat prompt.
-            // (Phase 2's gsdMode wiring lives in AgentRunner, which the main chat bypasses.)
-            prompt.append("\n").append(AgentPromptTemplates.buildGsdPhaseProtocol()); //$NON-NLS-1$
-            // Phase 4 (resume): if this session has an unfinished plan, tell the model to continue it.
-            String resumeHint = loadGsdResumeHint();
-            if (resumeHint != null) {
-                prompt.append("\n").append(resumeHint); //$NON-NLS-1$
-            }
-        }
-
         return SystemPromptAssembler.getInstance().assemble(
                 prompt.toString(),
                 null,
                 "chat", //$NON-NLS-1$
                 currentRequestedSkills);
-    }
-
-    /**
-     * Phase 4 (GSD resume): if the current session has an unfinished plan artifact,
-     * returns a hint to inject so the model continues it instead of starting over.
-     * Resolves the session id the same way {@code gsd_plan} does (current session),
-     * so the keys match. Returns {@code null} when there is nothing to resume.
-     */
-    private String loadGsdResumeHint() {
-        try {
-            Session current = SessionManager.getInstance().getOrCreateCurrentSession();
-            if (current == null || current.getId() == null) {
-                return null;
-            }
-            return new PlanArtifactStore().load(current.getId())
-                    .filter(PlanArtifact::isResumable)
-                    .map(PlanArtifact::resumeSummary)
-                    .orElse(null);
-        } catch (RuntimeException e) {
-            LOG.debug("GSD resume hint unavailable: %s", e.getMessage()); //$NON-NLS-1$
-            return null;
-        }
-    }
-
-    /**
-     * Phase 5 (GSD UI): reflects the current plan phase on the GSD toggle button
-     * ("GSD" when off/no plan, "GSD · PLAN" etc. when active), with goal/progress
-     * in the tooltip. Refreshed when the toggle changes and after each turn.
-     * UI-thread only.
-     */
-    private void refreshGsdPhaseIndicator() {
-        if (gsdToggleButton == null || gsdToggleButton.isDisposed()) {
-            return;
-        }
-        String text = "GSD"; //$NON-NLS-1$
-        String tooltip = "Режим GSD: работа по фазам DISCUSS→PLAN→EXECUTE→VERIFY с планом-артефактом и гейтами"; //$NON-NLS-1$
-        PlanArtifact plan = null;
-        if (gsdModeEnabled) {
-            try {
-                Session current = SessionManager.getInstance().getOrCreateCurrentSession();
-                if (current != null && current.getId() != null) {
-                    plan = new PlanArtifactStore().load(current.getId()).orElse(null);
-                }
-            } catch (RuntimeException e) {
-                LOG.debug("GSD phase indicator refresh failed: %s", e.getMessage()); //$NON-NLS-1$
-            }
-        }
-        if (plan != null) {
-            text = "GSD · " + plan.getPhase(); //$NON-NLS-1$
-            tooltip = buildGsdTooltip(plan);
-            // Announce phase transitions in the transcript (persistent progress trail).
-            TaskPhase current = plan.getPhase();
-            if (gsdLastAnnouncedPhase != null && gsdLastAnnouncedPhase != current) {
-                long done = plan.getTasks().stream()
-                        .filter(t -> t.getStatus() == PlanArtifact.TaskStatus.DONE)
-                        .count();
-                appendSystemMessage("GSD: фаза → " + current //$NON-NLS-1$
-                        + " (задачи " + done + "/" + plan.getTasks().size() + ")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            }
-            gsdLastAnnouncedPhase = current;
-        } else {
-            gsdLastAnnouncedPhase = null;
-        }
-        gsdToggleButton.setText(text);
-        gsdToggleButton.setToolTipText(tooltip);
-        if (gsdToggleButton.getParent() != null && !gsdToggleButton.getParent().isDisposed()) {
-            gsdToggleButton.getParent().layout();
-        }
-    }
-
-    /** Builds the GSD toggle tooltip: phase, goal, task list with status, verification (Phase 5). */
-    private String buildGsdTooltip(PlanArtifact plan) {
-        StringBuilder tip = new StringBuilder("Фаза: ").append(plan.getPhase()); //$NON-NLS-1$
-        if (plan.getGoal() != null && !plan.getGoal().isBlank()) {
-            tip.append("\nЦель: ").append(plan.getGoal()); //$NON-NLS-1$
-        }
-        List<PlanArtifact.PlanTask> tasks = plan.getTasks();
-        long done = tasks.stream().filter(t -> t.getStatus() == PlanArtifact.TaskStatus.DONE).count();
-        tip.append("\nЗадачи (").append(done).append("/").append(tasks.size()).append("):"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        int max = 10;
-        for (int i = 0; i < tasks.size() && i < max; i++) {
-            PlanArtifact.PlanTask t = tasks.get(i);
-            tip.append("\n  ").append(gsdStatusGlyph(t.getStatus())).append(' '); //$NON-NLS-1$
-            if (t.getId() != null && !t.getId().isBlank()) {
-                tip.append(t.getId()).append(" — "); //$NON-NLS-1$
-            }
-            tip.append(t.getDescription());
-        }
-        if (tasks.size() > max) {
-            tip.append("\n  … ещё ").append(tasks.size() - max).append(" задач"); //$NON-NLS-1$ //$NON-NLS-2$
-        }
-        if (!plan.getVerification().isEmpty()) {
-            long pass = plan.getVerification().stream()
-                    .filter(v -> v.getResult() == PlanArtifact.VerifyResult.PASS).count();
-            tip.append("\nПроверки: ").append(pass).append("/").append(plan.getVerification().size()).append(" PASS"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        }
-        return tip.toString();
-    }
-
-    /** Maps a task status to a compact glyph for the GSD plan tooltip (Phase 5). */
-    private static String gsdStatusGlyph(PlanArtifact.TaskStatus status) {
-        if (status == null) {
-            return "•"; //$NON-NLS-1$
-        }
-        switch (status) {
-            case DONE:
-                return "✓"; //$NON-NLS-1$
-            case FAILED:
-                return "✗"; //$NON-NLS-1$
-            case IN_PROGRESS:
-                return "▸"; //$NON-NLS-1$
-            default:
-                return "•"; //$NON-NLS-1$
-        }
     }
 
     private void handleError(Throwable error) {
@@ -2985,10 +2832,6 @@ public class ChatView extends ViewPart {
             }
             if (modelButton != null && !modelButton.isDisposed()) {
                 modelButton.setEnabled(!processing);
-            }
-            if (!processing) {
-                // Turn finished: reflect the (possibly advanced) GSD phase on the toggle.
-                refreshGsdPhaseIndicator();
             }
             refreshAttachmentPreview();
 

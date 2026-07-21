@@ -94,13 +94,4 @@ public interface AgentProfile {
      */
     boolean canExecuteShell();
 
-    /**
-     * Включает ли профиль фазовый цикл GSD (DISCUSS→PLAN→EXECUTE→VERIFY).
-     * По умолчанию выключено; включается у GSD-профиля.
-     *
-     * @return true если профиль работает в GSD-режиме
-     */
-    default boolean isGsdMode() {
-        return false;
-    }
 }
