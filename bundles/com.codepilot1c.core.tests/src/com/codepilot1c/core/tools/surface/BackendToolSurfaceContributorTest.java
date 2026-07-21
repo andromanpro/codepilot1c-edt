@@ -26,8 +26,10 @@ public class BackendToolSurfaceContributorTest {
                         .build());
 
         assertTrue(definition.getDescription().contains("validation_token")); //$NON-NLS-1$
+        assertTrue(definition.getDescription().contains("DCS/template/extension/external")); //$NON-NLS-1$
         assertTrue(definition.getDescription().contains("Tool routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics.")); //$NON-NLS-1$
         assertTrue(definition.getParametersSchema().contains("\"ensure_module_artifact\"")); //$NON-NLS-1$
+        assertTrue(definition.getParametersSchema().contains("\"render_template\"")); //$NON-NLS-1$
     }
 
     @Test
@@ -82,6 +84,8 @@ public class BackendToolSurfaceContributorTest {
                         .build());
 
         assertTrue(writeFile.getDescription().contains(".mxl")); //$NON-NLS-1$
+        assertTrue(writeFile.getDescription().contains("*.md")); //$NON-NLS-1$
+        assertTrue(writeFile.getDescription().contains("*.txt")); //$NON-NLS-1$
         assertTrue(writeFile.getDescription().contains("semantic EDT tools")); //$NON-NLS-1$
         assertTrue(dcsManage.getDescription().contains("Никогда не пиши DCS XML/MXL")); //$NON-NLS-1$
         assertTrue(dcsManage.getDescription().contains("edt_validate_request")); //$NON-NLS-1$

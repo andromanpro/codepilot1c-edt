@@ -83,7 +83,6 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "max_results": {
                           "type": "integer",
-                          "minimum": 1,
                           "maximum": 500,
                           "description": "Maximum number of matches to return."
                         },
@@ -122,7 +121,6 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "context_lines": {
                           "type": "integer",
-                          "minimum": 0,
                           "description": "Number of surrounding lines to include around each match."
                         }
                       },
@@ -173,7 +171,7 @@ final class ToolSurfaceSchemaNormalizer {
                       "properties": {
                         "path": {
                           "type": "string",
-                          "description": "Workspace-relative file path. Existing files are overwritten; project-root Code.md may be created."
+                          "description": "Workspace-relative file path. Existing files are overwritten; new files may be created only for project-root Code.md or documentation (*.md, *.txt)."
                         },
                         "content": {
                           "type": "string",
@@ -181,7 +179,7 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "overwrite": {
                           "type": "boolean",
-                          "description": "Must be true. Existing files are overwritten; project-root Code.md may be created."
+                          "description": "Must be true. Existing files are overwritten; project-root Code.md and documentation (*.md, *.txt) may be created."
                         },
                         "allow_empty": {
                           "type": "boolean",
@@ -202,7 +200,7 @@ final class ToolSurfaceSchemaNormalizer {
                         },
                         "operation": {
                           "type": "string",
-                          "enum": ["create_metadata", "create_form", "apply_form_recipe", "external_create_report", "external_create_processing", "extension_create_project", "extension_adopt_object", "extension_set_property_state", "dcs_create_main_schema", "dcs_upsert_query_dataset", "dcs_upsert_parameter", "dcs_upsert_calculated_field", "add_metadata_child", "ensure_module_artifact", "update_metadata", "delete_metadata", "mutate_form_model"],
+                          "enum": ["create_metadata", "create_form", "apply_form_recipe", "external_manage", "external_create_report", "external_create_processing", "extension_manage", "extension_create_project", "extension_adopt_object", "extension_set_property_state", "dcs_manage", "dcs_create_main_schema", "dcs_upsert_query_dataset", "dcs_upsert_parameter", "dcs_upsert_calculated_field", "add_metadata_child", "ensure_module_artifact", "update_metadata", "delete_metadata", "mutate_form_model", "mutate_role_rights", "render_template"],
                           "description": "Target mutating tool that will consume the issued validation_token."
                         },
                         "payload": {
