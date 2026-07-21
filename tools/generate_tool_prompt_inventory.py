@@ -478,7 +478,7 @@ def collect_call_hierarchy_rows() -> list[dict[str, str]]:
             "stage_order": "2",
             "component": "ILlmProvider.complete|streamComplete",
             "source_file": str(CORE_SRC / "com/codepilot1c/core/provider"),
-            "role": "Provider receives messages and tool definitions; Qwen path augments system prompt with XML tool examples.",
+            "role": "Provider receives messages and structured tool definitions; compatibility policy controls request fields and streaming behavior.",
             "next_stage": "LlmResponse.toolCalls",
         },
         {
@@ -572,10 +572,10 @@ def collect_call_hierarchy_rows() -> list[dict[str, str]]:
         {
             "flow": "provider_transport",
             "stage_order": "1",
-            "component": "QwenFunctionCallingTransport",
-            "source_file": str(CORE_SRC / "com/codepilot1c/core/provider/config/QwenFunctionCallingTransport.java"),
-            "role": "For Qwen-native providers, injects XML tool call examples into system message and sends structured tools API.",
-            "next_stage": "QwenContentToolCallParser/QwenStreamingToolCallParser",
+            "component": "DynamicLlmProvider/OpenAI-compatible transport",
+            "source_file": str(CORE_SRC / "com/codepilot1c/core/provider/config/DynamicLlmProvider.java"),
+            "role": "Builds the structured OpenAI-compatible request used by CodePilot backend and generic OpenAI endpoints; provider-neutral compatibility policy supplies request overrides.",
+            "next_stage": "OpenAiStreamingSession/ContentToolCallFallbackParser",
         },
     ]
 
