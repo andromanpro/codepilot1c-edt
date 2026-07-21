@@ -47,6 +47,7 @@ public class AgentProfileRegistry {
         AgentPromptTemplates.runStartupChecks();
         register(new BuildAgentProfile());
         register(new OrchestratorProfile());
+        register(new InitAgentProfile());
         register(new CodeBuildProfile());
         register(new MetadataBuildProfile());
         register(new QABuildProfile());

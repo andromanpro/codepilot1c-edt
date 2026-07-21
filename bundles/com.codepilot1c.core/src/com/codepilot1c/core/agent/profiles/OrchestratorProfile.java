@@ -30,7 +30,8 @@ public final class OrchestratorProfile implements AgentProfile {
             "grep", //$NON-NLS-1$
             "delegate_to_agent", //$NON-NLS-1$
             "task", //$NON-NLS-1$
-            "skill")); //$NON-NLS-1$
+            "skill", //$NON-NLS-1$
+            "discover_tools")); //$NON-NLS-1$
 
     @Override
     public String getId() {
@@ -61,7 +62,8 @@ public final class OrchestratorProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("delegate_to_agent").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("task").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("skill").forAllResources()); //$NON-NLS-1$
+                PermissionRule.allow("skill").forAllResources(), //$NON-NLS-1$
+                PermissionRule.allow("discover_tools").forAllResources()); //$NON-NLS-1$
     }
 
     @Override

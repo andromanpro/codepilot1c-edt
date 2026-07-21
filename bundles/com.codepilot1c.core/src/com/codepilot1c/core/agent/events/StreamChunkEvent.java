@@ -17,6 +17,7 @@ public class StreamChunkEvent extends AgentEvent {
     private final String content;
     private final boolean isComplete;
     private final String finishReason;
+    private final boolean reasoning;
 
     /**
      * Создает событие chunk'а.
@@ -27,21 +28,46 @@ public class StreamChunkEvent extends AgentEvent {
      * @param finishReason причина завершения (если isComplete=true)
      */
     public StreamChunkEvent(int step, String content, boolean isComplete, String finishReason) {
+        this(step, content, isComplete, finishReason, false);
+    }
+
+    /**
+     * Создает событие chunk'а с признаком reasoning.
+     *
+     * @param step текущий шаг
+     * @param content содержимое chunk'а
+     * @param isComplete завершен ли поток
+     * @param finishReason причина завершения (если isComplete=true)
+     * @param reasoning true если это chunk «размышлений» (reasoning_content), а не основного ответа
+     */
+    public StreamChunkEvent(int step, String content, boolean isComplete, String finishReason, boolean reasoning) {
         super(AgentState.RUNNING, step);
         this.content = content;
         this.isComplete = isComplete;
         this.finishReason = finishReason;
+        this.reasoning = reasoning;
     }
 
     /**
-     * Создает событие с частичным контентом.
+     * Создает событие с частичным контентом (основной ответ).
      *
      * @param step текущий шаг
      * @param content содержимое
      * @return событие
      */
     public static StreamChunkEvent partial(int step, String content) {
-        return new StreamChunkEvent(step, content, false, null);
+        return new StreamChunkEvent(step, content, false, null, false);
+    }
+
+    /**
+     * Создает событие с частичным reasoning-контентом («размышления»).
+     *
+     * @param step текущий шаг
+     * @param content содержимое reasoning
+     * @return событие
+     */
+    public static StreamChunkEvent partialReasoning(int step, String content) {
+        return new StreamChunkEvent(step, content, false, null, true);
     }
 
     /**
@@ -80,6 +106,15 @@ public class StreamChunkEvent extends AgentEvent {
      */
     public String getFinishReason() {
         return finishReason;
+    }
+
+    /**
+     * Является ли chunk «размышлением» (reasoning_content) в отличие от основного ответа.
+     *
+     * @return true если это reasoning-chunk
+     */
+    public boolean isReasoning() {
+        return reasoning;
     }
 
     /**

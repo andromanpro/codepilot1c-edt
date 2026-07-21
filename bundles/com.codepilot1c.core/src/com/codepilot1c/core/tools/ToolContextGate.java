@@ -37,7 +37,7 @@ public class ToolContextGate {
             "dcs_manage"); //$NON-NLS-1$
 
     private static final Set<String> EXTENSION_TOOLS = Set.of(
-            "extension_manage"); //$NON-NLS-1$
+            "extension_manage", "migrate_to_extension_native"); //$NON-NLS-1$ //$NON-NLS-2$
 
     private static final Set<String> EXTERNAL_TOOLS = Set.of(
             "external_manage"); //$NON-NLS-1$
@@ -45,7 +45,8 @@ public class ToolContextGate {
     private static final Set<String> QA_TOOLS_EXCLUDING_INIT = Set.of(
             "qa_inspect", "qa_run", //$NON-NLS-1$ //$NON-NLS-2$
             "qa_prepare_form_context", "qa_plan_scenario", //$NON-NLS-1$ //$NON-NLS-2$
-            "qa_validate_feature", "author_yaxunit_tests"); //$NON-NLS-1$ //$NON-NLS-2$
+            "qa_validate_feature", "author_yaxunit_tests", //$NON-NLS-1$ //$NON-NLS-2$
+            "run_yaxunit_tests", "debug_yaxunit_tests"); //$NON-NLS-1$ //$NON-NLS-2$
 
     private static final Set<String> EDT_PROJECT_TOOLS = Set.of(
             "edt_content_assist", "edt_find_references", "edt_metadata_details", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -107,8 +108,36 @@ public class ToolContextGate {
             return Set.of();
         }
 
-        if (projects == null || projects.length == 0) {
-            // No open projects — exclude all EDT-specific tools
+        boolean hasOpenProject = false;
+        boolean hasDcs = false;
+        boolean hasQaConfig = false;
+
+        for (IProject project : projects) {
+            if (!project.isOpen()) {
+                continue;
+            }
+            hasOpenProject = true;
+            // DCS detection: look for DataCompositionSchema in src/
+            if (!hasDcs) {
+                hasDcs = hasDcsSchema(project);
+            }
+            // QA config detection
+            if (!hasQaConfig) {
+                hasQaConfig = hasQaConfiguration(project);
+            }
+            // Early exit if all found
+            if (hasDcs && hasQaConfig) {
+                break;
+            }
+        }
+
+        return computeExcludedToolsForState(hasOpenProject, hasDcs, hasQaConfig);
+    }
+
+    static Set<String> computeExcludedToolsForState(boolean hasOpenProject, boolean hasDcs, boolean hasQaConfig) {
+        Set<String> excluded = new HashSet<>();
+        if (!hasOpenProject) {
+            // No open projects — exclude all EDT-specific tools.
             excluded.addAll(EDT_PROJECT_TOOLS);
             excluded.addAll(DCS_TOOLS);
             excluded.addAll(EXTENSION_TOOLS);
@@ -116,51 +145,13 @@ public class ToolContextGate {
             excluded.addAll(QA_TOOLS_EXCLUDING_INIT);
             return excluded;
         }
-
-        boolean hasDcs = false;
-        boolean hasExtension = false;
-        boolean hasExternal = false;
-        boolean hasQaConfig = false;
-
-        for (IProject project : projects) {
-            if (!project.isOpen()) {
-                continue;
-            }
-            // DCS detection: look for DataCompositionSchema in src/
-            if (!hasDcs) {
-                hasDcs = hasDcsSchema(project);
-            }
-            // Extension detection: check project nature or naming convention
-            if (!hasExtension) {
-                hasExtension = isExtensionProject(project);
-            }
-            // External reports/processing detection
-            if (!hasExternal) {
-                hasExternal = isExternalProject(project);
-            }
-            // QA config detection
-            if (!hasQaConfig) {
-                hasQaConfig = hasQaConfiguration(project);
-            }
-            // Early exit if all found
-            if (hasDcs && hasExtension && hasExternal && hasQaConfig) {
-                break;
-            }
-        }
-
-        if (!hasDcs) {
-            excluded.addAll(DCS_TOOLS);
-        }
-        if (!hasExtension) {
-            excluded.addAll(EXTENSION_TOOLS);
-        }
-        if (!hasExternal) {
-            excluded.addAll(EXTERNAL_TOOLS);
-        }
+        // dcs_manage is a bootstrap composite tool: create_schema must stay visible
+        // before an existing MainDataCompositionSchema.xml appears in the workspace.
+        // Command-specific validation inside dcs_manage reports missing owner/schema
+        // context for operations that actually require it.
         if (!hasQaConfig) {
             excluded.addAll(QA_TOOLS_EXCLUDING_INIT);
         }
-
         return excluded;
     }
 
@@ -193,20 +184,6 @@ public class ToolContextGate {
             }
         }
         return false;
-    }
-
-    private boolean isExtensionProject(IProject project) {
-        // Extension projects typically have a specific nature or contain
-        // Configuration.Extension.xml or similar markers
-        IFile extensionMarker = project.getFile("src/Configuration/Configuration.Extension.mdo"); //$NON-NLS-1$
-        return extensionMarker.exists();
-    }
-
-    private boolean isExternalProject(IProject project) {
-        // External report/processing projects have ExternalReport.mdo or ExternalDataProcessor.mdo
-        IFile reportMarker = project.getFile("src/ExternalReports/ExternalReport.mdo"); //$NON-NLS-1$
-        IFile procMarker = project.getFile("src/ExternalDataProcessors/ExternalDataProcessor.mdo"); //$NON-NLS-1$
-        return reportMarker.exists() || procMarker.exists();
     }
 
     private boolean hasQaConfiguration(IProject project) {

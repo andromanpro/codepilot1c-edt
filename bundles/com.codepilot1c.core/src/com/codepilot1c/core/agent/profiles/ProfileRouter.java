@@ -43,6 +43,24 @@ public final class ProfileRouter {
             "search", //$NON-NLS-1$
             "grep"); //$NON-NLS-1$
 
+    private static final Set<String> CODE_MD_KEYWORDS = Set.of(
+            "code.md", //$NON-NLS-1$
+            "codemd"); //$NON-NLS-1$
+
+    private static final Set<String> INIT_ACTION_KEYWORDS = Set.of(
+            "создай", //$NON-NLS-1$
+            "создать", //$NON-NLS-1$
+            "сгенерируй", //$NON-NLS-1$
+            "обнови", //$NON-NLS-1$
+            "обновить", //$NON-NLS-1$
+            "инициализ", //$NON-NLS-1$
+            "generate", //$NON-NLS-1$
+            "create", //$NON-NLS-1$
+            "update", //$NON-NLS-1$
+            "init", //$NON-NLS-1$
+            "initialize", //$NON-NLS-1$
+            "refresh"); //$NON-NLS-1$
+
     static {
         DOMAIN_KEYWORDS.put(CodeBuildProfile.ID, Set.of(
                 "bsl", //$NON-NLS-1$
@@ -59,6 +77,13 @@ public final class ProfileRouter {
                 "форма", //$NON-NLS-1$
                 "реквизит", //$NON-NLS-1$
                 "команда", //$NON-NLS-1$
+                "учет", //$NON-NLS-1$
+                "учёт", //$NON-NLS-1$
+                "товар", //$NON-NLS-1$
+                "склад", //$NON-NLS-1$
+                "номенклатур", //$NON-NLS-1$
+                "поступлен", //$NON-NLS-1$
+                "продаж", //$NON-NLS-1$
                 "metadata", //$NON-NLS-1$
                 "конфигурац")); //$NON-NLS-1$
         DOMAIN_KEYWORDS.put(QABuildProfile.ID, Set.of(
@@ -72,6 +97,9 @@ public final class ProfileRouter {
         DOMAIN_KEYWORDS.put(DCSBuildProfile.ID, Set.of(
                 "скд", //$NON-NLS-1$
                 "компоновк", //$NON-NLS-1$
+                "отчет", //$NON-NLS-1$
+                "отчёт", //$NON-NLS-1$
+                "остатк", //$NON-NLS-1$
                 "dataset", //$NON-NLS-1$
                 "schema", //$NON-NLS-1$
                 "набор данных")); //$NON-NLS-1$
@@ -79,9 +107,7 @@ public final class ProfileRouter {
                 "расширени", //$NON-NLS-1$
                 "extension", //$NON-NLS-1$
                 "внешн", //$NON-NLS-1$
-                "обработк", //$NON-NLS-1$
-                "отчет", //$NON-NLS-1$
-                "отчёт")); //$NON-NLS-1$
+                "обработк")); //$NON-NLS-1$
         DOMAIN_KEYWORDS.put(RecoveryProfile.ID, Set.of(
                 "диагност", //$NON-NLS-1$
                 "smoke", //$NON-NLS-1$
@@ -100,6 +126,10 @@ public final class ProfileRouter {
         String normalized = normalize(prompt);
         if (normalized.isEmpty()) {
             return CodeBuildProfile.ID;
+        }
+
+        if (containsAny(normalized, CODE_MD_KEYWORDS) && containsAny(normalized, INIT_ACTION_KEYWORDS)) {
+            return InitAgentProfile.ID;
         }
 
         Set<String> matchedProfiles = new LinkedHashSet<>();
@@ -145,6 +175,7 @@ public final class ProfileRouter {
         }
         return switch (normalized) {
             case "auto" -> "auto"; //$NON-NLS-1$ //$NON-NLS-2$
+            case "init", "code.md", "codemd", "инициализация" -> InitAgentProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             case "build", "разработка" -> BuildAgentProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$
             case "code", "bsl", "код" -> CodeBuildProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "metadata", "meta", "метаданные" -> MetadataBuildProfile.ID; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -162,6 +193,7 @@ public final class ProfileRouter {
     public Set<String> supportedDelegateTargets() {
         return Set.of(
                 "auto", //$NON-NLS-1$
+                InitAgentProfile.ID,
                 CodeBuildProfile.ID,
                 MetadataBuildProfile.ID,
                 QABuildProfile.ID,

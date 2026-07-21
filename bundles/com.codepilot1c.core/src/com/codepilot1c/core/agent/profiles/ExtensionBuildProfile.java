@@ -31,11 +31,14 @@ public class ExtensionBuildProfile implements AgentProfile {
             "read_file",
             "edit_file",
             "write_file",
+            "workspace_copy_transform",
+            "workspace_copy_transform_batch",
             "glob",
             "grep",
             "list_files",
             // Extension composite tool + smoke
             "extension_manage",
+            "migrate_to_extension_native",
             "edt_extension_smoke",
             // External composite tool + smoke
             "external_manage",
@@ -44,10 +47,14 @@ public class ExtensionBuildProfile implements AgentProfile {
             "scan_metadata_index",
             "edt_metadata_details",
             "get_diagnostics",
+            "get_bookmarks",
+            "get_tasks",
             // Meta
             "edt_diagnostics",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -80,21 +87,32 @@ public class ExtensionBuildProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(),
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("extension_manage").forAllResources(),
+                PermissionRule.allow("migrate_to_extension_native").forAllResources(),
                 PermissionRule.allow("edt_extension_smoke").forAllResources(),
                 PermissionRule.allow("external_manage").forAllResources(),
                 PermissionRule.allow("edt_external_smoke").forAllResources(),
                 PermissionRule.allow("scan_metadata_index").forAllResources(),
                 PermissionRule.allow("edt_metadata_details").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
+                PermissionRule.allow("get_bookmarks").forAllResources(),
+                PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")
                         .forAllResources(),
                 PermissionRule.ask("write_file")
                         .withDescription("Создание файлов")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform")
+                        .withDescription("Копирование workspace файла с заменами")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform_batch")
+                        .withDescription("Пакетное копирование workspace файлов с заменами")
                         .forAllResources(),
                 PermissionRule.ask("extension_manage")
                         .withDescription("Управление расширениями конфигурации")

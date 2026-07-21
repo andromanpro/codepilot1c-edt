@@ -29,6 +29,7 @@ import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.tools.bsl.*;
+import com.codepilot1c.core.tools.debug.*;
 import com.codepilot1c.core.tools.dcs.*;
 import com.codepilot1c.core.tools.diagnostics.*;
 import com.codepilot1c.core.tools.extension.*;
@@ -65,7 +66,6 @@ public class ToolRegistry {
     private final Gson gson = new Gson();
     private ToolArgumentParser argumentParser;
     private ToolExecutionService executionService;
-    private ProviderContextResolver providerContextResolver;
     private volatile ToolSurfaceAugmentor augmentor;
 
     private ToolRegistry() {
@@ -73,7 +73,6 @@ public class ToolRegistry {
         registerDefaultTools();
         augmentor = ToolSurfaceAugmentor.defaultAugmentor();
         argumentParser = new ToolArgumentParser();
-        providerContextResolver = new ProviderContextResolver();
         executionService = new ToolExecutionService(this);
         LOG.info("ToolRegistry initialized with %d tools", tools.size()); //$NON-NLS-1$
     }
@@ -96,6 +95,8 @@ public class ToolRegistry {
         register(new ListFilesTool());
         register(new EditFileTool());
         register(new WriteTool());
+        register(new WorkspaceCopyTransformTool());
+        register(new WorkspaceCopyTransformBatchTool());
         register(new GrepTool());
         register(new GlobTool());
         register(new WorkspaceImportProjectTool());
@@ -108,6 +109,34 @@ public class ToolRegistry {
         register(new EdtFindReferencesTool());
         register(new EdtMetadataDetailsTool());
         register(new ScanMetadataIndexTool());
+        register(new InspectRoleRightsTool());
+        register(new MutateRoleRightsTool());
+        register(new GetConfigurationPropertiesTool());
+        register(new GetProblemSummaryTool());
+        register(new GetTagsTool());
+        register(new GetObjectsByTagsTool());
+        register(new ListModulesTool());
+        register(new GetModuleStructureTool());
+        register(new SearchInCodeTool());
+        register(new GetMethodCallHierarchyTool());
+        register(new GoToDefinitionTool());
+        register(new GetSymbolInfoTool());
+        register(new GetBookmarksTool());
+        register(new GetTasksTool());
+
+        register(new com.codepilot1c.core.tools.profiling.StartProfilingTool());
+        register(new com.codepilot1c.core.tools.profiling.GetProfilingResultsTool());
+        register(new SetBreakpointTool());
+        register(new RemoveBreakpointTool());
+        register(new ListBreakpointsTool());
+        register(new WaitForBreakTool());
+        register(new GetVariablesTool());
+        register(new StepTool());
+        register(new ResumeTool());
+        register(new EvaluateExpressionTool());
+        register(new DebugStatusTool());
+        register(new RunYaxunitTestsTool());
+        register(new DebugYaxunitTestsTool());
         register(new EdtFieldTypeCandidatesTool());
         register(new GetPlatformDocumentationTool());
         register(new BslSymbolAtPositionTool());
@@ -118,6 +147,7 @@ public class ToolRegistry {
         register(new BslAnalyzeMethodTool());
         register(new BslModuleContextTool());
         register(new BslModuleExportsTool());
+        register(new ValidateQueryTool());
         register(new EdtValidateRequestTool());
         register(new CreateMetadataTool());
         register(new CreateFormTool());
@@ -132,7 +162,14 @@ public class ToolRegistry {
         register(new InspectTemplateTool());
         register(new YaxunitAuthoringTool());
         register(new EdtDiagnosticsTool());
+        register(new GetOneCProcessesTool());
+        register(new GetInfobaseLocksTool());
+        register(new GetStandaloneServerStatusTool());
+        register(new ResolveWebClientUrlTool());
+        register(new GetInfobaseCredentialsTool());
+        register(new TailEdtLogsTool());
         register(new ExtensionManageTool());
+        register(new MigrateToExtensionNativeTool());
         register(new EdtExtensionSmokeTool());
         register(new DcsManageTool());
         register(new ExternalManageTool());
@@ -299,7 +336,9 @@ public class ToolRegistry {
     }
 
     public ToolSurfaceContext createRuntimeSurfaceContext(AgentProfile profile) {
-        return providerContextResolver().createRuntimeSurfaceContext(profile);
+        return ToolSurfaceContext.builder()
+                .profile(profile != null ? profile : ToolSurfaceContext.defaultProfile())
+                .build();
     }
 
     public void setAugmentor(ToolSurfaceAugmentor augmentor) {
@@ -355,13 +394,6 @@ public class ToolRegistry {
             executionService = new ToolExecutionService(this);
         }
         return executionService;
-    }
-
-    private ProviderContextResolver providerContextResolver() {
-        if (providerContextResolver == null) {
-            providerContextResolver = new ProviderContextResolver();
-        }
-        return providerContextResolver;
     }
 
     private ToolArgumentParser argumentParser() {

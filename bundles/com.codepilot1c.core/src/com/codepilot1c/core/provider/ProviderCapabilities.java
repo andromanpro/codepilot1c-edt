@@ -9,50 +9,35 @@ package com.codepilot1c.core.provider;
 
 /**
  * Declares provider-specific runtime capabilities.
- *
- * <p>Extended with Qwen model family detection for CodePilot backend
- * to enable model-specific transport optimizations.</p>
  */
 public final class ProviderCapabilities {
-
-    /** Model family constants. */
-    public static final String FAMILY_QWEN_CODER = "qwen-coder"; //$NON-NLS-1$
-    public static final String FAMILY_QWEN_VL = "qwen-vl"; //$NON-NLS-1$
-    public static final String FAMILY_QWEN_GENERAL = "qwen-general"; //$NON-NLS-1$
-    public static final String FAMILY_KIMI = "kimi"; //$NON-NLS-1$
-    public static final String FAMILY_UNKNOWN = "unknown"; //$NON-NLS-1$
-
-    /** Default temperature for Qwen models (per Qwen Code reference implementation). */
-    public static final float QWEN_DEFAULT_TEMPERATURE = 0.3f;
 
     private static final ProviderCapabilities NONE = builder().build();
 
     private final boolean codePilotBackend;
-    private final boolean backendOptimizations;
     private final boolean promptCacheHeaders;
     private final boolean resolvedModel;
-    private final String resolvedModelFamily;
-    private final float defaultTemperature;
+    private final boolean textToolCallFallback;
     private final boolean nativeDeferredToolLoading;
     private final boolean imageInput;
     private final boolean documentInput;
     private final boolean attachmentMetadata;
     private final long maxAttachmentBytes;
     private final int maxAttachmentsPerMessage;
+    private final boolean streamUsage;
 
     private ProviderCapabilities(Builder builder) {
         this.codePilotBackend = builder.codePilotBackend;
-        this.backendOptimizations = builder.backendOptimizations;
         this.promptCacheHeaders = builder.promptCacheHeaders;
         this.resolvedModel = builder.resolvedModel;
-        this.resolvedModelFamily = builder.resolvedModelFamily;
-        this.defaultTemperature = builder.defaultTemperature;
+        this.textToolCallFallback = builder.textToolCallFallback;
         this.nativeDeferredToolLoading = builder.nativeDeferredToolLoading;
         this.imageInput = builder.imageInput;
         this.documentInput = builder.documentInput;
         this.attachmentMetadata = builder.attachmentMetadata;
         this.maxAttachmentBytes = builder.maxAttachmentBytes;
         this.maxAttachmentsPerMessage = builder.maxAttachmentsPerMessage;
+        this.streamUsage = builder.streamUsage;
     }
 
     public static ProviderCapabilities none() {
@@ -68,43 +53,13 @@ public final class ProviderCapabilities {
     }
 
     /**
-     * Returns {@code true} when the active provider is CodePilot backend
-     * routing to a Qwen model family. This gates all Qwen-specific
-     * transport optimizations (XML tool call priming, streaming repair, etc.).
-     *
-     * <p>Kimi/Moonshot models are NOT considered Qwen-native even when routed
-     * through CodePilot backend. They use standard OpenAI function-calling format
-     * and are confused by Qwen-specific XML tool call priming.</p>
-     */
-    public boolean isQwenNative() {
-        return codePilotBackend && resolvedModelFamily != null
-                && !FAMILY_UNKNOWN.equals(resolvedModelFamily)
-                && !FAMILY_KIMI.equals(resolvedModelFamily);
-    }
-
-    /**
-     * Returns {@code true} when the resolved model is from the Kimi/Moonshot family.
-     * Kimi models require special handling: they use standard OpenAI tool-calling
-     * format (not Qwen XML) but need {@code reasoning_content} preserved in conversation
-     * history for stable multi-turn tool usage.
-     */
-    public boolean isKimiNative() {
-        return codePilotBackend && FAMILY_KIMI.equals(resolvedModelFamily);
-    }
-
-    /**
      * Returns {@code true} when content-based tool call fallback should be enabled.
      *
-     * <p>This is broader than {@link #isQwenNative()} — it covers ALL CodePilot backend
-     * models that may emit tool calls as text content instead of structured API responses.
-     * Currently this includes Qwen (XML format) and Kimi/Moonshot (special token format).</p>
+     * <p>This covers providers that may emit tool calls as text content instead of structured API responses.
+     * Structured tool calls remain the primary path; text parsing is only a safety net.</p>
      */
-    public boolean needsContentToolCallFallback() {
-        return codePilotBackend;
-    }
-
-    public boolean supportsBackendOptimizations() {
-        return backendOptimizations;
+    public boolean supportsTextToolCallFallback() {
+        return textToolCallFallback;
     }
 
     public boolean supportsPromptCacheHeaders() {
@@ -113,24 +68,6 @@ public final class ProviderCapabilities {
 
     public boolean supportsResolvedModel() {
         return resolvedModel;
-    }
-
-    /**
-     * Returns the resolved model family string.
-     *
-     * @return one of {@link #FAMILY_QWEN_CODER}, {@link #FAMILY_QWEN_VL},
-     *         {@link #FAMILY_QWEN_GENERAL}, or {@link #FAMILY_UNKNOWN}
-     */
-    public String getResolvedModelFamily() {
-        return resolvedModelFamily != null ? resolvedModelFamily : FAMILY_UNKNOWN;
-    }
-
-    /**
-     * Returns the recommended default temperature for this provider/model.
-     * Qwen models default to {@value #QWEN_DEFAULT_TEMPERATURE}.
-     */
-    public float getDefaultTemperature() {
-        return defaultTemperature;
     }
 
     /**
@@ -146,7 +83,7 @@ public final class ProviderCapabilities {
     /**
      * Returns {@code true} if deferred tool loading via {@code discover_tools}
      * should be activated. This is the case when the provider does NOT support
-     * native deferred loading AND is using a CodePilot backend (Qwen models).
+     * native deferred loading AND is using a CodePilot backend.
      */
     public boolean shouldUseDeferredLoading() {
         return codePilotBackend && !nativeDeferredToolLoading;
@@ -173,34 +110,22 @@ public final class ProviderCapabilities {
     }
 
     /**
-     * Resolves the model family from a model name string.
+     * Returns {@code true} when the provider supports the OpenAI-compatible
+     * {@code stream_options: {include_usage: true}} request field and emits
+     * a terminal {@code usage} JSON object on streamed responses.
      *
-     * @param model the model name (e.g. "qwen3-coder", "qwen2.5-vl")
-     * @return the family constant
+     * <p>Gates real token-usage reporting for the streaming path. When
+     * {@code false}, callers fall back to local estimation.</p>
+     *
+     * <p>Defaults:</p>
+     * <ul>
+     *   <li>{@code true} for CodePilot backend (confirmed spec)</li>
+     *   <li>{@code false} for all other providers (generic OpenAI-compatible
+     *       gateways may silently ignore the field and never emit usage)</li>
+     * </ul>
      */
-    public static String resolveModelFamily(String model) {
-        if (model == null || model.isBlank()) {
-            return FAMILY_UNKNOWN;
-        }
-        String lower = model.toLowerCase(java.util.Locale.ROOT);
-        // Match kimi/moonshot models — must be checked BEFORE qwen patterns
-        // because CodePilot backend may route "auto" to kimi-k2.5
-        if (lower.startsWith("kimi") || lower.startsWith("moonshot")) { //$NON-NLS-1$ //$NON-NLS-2$
-            return FAMILY_KIMI;
-        }
-        // Match qwen*-coder or coder-model patterns
-        if (lower.matches("qwen[^-]*-coder.*") || lower.contains("coder-model")) { //$NON-NLS-1$ //$NON-NLS-2$
-            return FAMILY_QWEN_CODER;
-        }
-        // Match qwen*-vl patterns
-        if (lower.matches("qwen[^-]*-vl.*")) { //$NON-NLS-1$
-            return FAMILY_QWEN_VL;
-        }
-        // Match any qwen model
-        if (lower.startsWith("qwen")) { //$NON-NLS-1$
-            return FAMILY_QWEN_GENERAL;
-        }
-        return FAMILY_UNKNOWN;
+    public boolean supportsStreamUsage() {
+        return streamUsage;
     }
 
     /**
@@ -222,7 +147,14 @@ public final class ProviderCapabilities {
         if (lower.contains("vision") || lower.contains("vl") || lower.contains("image")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             return true;
         }
-        if (lower.startsWith("gpt-4o") || lower.startsWith("gpt-4.1") || lower.startsWith("o4")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        // OpenAI multimodal families: GPT-4o/4.1, GPT-5.x (incl. gpt-5.5), and the o1/o3/o4 reasoning models.
+        if (lower.startsWith("gpt-4o") || lower.startsWith("gpt-4.1") || lower.startsWith("gpt-5") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                || lower.startsWith("o4") || lower.startsWith("o3") || lower.startsWith("o1")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            return true;
+        }
+        // Anthropic Claude (3.x/4.x and Fable) are multimodal.
+        if (lower.startsWith("claude") || lower.contains("sonnet") || lower.contains("opus") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                || lower.contains("haiku") || lower.contains("fable")) { //$NON-NLS-1$ //$NON-NLS-2$
             return true;
         }
         if (lower.startsWith("gemini")) { //$NON-NLS-1$
@@ -231,7 +163,7 @@ public final class ProviderCapabilities {
         if (lower.startsWith("pixtral") || lower.startsWith("llava")) { //$NON-NLS-1$ //$NON-NLS-2$
             return true;
         }
-        if (lower.startsWith("qvq") || FAMILY_QWEN_VL.equals(resolveModelFamily(model))) { //$NON-NLS-1$
+        if (lower.startsWith("qvq")) { //$NON-NLS-1$
             return true;
         }
         return false;
@@ -239,25 +171,19 @@ public final class ProviderCapabilities {
 
     public static final class Builder {
         private boolean codePilotBackend;
-        private boolean backendOptimizations;
         private boolean promptCacheHeaders;
         private boolean resolvedModel;
-        private String resolvedModelFamily = FAMILY_UNKNOWN;
-        private float defaultTemperature = -1f; // -1 means "use request default"
+        private boolean textToolCallFallback;
         private boolean nativeDeferredToolLoading;
         private boolean imageInput;
         private boolean documentInput;
         private boolean attachmentMetadata;
         private long maxAttachmentBytes = 10L * 1024L * 1024L;
         private int maxAttachmentsPerMessage = 5;
+        private boolean streamUsage;
 
         public Builder codePilotBackend(boolean codePilotBackend) {
             this.codePilotBackend = codePilotBackend;
-            return this;
-        }
-
-        public Builder backendOptimizations(boolean backendOptimizations) {
-            this.backendOptimizations = backendOptimizations;
             return this;
         }
 
@@ -271,13 +197,8 @@ public final class ProviderCapabilities {
             return this;
         }
 
-        public Builder resolvedModelFamily(String resolvedModelFamily) {
-            this.resolvedModelFamily = resolvedModelFamily;
-            return this;
-        }
-
-        public Builder defaultTemperature(float defaultTemperature) {
-            this.defaultTemperature = defaultTemperature;
+        public Builder textToolCallFallback(boolean textToolCallFallback) {
+            this.textToolCallFallback = textToolCallFallback;
             return this;
         }
 
@@ -308,6 +229,11 @@ public final class ProviderCapabilities {
 
         public Builder maxAttachmentsPerMessage(int maxAttachmentsPerMessage) {
             this.maxAttachmentsPerMessage = maxAttachmentsPerMessage;
+            return this;
+        }
+
+        public Builder streamUsage(boolean streamUsage) {
+            this.streamUsage = streamUsage;
             return this;
         }
 

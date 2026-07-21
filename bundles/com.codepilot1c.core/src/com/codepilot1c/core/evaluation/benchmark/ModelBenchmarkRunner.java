@@ -35,7 +35,7 @@ import com.codepilot1c.core.tools.ToolRegistry;
  * Usage:
  * <pre>{@code
  * ModelBenchmarkRunner runner = new ModelBenchmarkRunner();
- * List<String> providerIds = List.of("qwen-coder", "claude-sonnet", "glm-5");
+ * List<String> providerIds = List.of("backend-coder", "claude-sonnet", "glm-5");
  * List<EvalScenario> scenarios = EvalScenario.loadSuite(suitePath);
  *
  * CompletableFuture<BenchmarkSuiteResult> future =

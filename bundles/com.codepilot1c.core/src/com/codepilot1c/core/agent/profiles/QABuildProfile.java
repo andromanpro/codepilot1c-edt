@@ -43,11 +43,28 @@ public class QABuildProfile implements AgentProfile {
             "qa_validate_feature",
             // YAxUnit
             "author_yaxunit_tests",
+            "run_yaxunit_tests",
+            "debug_yaxunit_tests",
+            "start_profiling",
+            "get_profiling_results",
+            "set_breakpoint",
+            "remove_breakpoint",
+            "list_breakpoints",
+            "wait_for_break",
+            "get_variables",
+            "step",
+            "resume",
+            "evaluate_expression",
+            "debug_status",
             // Smoke & validation (edt_diagnostics dispatches: metadata_smoke, analyze_error)
             "edt_diagnostics",
             "get_diagnostics",
+            "get_bookmarks",
+            "get_tasks",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -83,8 +100,13 @@ public class QABuildProfile implements AgentProfile {
                 PermissionRule.allow("qa_validate_feature").forAllResources(),
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
+                PermissionRule.allow("get_bookmarks").forAllResources(),
+                PermissionRule.allow("get_tasks").forAllResources(),
+                PermissionRule.allow("get_profiling_results").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")
@@ -106,7 +128,35 @@ public class QABuildProfile implements AgentProfile {
                         .forAllResources(),
                 PermissionRule.ask("author_yaxunit_tests")
                         .withDescription("Генерация/обновление автотестов YAxUnit")
-                        .forAllResources()
+                        .forAllResources(),
+                PermissionRule.ask("run_yaxunit_tests")
+                        .withDescription("Запуск автотестов YAxUnit")
+                        .forAllResources(),
+                PermissionRule.ask("debug_yaxunit_tests")
+                        .withDescription("Запуск автотестов YAxUnit в режиме отладки")
+                        .forAllResources(),
+                PermissionRule.ask("start_profiling")
+                        .withDescription("Запуск/остановка EDT profiling")
+                        .forAllResources(),
+                PermissionRule.ask("set_breakpoint")
+                        .withDescription("Установка точки останова EDT")
+                        .forAllResources(),
+                PermissionRule.ask("remove_breakpoint")
+                        .withDescription("Удаление точки останова EDT")
+                        .forAllResources(),
+                PermissionRule.allow("list_breakpoints").forAllResources(),
+                PermissionRule.allow("wait_for_break").forAllResources(),
+                PermissionRule.allow("get_variables").forAllResources(),
+                PermissionRule.ask("step")
+                        .withDescription("Шаг отладчика EDT")
+                        .forAllResources(),
+                PermissionRule.ask("resume")
+                        .withDescription("Продолжение выполнения debug target EDT")
+                        .forAllResources(),
+                PermissionRule.ask("evaluate_expression")
+                        .withDescription("Вычисление выражения в debug frame EDT")
+                        .forAllResources(),
+                PermissionRule.allow("debug_status").forAllResources()
         );
     }
 

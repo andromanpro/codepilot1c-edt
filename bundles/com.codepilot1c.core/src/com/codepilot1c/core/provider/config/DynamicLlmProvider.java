@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,6 +42,7 @@ import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderException;
 import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.provider.ProviderUtils;
+import com.codepilot1c.core.provider.codex.CodexProvider;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -69,9 +71,9 @@ public class DynamicLlmProvider implements ILlmProvider {
     private final LlmProviderConfig config;
     private final OpenAiModelCompatibilityPolicy openAiCompatibilityPolicy;
     private final OpenAiStreamingToolCallParser streamingToolCallParser;
-    private final QwenFunctionCallingTransport qwenTransport;
     private final ProviderHttpTransport httpTransport;
     private final Gson gson;
+    private final ILlmProvider codexDelegate;
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private CompletableFuture<?> currentRequest;
     private LlmRequest currentLlmRequest; // Store for tool support
@@ -83,18 +85,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         this.config = config;
         this.openAiCompatibilityPolicy = new OpenAiModelCompatibilityPolicy();
         this.gson = new Gson();
-
-        // Select parser based on provider capabilities:
-        // Qwen backend gets enhanced parser with DashScope quirk handling
-        ProviderCapabilities caps = ProviderUtils.capabilitiesFor(config);
-        if (caps.isQwenNative()) {
-            this.streamingToolCallParser = new QwenStreamingToolCallParser();
-            this.qwenTransport = new QwenFunctionCallingTransport(gson);
-            LOG.info("Qwen transport activated: family=%s", caps.getResolvedModelFamily()); //$NON-NLS-1$
-        } else {
-            this.streamingToolCallParser = new OpenAiStreamingToolCallParser();
-            this.qwenTransport = null;
-        }
+        this.streamingToolCallParser = new OpenAiStreamingToolCallParser();
 
         HttpClient client = HttpClient.newBuilder()
                 // vLLM/uvicorn deployments are commonly exposed over plain HTTP and can fail
@@ -104,6 +95,12 @@ public class DynamicLlmProvider implements ILlmProvider {
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
         this.httpTransport = new ProviderHttpTransport(client);
+
+        // OPENAI_CODEX uses the Responses API (different wire format and OAuth headers); route it
+        // to a dedicated provider instead of the chat/completions path implemented below.
+        this.codexDelegate = config.getType() == ProviderType.OPENAI_CODEX
+                ? new CodexProvider(config)
+                : null;
     }
 
     @Override
@@ -118,16 +115,25 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public boolean isConfigured() {
+        if (codexDelegate != null) {
+            return codexDelegate.isConfigured();
+        }
         return config.isConfigured();
     }
 
     @Override
     public boolean supportsStreaming() {
+        if (codexDelegate != null) {
+            return codexDelegate.supportsStreaming();
+        }
         return config.isStreamingEnabled();
     }
 
     @Override
     public ProviderCapabilities getCapabilities() {
+        if (codexDelegate != null) {
+            return codexDelegate.getCapabilities();
+        }
         return ProviderUtils.capabilitiesFor(config);
     }
 
@@ -140,6 +146,9 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public CompletableFuture<LlmResponse> complete(LlmRequest request) {
+        if (codexDelegate != null) {
+            return codexDelegate.complete(request);
+        }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
@@ -161,6 +170,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
+        if (codexDelegate != null) {
+            codexDelegate.streamComplete(request, consumer);
+            return;
+        }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
@@ -181,7 +194,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                         correlationId,
                         request.hasTools(),
                         streamingToolCallParser,
-                        getCapabilities().needsContentToolCallFallback() && request.hasTools())
+                        getCapabilities().supportsTextToolCallFallback() && request.hasTools())
                 : null;
         ProviderStreamProcessingSummary summary = openAiSession != null
                 ? openAiSession.getSummary()
@@ -233,13 +246,6 @@ public class DynamicLlmProvider implements ILlmProvider {
                 String completionFinishReason = openAiSession.completePendingToolCalls(consumer);
                 if (completionFinishReason != null) {
                     streamFinishReason[0] = completionFinishReason;
-                }
-                // Qwen finish_reason override: DashScope may report "stop" when tool calls are pending
-                if (streamingToolCallParser instanceof QwenStreamingToolCallParser) {
-                    QwenStreamingToolCallParser qwenParser = (QwenStreamingToolCallParser) streamingToolCallParser;
-                    if (qwenParser.shouldOverrideFinishReason(streamFinishReason[0])) {
-                        streamFinishReason[0] = LlmResponse.FINISH_REASON_TOOL_USE;
-                    }
                 }
             }
 
@@ -418,6 +424,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void cancel() {
+        if (codexDelegate != null) {
+            codexDelegate.cancel();
+            return;
+        }
         cancelled.set(true);
         if (currentRequest != null) {
             currentRequest.cancel(true);
@@ -426,6 +436,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void dispose() {
+        if (codexDelegate != null) {
+            codexDelegate.dispose();
+            return;
+        }
         cancel();
     }
 
@@ -572,7 +586,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                 response.getToolCalls().size(),
                 response.getFinishReason());
 
-        if (response.hasReasoning() && !cancelled.get()) {
+        if (response.hasReasoningField() && !cancelled.get()) {
             consumer.accept(LlmStreamChunk.reasoning(response.getReasoningContent()));
         }
         if (response.getContent() != null && !response.getContent().isEmpty() && !cancelled.get()) {
@@ -580,6 +594,9 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
         if (response.hasToolCalls() && !cancelled.get()) {
             consumer.accept(LlmStreamChunk.toolCalls(response.getToolCalls()));
+        }
+        if (response.getUsage() != null && !cancelled.get()) {
+            consumer.accept(LlmStreamChunk.usage(response.getUsage()));
         }
         if (!cancelled.get()) {
             consumer.accept(LlmStreamChunk.complete(normalizeFinishReason(response.getFinishReason())));
@@ -596,12 +613,6 @@ public class DynamicLlmProvider implements ILlmProvider {
             case OLLAMA:
                 return buildOllamaRequestBody(request, executionPlan.isStreaming());
             case CODEPILOT_BACKEND:
-                // Route through Qwen transport if available (CodePilot Account with Qwen model)
-                if (qwenTransport != null) {
-                    ProviderCapabilities caps = getCapabilities();
-                    return qwenTransport.buildRequestBody(request, executionPlan, config, caps);
-                }
-                // Fall through to standard OpenAI path if not Qwen native
                 return buildOpenAiRequestBody(request, executionPlan);
             case OPENAI_COMPATIBLE:
             default:
@@ -615,9 +626,19 @@ public class DynamicLlmProvider implements ILlmProvider {
     private String buildOpenAiRequestBody(LlmRequest request, ProviderExecutionPlan executionPlan) {
         JsonObject body = new JsonObject();
         body.addProperty("model", resolveModelName(request)); //$NON-NLS-1$
-        body.addProperty("max_tokens", request.getMaxTokens() > 0 ? request.getMaxTokens() : config.getMaxTokens()); //$NON-NLS-1$
+        body.addProperty(executionPlan.getMaxTokensParameterName(),
+                request.getMaxTokens() > 0 ? request.getMaxTokens() : config.getMaxTokens());
         body.addProperty("stream", executionPlan.isStreaming()); //$NON-NLS-1$
         ProviderCapabilities caps = getCapabilities();
+
+        // Request real token usage from streaming providers that support it
+        // (Plan 2.3). Only emit when both streaming AND capability are on —
+        // generic OpenAI gateways may reject unknown fields.
+        if (executionPlan.isStreaming() && caps.supportsStreamUsage()) {
+            JsonObject streamOptions = new JsonObject();
+            streamOptions.addProperty("include_usage", true); //$NON-NLS-1$
+            body.add("stream_options", streamOptions); //$NON-NLS-1$
+        }
 
         JsonArray messages = new JsonArray();
 
@@ -674,7 +695,7 @@ public class DynamicLlmProvider implements ILlmProvider {
             // Moonshot/Kimi API requires reasoning_content to be preserved in assistant messages
             // with tool calls. Without it, follow-up responses degrade to reasoning-only (contentChunks=0).
             // See: https://github.com/BerriAI/litellm/issues/21672
-            if (msg.hasReasoningContent()) {
+            if (msg.hasReasoningContentField()) {
                 msgObj.addProperty("reasoning_content", msg.getReasoningContent()); //$NON-NLS-1$
             }
 
@@ -695,6 +716,9 @@ public class DynamicLlmProvider implements ILlmProvider {
         } else {
             JsonElement content = ProviderMessageContentSerializer.toOpenAiContent(msg, caps);
             msgObj.add("content", content); //$NON-NLS-1$
+            if (msg.getRole() == LlmMessage.Role.ASSISTANT && msg.hasReasoningContentField()) {
+                msgObj.addProperty("reasoning_content", msg.getReasoningContent()); //$NON-NLS-1$
+            }
         }
 
         return msgObj;
@@ -992,7 +1016,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
 
         // Content tool call fallback: if no structured tool_calls were found but content
-        // or reasoning_content contains tool call markers (Qwen XML or Kimi special tokens),
+        // or reasoning_content contains text-form tool call markers,
         // extract them. This is a safety net for when the model emits tool calls as text
         // instead of using the structured API.
         // Check both content and reasoning_content — kimi-k2.5 may place tool calls in reasoning.
@@ -1001,9 +1025,9 @@ public class DynamicLlmProvider implements ILlmProvider {
             contentToCheck = reasoningContent;
         }
         if ((toolCalls == null || toolCalls.isEmpty())
-                && getCapabilities().needsContentToolCallFallback()
-                && QwenContentToolCallParser.hasToolCallMarkers(contentToCheck)) {
-            List<ToolCall> fallbackCalls = QwenContentToolCallParser.extractFromContent(contentToCheck);
+                && getCapabilities().supportsTextToolCallFallback()
+                && ContentToolCallFallbackParser.hasToolCallMarkers(contentToCheck)) {
+            List<ToolCall> fallbackCalls = ContentToolCallFallbackParser.extractFromContent(contentToCheck);
             if (!fallbackCalls.isEmpty()) {
                 LOG.info("Content fallback: extracted %d tool call(s) from %s", //$NON-NLS-1$
                         fallbackCalls.size(),
@@ -1012,7 +1036,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
                 // Strip tool call blocks from whichever field contained them
                 if (contentToCheck == content) {
-                    content = QwenContentToolCallParser.stripToolCallBlocks(content);
+                    content = ContentToolCallFallbackParser.stripToolCallBlocks(content);
                 }
                 // Don't strip reasoning_content — it should be preserved as-is for history
             }
@@ -1038,12 +1062,9 @@ public class DynamicLlmProvider implements ILlmProvider {
         if (usageJson == null) {
             return null;
         }
-        int promptTokens = getInt(usageJson, "prompt_tokens", 0); //$NON-NLS-1$
-        int completionTokens = getInt(usageJson, "completion_tokens", 0); //$NON-NLS-1$
-        int totalTokens = getInt(usageJson, "total_tokens", 0); //$NON-NLS-1$
-        JsonObject promptDetails = getObject(usageJson, "prompt_tokens_details"); //$NON-NLS-1$
-        int cachedPromptTokens = promptDetails != null ? getInt(promptDetails, "cached_tokens", 0) : 0; //$NON-NLS-1$
-        return new LlmResponse.Usage(promptTokens, cachedPromptTokens, completionTokens, totalTokens);
+        // Delegate to the shared parser so cache_read_input_tokens / cache_creation_input_tokens
+        // normalization is identical across the streaming and non-streaming paths.
+        return OpenAiUsageParser.parse(usageJson);
     }
 
     /**
@@ -1065,11 +1086,19 @@ public class DynamicLlmProvider implements ILlmProvider {
                 continue;
             }
             String name = getString(function, "name"); //$NON-NLS-1$
-            String arguments = getString(function, "arguments"); //$NON-NLS-1$
             if (name == null || name.isBlank()) {
                 continue;
             }
-            toolCalls.add(new ToolCall(id, name, arguments != null ? arguments : "{}")); //$NON-NLS-1$
+            Optional<ToolCallArguments.Normalized> arguments =
+                    ToolCallArguments.normalizeWithStatus(function.get("arguments")); //$NON-NLS-1$
+            if (arguments.isEmpty()) {
+                LOG.warn("Dropping tool call %s (%s): arguments is not a JSON object", id, name); //$NON-NLS-1$
+                continue;
+            }
+            if (arguments.get().repaired()) {
+                LOG.warn("Tool call %s (%s): arguments repaired from malformed payload", id, name); //$NON-NLS-1$
+            }
+            toolCalls.add(new ToolCall(id, name, arguments.get().json(), arguments.get().repaired()));
         }
         return toolCalls;
     }

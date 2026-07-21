@@ -8,16 +8,23 @@
 package com.codepilot1c.ui.views;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
 import org.eclipse.jface.dialogs.MessageDialog;
@@ -28,6 +35,9 @@ import org.eclipse.swt.dnd.FileTransfer;
 import org.eclipse.swt.dnd.ImageTransfer;
 import org.eclipse.swt.events.KeyAdapter;
 import org.eclipse.swt.events.KeyEvent;
+import org.eclipse.swt.events.MenuAdapter;
+import org.eclipse.swt.events.MenuEvent;
+import org.eclipse.swt.events.SelectionListener;
 import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.graphics.ImageLoader;
 import org.eclipse.swt.graphics.Point;
@@ -39,7 +49,13 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.FileDialog;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Menu;
+import org.eclipse.swt.widgets.MenuItem;
 import org.eclipse.swt.widgets.Text;
+import org.eclipse.ui.IMemento;
+import org.eclipse.ui.IViewSite;
+import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.part.ViewPart;
 
 import com.codepilot1c.core.diff.CodeDiffUtils;
@@ -59,16 +75,22 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.memory.project.ProjectMemoryContextService;
+import com.codepilot1c.core.memory.project.ProjectMemoryInitializationService;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.provider.ProviderCapabilities;
+import com.codepilot1c.core.remote.AgentSessionController;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.ui.ChatSystemPromptToolsSection;
 import com.codepilot1c.core.util.AttachmentTextExtractor;
 import com.codepilot1c.core.backend.BackendConfig;
 import com.codepilot1c.core.backend.BackendService;
+import com.codepilot1c.core.provider.config.LlmProviderConfig;
+import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
 import com.codepilot1c.core.provider.config.ProviderType;
 import com.codepilot1c.core.provider.config.ModelFetchService;
 import com.codepilot1c.core.provider.config.ModelFetchService.ModelInfo;
@@ -102,8 +124,20 @@ public class ChatView extends ViewPart {
 
     /** Whether to use Browser-based rendering for chat messages */
     private static final boolean USE_BROWSER_RENDERING = true;
-    private static final int MAX_TOOL_RESULT_PREVIEW_CHARS = 20_000;
     private static final String CORE_PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
+    private static final int CHAT_INPUT_HEIGHT = 92;
+    private static final int CHAT_ACTION_BUTTON_HEIGHT = 30;
+    private static final int CHAT_ICON_BUTTON_WIDTH = 36;
+    private static final int CHAT_NEW_CHAT_BUTTON_WIDTH = 42;
+    private static final int CHAT_COMPACT_BUTTON_WIDTH = 156;
+    private static final int CHAT_MODEL_BUTTON_WIDTH = 148;
+    private static final int CHAT_MODEL_LABEL_MAX_CHARS = 22;
+    private static final int CHAT_COMPOSER_MARGIN = 12;
+    private static final int CHAT_BUTTON_SPACING = 8;
+    private static final int MAX_TOOL_RESULT_HISTORY_CHARS = 40_000;
+    private static final ProjectMemoryContextService PROJECT_MEMORY_SERVICE = new ProjectMemoryContextService();
+    private static final ProjectMemoryInitializationService PROJECT_MEMORY_INIT_SERVICE =
+            new ProjectMemoryInitializationService();
 
     private ScrolledComposite scrolledComposite;
     private Composite messagesContainer;
@@ -113,8 +147,10 @@ public class ChatView extends ViewPart {
     private Button attachButton;
     private Button clearButton;
     private Button newChatButton;
+    private Button newWindowButton;
     private Button stopButton;
     private Button applyCodeButton;
+    private Button initCodeMdButton;
     private Button compactButton;
     private Button modelButton;
     private String overrideModelId;
@@ -124,8 +160,28 @@ public class ChatView extends ViewPart {
 
     private final List<LlmMessage> conversationHistory = new ArrayList<>();
     private final List<ChatMessageComposite> messageWidgets = new ArrayList<>();
+    /**
+     * Phase 0/2 (chat persistence / multi-chat): this view instance's own chat session — the persisted
+     * record of the conversation. Each ChatView instance owns a distinct session (multi-view). Saved on
+     * close ({@link #dispose()}) and at clear-chat; restored on open via memento or most-recent.
+     */
+    private Session session;
+
+    /** Memento key for the per-view session id (restored across EDT restart). */
+    private static final String MEMENTO_SESSION_ID = "sessionId"; //$NON-NLS-1$
+    /** Session id captured from the view memento in {@link #init}, restored in createPartControl. */
+    private String restoredSessionId;
     private final List<LlmAttachment> draftAttachments = new ArrayList<>();
+    /**
+     * Plan 1.2: detects tool-call repetition loops (e.g., grep x 42 with the
+     * same args). Reset at clear-chat and at each new user-message turn. On
+     * trip, a synthetic USER message is appended to {@link #conversationHistory}
+     * before dispatching the current tool call.
+     */
+    private final com.codepilot1c.core.agent.ToolRepetitionDetector toolRepetitionDetector =
+            new com.codepilot1c.core.agent.ToolRepetitionDetector();
     private CompletableFuture<?> currentRequest;
+    private boolean currentRequestUsesDesktopController;
     private boolean isProcessing = false;
     /** Skill names extracted from the latest user input via $mention syntax. */
     private List<String> currentRequestedSkills = List.of();
@@ -137,8 +193,40 @@ public class ChatView extends ViewPart {
     private StringBuffer streamingReasoning;
     /** Whether streaming is in progress */
     private volatile boolean isStreaming = false;
-    /** Whether tool calls were handled during current streaming session */
-    private volatile boolean streamingHandledToolCalls = false;
+    /**
+     * Single-flight guard: set exactly once per streaming round-trip when the first
+     * tool-calls chunk is observed. Any duplicate tool-calls chunk from the same
+     * stream is dropped, preventing parallel handleResponseWithTools recursion.
+     * Reset in startStreamingRequest before every new request.
+     */
+    private final AtomicBoolean streamingHandledToolCalls = new AtomicBoolean(false);
+
+    /**
+     * Turn-level single-flight guard (Plan 1.1). Set on entry of
+     * {@link #startStreamingRequest} and {@link #startNonStreamingRequest}, cleared
+     * at every outer termination point (thenAccept/exceptionally of the top-level
+     * CompletableFuture chain, stream-error handler, and {@link #stopGeneration}
+     * for user-cancel). NOT cleared inside {@link #handleResponseWithTools},
+     * {@link #processToolCalls}, or {@link #continueAfterToolCalls}, because those
+     * are part of the same logical turn and re-enter the top-level chain.
+     */
+    private final AtomicBoolean inflight = new AtomicBoolean(false);
+
+    /** Monotonic round-trip id used in single-flight WARN logs and tracing. */
+    private final java.util.concurrent.atomic.AtomicLong roundTripSeq = new java.util.concurrent.atomic.AtomicLong(0);
+    /** Current round-trip id assigned at request entry; used for diagnostic logging. */
+    private volatile long currentRoundTripId = 0;
+
+    /**
+     * Double-count guard for Plan 2.3 (real stream usage). Reset at round-trip
+     * start (same place as {@link #inflight} CAS); set by the first path that
+     * registers usage — either the terminal {@code stream_options.include_usage}
+     * chunk or the {@link #streamToResponse} / fallback estimator path. The
+     * {@link #registerUsage(LlmResponse)} call-sites that pass an estimated
+     * usage are gated on this flag so a single round-trip contributes real
+     * usage only once.
+     */
+    private volatile boolean usageRegisteredForThisRoundTrip = false;
 
     /** Whether to show diff preview before applying file changes */
     private boolean previewModeEnabled = false;
@@ -149,6 +237,15 @@ public class ChatView extends ViewPart {
     private long cachedInputTokensTotal = 0;
     private long outputTokensTotal = 0;
     private long totalTokensTotal = 0;
+    /**
+     * Count of accepted top-level round-trips in the current chat session
+     * (Plan 2.4). Incremented exactly once per round-trip at the point where
+     * the {@link #inflight} CAS succeeds in the streaming or non-streaming
+     * request entry, and reset to 0 by {@link #resetTokenUsage()} on new chat.
+     * Rendered in the compact footer via
+     * {@code com.codepilot1c.core.ui.TokenFooterRenderer}.
+     */
+    private int requestCount = 0;
     private long lastAutoCompactAtMs = 0;
     private LlmRequest currentStreamingRequest;
 
@@ -163,17 +260,40 @@ public class ChatView extends ViewPart {
     private static final int FILE_PREVIEW_CHAR_LIMIT = 4000;
 
     @Override
+    public void init(IViewSite site, IMemento memento) throws PartInitException {
+        super.init(site, memento);
+        // Capture the session id Eclipse saved for this view instance (multi-view restore).
+        if (memento != null) {
+            restoredSessionId = memento.getString(MEMENTO_SESSION_ID);
+        }
+    }
+
+    @Override
+    public void saveState(IMemento memento) {
+        super.saveState(memento);
+        // Persist this view's session id so Eclipse restores the exact chat on restart.
+        if (session != null && memento != null) {
+            memento.putString(MEMENTO_SESSION_ID, session.getId());
+        }
+    }
+
+    @Override
     public void createPartControl(Composite parent) {
         VibeTheme theme = ThemeManager.getInstance().getTheme();
 
         Composite container = new Composite(parent, SWT.NONE);
-        container.setLayout(new GridLayout(1, false));
+        GridLayout containerLayout = new GridLayout(1, false);
+        containerLayout.marginWidth = 0;
+        containerLayout.marginHeight = 0;
+        containerLayout.verticalSpacing = 0;
+        container.setLayout(containerLayout);
         container.setBackground(theme.getBackground());
 
         createChatArea(container);
         createInputArea(container);
 
-        appendSystemMessage(Messages.ChatView_WelcomeMessage);
+        // Phase 0: restore the last chat (persistence) or show the welcome message.
+        restoreLastSessionOrWelcome();
     }
 
     private void createChatArea(Composite parent) {
@@ -259,9 +379,9 @@ public class ChatView extends ViewPart {
         inputArea.setBackground(theme.getSurface());
         inputArea.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
         GridLayout inputAreaLayout = new GridLayout(1, false);
-        inputAreaLayout.marginWidth = theme.getMargin();
-        inputAreaLayout.marginHeight = theme.getMargin();
-        inputAreaLayout.verticalSpacing = theme.getMargin();
+        inputAreaLayout.marginWidth = CHAT_COMPOSER_MARGIN;
+        inputAreaLayout.marginHeight = 10;
+        inputAreaLayout.verticalSpacing = 8;
         inputArea.setLayout(inputAreaLayout);
 
         // Input field - full width
@@ -270,7 +390,7 @@ public class ChatView extends ViewPart {
         inputField.setForeground(theme.getText());
         inputField.setFont(theme.getFont());
         GridData inputData = new GridData(SWT.FILL, SWT.FILL, true, false);
-        inputData.heightHint = 80;
+        inputData.heightHint = CHAT_INPUT_HEIGHT;
         inputField.setLayoutData(inputData);
         inputField.setMessage(Messages.ChatView_InputPlaceholder);
 
@@ -296,6 +416,8 @@ public class ChatView extends ViewPart {
             }
         });
 
+        installInputContextMenu();
+
         attachmentPreviewArea = new Composite(inputArea, SWT.NONE);
         attachmentPreviewArea.setBackground(inputArea.getBackground());
         attachmentPreviewArea.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
@@ -311,51 +433,35 @@ public class ChatView extends ViewPart {
         Composite buttonBar = new Composite(inputArea, SWT.NONE);
         buttonBar.setBackground(inputArea.getBackground());
         buttonBar.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
-        GridLayout buttonLayout = new GridLayout(8, false);
+        GridLayout buttonLayout = new GridLayout(10, false);
         buttonLayout.marginWidth = 0;
         buttonLayout.marginHeight = 0;
-        buttonLayout.horizontalSpacing = 4; // Compact spacing
+        buttonLayout.horizontalSpacing = CHAT_BUTTON_SPACING;
         buttonBar.setLayout(buttonLayout);
 
-        attachButton = new Button(buttonBar, SWT.PUSH);
-        attachButton.setText("+"); //$NON-NLS-1$
-        attachButton.setToolTipText(Messages.ChatView_AttachButton);
-        attachButton.setFont(theme.getFont());
-        GridData attachData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        attachData.widthHint = 36;
-        attachData.heightHint = 28;
-        attachButton.setLayoutData(attachData);
+        attachButton = createChatActionButton(buttonBar, "+", Messages.ChatView_AttachButton, //$NON-NLS-1$
+                CHAT_ICON_BUTTON_WIDTH);
         attachButton.addListener(SWT.Selection, e -> openAttachmentDialog());
 
         // Send button with icon
-        sendButton = new Button(buttonBar, SWT.PUSH);
-        sendButton.setText("\u27A4"); // ➤ send icon //$NON-NLS-1$
-        sendButton.setToolTipText(Messages.ChatView_SendButton + " (Enter)"); //$NON-NLS-1$
-        sendButton.setFont(theme.getFont());
-        GridData sendData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        sendData.widthHint = 36;
-        sendData.heightHint = 28;
-        sendButton.setLayoutData(sendData);
+        sendButton = createChatActionButton(buttonBar, "\u27A4", //$NON-NLS-1$
+                Messages.ChatView_SendButton + " (Enter)", CHAT_ICON_BUTTON_WIDTH); //$NON-NLS-1$
         sendButton.addListener(SWT.Selection, e -> sendMessage());
 
+        initCodeMdButton = createChatActionButton(buttonBar, "", //$NON-NLS-1$
+                Messages.ChatView_CodeMdNoProjectTooltip, SWT.DEFAULT);
+        initCodeMdButton.addListener(SWT.Selection, e -> runCodeMdInitialization());
+        updateInitCodeMdButton();
+
         // Apply code button with icon
-        applyCodeButton = new Button(buttonBar, SWT.PUSH);
-        applyCodeButton.setText("\u2913"); // ⤓ apply icon //$NON-NLS-1$
-        applyCodeButton.setToolTipText(Messages.ChatView_ApplyCodeTooltip);
-        applyCodeButton.setFont(theme.getFont());
+        applyCodeButton = createChatActionButton(buttonBar, "\u2913", //$NON-NLS-1$
+                Messages.ChatView_ApplyCodeTooltip, CHAT_ICON_BUTTON_WIDTH);
         applyCodeButton.setEnabled(false);
-        GridData applyData = new GridData(SWT.LEFT, SWT.CENTER, false, false);
-        applyData.widthHint = 36;
-        applyData.heightHint = 28;
-        applyCodeButton.setLayoutData(applyData);
         applyCodeButton.addListener(SWT.Selection, e -> applyCodeToEditor());
 
         // Manual context compaction button
-        compactButton = new Button(buttonBar, SWT.PUSH);
-        compactButton.setText(Messages.ChatView_CompactContextButton);
-        compactButton.setToolTipText(Messages.ChatView_CompactContextTooltip);
-        compactButton.setFont(theme.getFont());
-        compactButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        compactButton = createChatActionButton(buttonBar, Messages.ChatView_CompactContextButton,
+                Messages.ChatView_CompactContextTooltip, CHAT_COMPACT_BUTTON_WIDTH);
         compactButton.addListener(SWT.Selection, e -> {
             if (!compactConversationHistory(false)) {
                 appendSystemMessage(Messages.ChatView_ContextCompactedSkippedNotice);
@@ -363,11 +469,8 @@ public class ChatView extends ViewPart {
         });
 
         // Model selector button — only visible when CodePilot is active
-        modelButton = new Button(buttonBar, SWT.PUSH);
-        modelButton.setText(Messages.ChatView_ModelButton);
-        modelButton.setToolTipText(Messages.ChatView_ModelButtonTooltip);
-        modelButton.setFont(theme.getFont());
-        modelButton.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+        modelButton = createChatActionButton(buttonBar, Messages.ChatView_ModelButton,
+                Messages.ChatView_ModelButtonTooltip, CHAT_MODEL_BUTTON_WIDTH);
         modelButton.addListener(SWT.Selection, e -> openModelSelectionDialog());
         updateModelButtonVisibility();
 
@@ -387,42 +490,49 @@ public class ChatView extends ViewPart {
         spacer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
         // Stop button with icon
-        stopButton = new Button(buttonBar, SWT.PUSH);
-        stopButton.setText("\u25A0"); // ■ stop icon //$NON-NLS-1$
-        stopButton.setToolTipText(Messages.ChatView_StopButton);
-        stopButton.setFont(theme.getFont());
+        stopButton = createChatActionButton(buttonBar, "\u25A0", //$NON-NLS-1$
+                Messages.ChatView_StopButton, CHAT_ICON_BUTTON_WIDTH);
         stopButton.setEnabled(false);
-        GridData stopData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        stopData.widthHint = 36;
-        stopData.heightHint = 28;
-        stopButton.setLayoutData(stopData);
+        ((GridData) stopButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
         stopButton.addListener(SWT.Selection, e -> stopGeneration());
 
         // New Chat button — prominent action to start fresh conversation
-        newChatButton = new Button(buttonBar, SWT.PUSH);
-        newChatButton.setText("\uD83D\uDCC4+"); // 📄+ new chat icon //$NON-NLS-1$
-        newChatButton.setToolTipText(Messages.ChatView_NewChatTooltip);
-        newChatButton.setFont(theme.getFont());
-        GridData newChatData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        newChatData.widthHint = 42;
-        newChatData.heightHint = 28;
-        newChatButton.setLayoutData(newChatData);
+        newChatButton = createChatActionButton(buttonBar, "\uD83D\uDCC4+", //$NON-NLS-1$
+                Messages.ChatView_NewChatTooltip, CHAT_NEW_CHAT_BUTTON_WIDTH);
+        ((GridData) newChatButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
         newChatButton.addListener(SWT.Selection, e -> confirmAndClearChat());
 
+        // New Window button — open another chat in parallel (multi-view).
+        newWindowButton = createChatActionButton(buttonBar, "➕", //$NON-NLS-1$
+                Messages.ChatView_NewChatTooltip, CHAT_ICON_BUTTON_WIDTH);
+        ((GridData) newWindowButton.getLayoutData()).horizontalAlignment = SWT.RIGHT;
+        newWindowButton.addListener(SWT.Selection, e -> openNewChatWindow());
+
         // Clear button with icon (legacy, kept for backward compat)
-        clearButton = new Button(buttonBar, SWT.PUSH);
-        clearButton.setText("\uD83D\uDDD1"); // 🗑 trash icon //$NON-NLS-1$
-        clearButton.setToolTipText(Messages.ChatView_ClearButton);
-        clearButton.setFont(theme.getFont());
+        clearButton = createChatActionButton(buttonBar, "\uD83D\uDDD1", //$NON-NLS-1$
+                Messages.ChatView_ClearButton, CHAT_ICON_BUTTON_WIDTH);
         clearButton.setVisible(false); // Hidden: replaced by newChatButton
-        GridData clearData = new GridData(SWT.RIGHT, SWT.CENTER, false, false);
-        clearData.widthHint = 36;
-        clearData.heightHint = 28;
+        GridData clearData = (GridData) clearButton.getLayoutData();
+        clearData.horizontalAlignment = SWT.RIGHT;
         clearData.exclude = true;
-        clearButton.setLayoutData(clearData);
         clearButton.addListener(SWT.Selection, e -> clearChat());
 
         refreshAttachmentPreview();
+    }
+
+    private Button createChatActionButton(Composite parent, String text, String tooltip, int widthHint) {
+        VibeTheme theme = ThemeManager.getInstance().getTheme();
+        Button button = new Button(parent, SWT.PUSH);
+        button.setText(text);
+        button.setToolTipText(tooltip);
+        button.setFont(theme.getFont());
+        GridData data = new GridData(SWT.LEFT, SWT.CENTER, false, false);
+        if (widthHint != SWT.DEFAULT) {
+            data.widthHint = widthHint;
+        }
+        data.heightHint = CHAT_ACTION_BUTTON_HEIGHT;
+        button.setLayoutData(data);
+        return button;
     }
 
     private void updateScrollSize() {
@@ -465,6 +575,55 @@ public class ChatView extends ViewPart {
         addDraftAttachments(attachments);
     }
 
+    /**
+     * Installs an explicit Cut/Copy/Paste/Select-All context menu on the input field.
+     *
+     * <p>Without it the native control menu is used, which on macOS surfaces only the
+     * system Writing Tools and omits a usable "Paste" entry. The Paste action routes
+     * through {@link #handleClipboardPaste()} first so an image/file on the clipboard
+     * becomes an attachment; otherwise it falls back to the native text paste.</p>
+     */
+    private void installInputContextMenu() {
+        if (inputField == null || inputField.isDisposed()) {
+            return;
+        }
+        Menu menu = new Menu(inputField);
+
+        MenuItem cut = new MenuItem(menu, SWT.PUSH);
+        cut.setText("Вырезать"); //$NON-NLS-1$
+        cut.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.cut()));
+
+        MenuItem copy = new MenuItem(menu, SWT.PUSH);
+        copy.setText("Копировать"); //$NON-NLS-1$
+        copy.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.copy()));
+
+        MenuItem paste = new MenuItem(menu, SWT.PUSH);
+        paste.setText("Вставить"); //$NON-NLS-1$
+        paste.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> {
+            if (!handleClipboardPaste()) {
+                inputField.paste();
+            }
+        }));
+
+        new MenuItem(menu, SWT.SEPARATOR);
+
+        MenuItem selectAll = new MenuItem(menu, SWT.PUSH);
+        selectAll.setText("Выделить всё"); //$NON-NLS-1$
+        selectAll.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> inputField.selectAll()));
+
+        menu.addMenuListener(new MenuAdapter() {
+            @Override
+            public void menuShown(MenuEvent e) {
+                boolean hasSelection = inputField.getSelectionCount() > 0;
+                cut.setEnabled(hasSelection);
+                copy.setEnabled(hasSelection);
+                selectAll.setEnabled(inputField.getCharCount() > 0);
+            }
+        });
+
+        inputField.setMenu(menu);
+    }
+
     private boolean handleClipboardPaste() {
         Clipboard clipboard = new Clipboard(getDisplay());
         try {
@@ -489,9 +648,115 @@ public class ChatView extends ViewPart {
                     return true;
                 }
             }
+
+            // macOS: SWT ImageTransfer does not read screenshots from NSPasteboard (TIFF/PNG),
+            // so the branch above returns nothing. Fall back to an isolated osascript subprocess
+            // that writes the clipboard image to a PNG file (no in-process AWT, safe under
+            // -XstartOnFirstThread).
+            Path macImage = tryReadMacClipboardImage();
+            if (macImage != null) {
+                LlmAttachment attachment = createAttachmentFromPath(macImage);
+                if (attachment != null) {
+                    addDraftAttachments(List.of(attachment));
+                    return true;
+                }
+            }
             return false;
         } finally {
             clipboard.dispose();
+        }
+    }
+
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    /**
+     * Reads an image from the macOS clipboard via {@code osascript}, writing it to a PNG file.
+     * SWT's Cocoa {@code ImageTransfer} does not return screenshots placed on the pasteboard,
+     * so this isolated-subprocess fallback handles the common "screenshot to clipboard" case
+     * without initializing AWT in-process (which is unsafe under {@code -XstartOnFirstThread}).
+     *
+     * @return path to a PNG file, or {@code null} when no clipboard image is available
+     */
+    private Path tryReadMacClipboardImage() {
+        if (!isMac()) {
+            return null;
+        }
+        try {
+            Path cacheDir = getAttachmentCacheDir();
+            Files.createDirectories(cacheDir);
+            long stamp = System.currentTimeMillis();
+            Path png = cacheDir.resolve("clipboard-" + stamp + ".png"); //$NON-NLS-1$ //$NON-NLS-2$
+
+            // Preferred path: coerce the clipboard image directly to PNG.
+            String pngScript = "set theFile to (POSIX file \"" + png + "\")\n" //$NON-NLS-1$ //$NON-NLS-2$
+                    + "set theData to (the clipboard as «class PNGf»)\n" //$NON-NLS-1$
+                    + "set fh to open for access theFile with write permission\n" //$NON-NLS-1$
+                    + "set eof fh to 0\n" //$NON-NLS-1$
+                    + "write theData to fh\n" //$NON-NLS-1$
+                    + "close access fh"; //$NON-NLS-1$
+            if (runProcess(new ProcessBuilder("/usr/bin/osascript", "-e", pngScript)) && isPng(png)) { //$NON-NLS-1$ //$NON-NLS-2$
+                return png;
+            }
+            Files.deleteIfExists(png);
+
+            // Fallback: screenshots live on the pasteboard as TIFF; grab TIFF then convert via sips.
+            Path tiff = cacheDir.resolve("clipboard-" + stamp + ".tiff"); //$NON-NLS-1$ //$NON-NLS-2$
+            String tiffScript = "set theFile to (POSIX file \"" + tiff + "\")\n" //$NON-NLS-1$ //$NON-NLS-2$
+                    + "set theData to (the clipboard as TIFF picture)\n" //$NON-NLS-1$
+                    + "set fh to open for access theFile with write permission\n" //$NON-NLS-1$
+                    + "set eof fh to 0\n" //$NON-NLS-1$
+                    + "write theData to fh\n" //$NON-NLS-1$
+                    + "close access fh"; //$NON-NLS-1$
+            if (runProcess(new ProcessBuilder("/usr/bin/osascript", "-e", tiffScript)) //$NON-NLS-1$ //$NON-NLS-2$
+                    && Files.exists(tiff) && Files.size(tiff) > 0) {
+                boolean converted = runProcess(new ProcessBuilder(
+                        "/usr/bin/sips", "-s", "format", "png", tiff.toString(), "--out", png.toString())); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                Files.deleteIfExists(tiff);
+                if (converted && isPng(png)) {
+                    return png;
+                }
+                Files.deleteIfExists(png);
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.debug("macOS clipboard image fallback failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return null;
+    }
+
+    private boolean runProcess(ProcessBuilder builder) {
+        try {
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
+        } catch (IOException e) {
+            LOG.debug("Clipboard subprocess failed: %s", e.getMessage()); //$NON-NLS-1$
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static boolean isPng(Path file) {
+        try {
+            if (!Files.exists(file) || Files.size(file) < 8) {
+                return false;
+            }
+            byte[] header = new byte[8];
+            try (InputStream in = Files.newInputStream(file)) {
+                if (in.read(header) != header.length) {
+                    return false;
+                }
+            }
+            return (header[0] & 0xFF) == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G';
+        } catch (IOException e) {
+            return false;
         }
     }
 
@@ -736,7 +1001,229 @@ public class ChatView extends ViewPart {
         // No automatic context preparation: send the user message as-is.
         setProcessing(true, "Отправка запроса..."); //$NON-NLS-1$
         conversationHistory.add(buildUserMessage(userInput, outgoingAttachments));
+        // Plan 1.2: a new user turn is a natural reset point for the repetition
+        // detector — whatever the user asks next is a fresh intent.
+        toolRepetitionDetector.resetForNewTurn();
         startConversationLoop(provider);
+    }
+
+    private void runCodeMdInitialization() {
+        if (isProcessing) {
+            return;
+        }
+        IProject project = resolveCodeMdProject();
+        if (project == null) {
+            updateInitCodeMdButton();
+            return;
+        }
+        boolean updateExisting = hasCodeMd(project);
+        bindCurrentSessionToProject(project);
+        String codeMdToolPath = resolveCodeMdToolPath(project, updateExisting);
+        if (!inputField.getText().trim().isEmpty() || !draftAttachments.isEmpty()) {
+            boolean confirmed = MessageDialog.openConfirm(
+                    getSite().getShell(),
+                    Messages.ChatView_InitCodeMdConfirmTitle,
+                    updateExisting
+                            ? Messages.ChatView_UpdateCodeMdConfirmMessage
+                            : Messages.ChatView_CreateCodeMdConfirmMessage);
+            if (!confirmed) {
+                return;
+            }
+            draftAttachments.clear();
+            refreshAttachmentPreview();
+        }
+        IPath location = project.getLocation();
+        if (location == null) {
+            appendSystemMessage(Messages.CodeMdPreferencePage_NoProjectLocation);
+            updateInitCodeMdButton();
+            return;
+        }
+        ProjectMemoryInitializationService.Request request = new ProjectMemoryInitializationService.Request(
+                updateExisting
+                        ? ProjectMemoryInitializationService.Mode.UPDATE
+                        : ProjectMemoryInitializationService.Mode.CREATE,
+                Path.of(location.toOSString()),
+                project.getName(),
+                codeMdToolPath);
+        String startedMessage = updateExisting
+                ? Messages.ChatView_UpdateCodeMdStarted
+                : Messages.ChatView_CreateCodeMdStarted;
+        appendSystemMessage(startedMessage);
+        setProcessing(true, updateExisting
+                ? Messages.ChatView_UpdateCodeMdProcessingStage
+                : Messages.ChatView_CreateCodeMdProcessingStage);
+
+        CompletableFuture<ProjectMemoryInitializationService.Result> initRequest =
+                PROJECT_MEMORY_INIT_SERVICE.initialize(request);
+        currentRequest = initRequest;
+        currentRequestUsesDesktopController = true;
+        Display display = getDisplay();
+        initRequest.whenComplete((result, error) -> {
+            if (display == null || display.isDisposed()) {
+                return;
+            }
+            display.asyncExec(() -> {
+                if (isDisposed()) {
+                    return;
+                }
+                if (currentRequest == initRequest) {
+                    currentRequest = null;
+                    currentRequestUsesDesktopController = false;
+                }
+                setProcessing(false);
+                updateInitCodeMdButton();
+                appendSystemMessage(formatCodeMdInitializationResult(result, error));
+            });
+        });
+    }
+
+    private String formatCodeMdInitializationResult(ProjectMemoryInitializationService.Result result, Throwable error) {
+        if (error != null) {
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, error.getMessage());
+        }
+        if (result == null) {
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, "empty result"); //$NON-NLS-1$
+        }
+        switch (result.getStatus()) {
+        case SUCCESS:
+            return MessageFormat.format(Messages.ChatView_CodeMdInitSucceeded, sourcePathLabel(result.getSourcePath()));
+        case PROVIDER_UNAVAILABLE:
+            return Messages.ChatView_CodeMdInitProviderUnavailable;
+        case AGENT_BUSY:
+            return Messages.ChatView_CodeMdInitBusy;
+        case CODE_MD_NOT_WRITTEN:
+            return Messages.ChatView_CodeMdInitMissingFile;
+        case AGENT_FAILED:
+        default:
+            return MessageFormat.format(Messages.ChatView_CodeMdInitFailed, result.getMessage());
+        }
+    }
+
+    private String sourcePathLabel(Path sourcePath) {
+        return sourcePath != null ? sourcePath.toString() : ProjectMemoryContextService.CANONICAL_FILE_NAME;
+    }
+
+    private void updateInitCodeMdButton() {
+        if (initCodeMdButton == null || initCodeMdButton.isDisposed()) {
+            return;
+        }
+
+        IProject project = resolveCodeMdProject();
+        boolean hasProject = project != null;
+        boolean updateExisting = hasProject && hasCodeMd(project);
+        initCodeMdButton.setText(updateExisting
+                ? Messages.ChatView_UpdateCodeMdButton
+                : Messages.ChatView_CreateCodeMdButton);
+        initCodeMdButton.setToolTipText(hasProject
+                ? (updateExisting
+                        ? Messages.ChatView_UpdateCodeMdTooltip
+                        : Messages.ChatView_CreateCodeMdTooltip)
+                : Messages.ChatView_CodeMdNoProjectTooltip);
+        initCodeMdButton.setEnabled(!isProcessing && hasProject);
+        if (initCodeMdButton.getParent() != null && !initCodeMdButton.getParent().isDisposed()) {
+            initCodeMdButton.getParent().layout(true, true);
+        }
+    }
+
+    private IProject resolveCodeMdProject() {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            IProject project = SessionManager.getInstance().findProjectByPath(
+                    session != null ? session.getProjectPath() : null);
+            if (isOpenProject(project)) {
+                return project;
+            }
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve Code.md project from session: %s", e.getMessage()); //$NON-NLS-1$
+        }
+
+        try {
+            for (IProject project : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
+                if (isOpenProject(project)) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve Code.md project from workspace: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return null;
+    }
+
+    private boolean isOpenProject(IProject project) {
+        return project != null && project.exists() && project.isOpen();
+    }
+
+    private void bindCurrentSessionToProject(IProject project) {
+        try {
+            SessionManager manager = SessionManager.getInstance();
+            Session session = manager.getOrCreateCurrentSession();
+            manager.bindSessionToProject(session, project);
+        } catch (Exception e) {
+            LOG.debug("Failed to bind Code.md session to project: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private String resolveCodeMdToolPath(IProject project, boolean updateExisting) {
+        if (!isOpenProject(project)) {
+            return ProjectMemoryContextService.CANONICAL_FILE_NAME;
+        }
+        IPath location = project.getLocation();
+        if (location == null) {
+            return ProjectMemoryContextService.CANONICAL_FILE_NAME;
+        }
+
+        if (updateExisting) {
+            ProjectMemoryContextService.ReadResult result =
+                    PROJECT_MEMORY_SERVICE.status(location.toOSString());
+            String existingPath = toWorkspaceRelativeToolPath(project, location, result.getSourcePath());
+            if (existingPath != null) {
+                return existingPath;
+            }
+        }
+        String canonicalPath = toWorkspaceRelativeToolPath(project, location,
+                Path.of(location.toOSString()).resolve(ProjectMemoryContextService.CANONICAL_FILE_NAME));
+        return canonicalPath != null ? canonicalPath : ProjectMemoryContextService.CANONICAL_FILE_NAME;
+    }
+
+    private String toWorkspaceRelativeToolPath(IProject project, IPath projectLocation, Path sourcePath) {
+        if (sourcePath == null || projectLocation == null) {
+            return null;
+        }
+        try {
+            Path projectRoot = Path.of(projectLocation.toOSString()).toAbsolutePath().normalize();
+            Path source = sourcePath.toAbsolutePath().normalize();
+            if (!source.startsWith(projectRoot)) {
+                return null;
+            }
+            String projectRelative = projectRoot.relativize(source).toString().replace('\\', '/');
+            if (projectRelative.isBlank()) {
+                return null;
+            }
+            String workspaceRelative = project.getFullPath().append(projectRelative).toPortableString();
+            return workspaceRelative.startsWith("/") ? workspaceRelative.substring(1) : workspaceRelative; //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            LOG.debug("Failed to resolve Code.md workspace path: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
+    }
+
+    private boolean hasCodeMd(IProject project) {
+        if (!isOpenProject(project)) {
+            return false;
+        }
+        IPath location = project.getLocation();
+        if (location == null) {
+            return false;
+        }
+        ProjectMemoryContextService.Status status = PROJECT_MEMORY_SERVICE.status(location.toOSString()).getStatus();
+        switch (status) {
+        case FOUND:
+        case EMPTY:
+        case TRUNCATED:
+            return true;
+        default:
+            return false;
+        }
     }
 
     /**
@@ -778,11 +1265,22 @@ public class ChatView extends ViewPart {
     private void startStreamingRequest(ILlmProvider provider, LlmRequest request, Display display) {
         LOG.debug("startStreamingRequest: using streaming mode"); //$NON-NLS-1$
 
+        long rt = roundTripSeq.incrementAndGet();
+        if (!inflight.compareAndSet(false, true)) {
+            LOG.warn("[single-flight] dropped duplicate request rt=%d (streaming entry)", rt); //$NON-NLS-1$
+            return;
+        }
+        currentRoundTripId = rt;
+        usageRegisteredForThisRoundTrip = false;
+        // Plan 2.4: count accepted round-trips for the session footer.
+        // Increment only after the CAS wins so duplicates don't inflate the count.
+        requestCount++;
+
         currentStreamingRequest = request;
         streamingContent = new StringBuffer();
         streamingReasoning = new StringBuffer();
         isStreaming = true;
-        streamingHandledToolCalls = false; // Reset for new streaming session
+        streamingHandledToolCalls.set(false); // Reset for new streaming session
 
         // Add empty AI message that will be updated with streaming content
         if (!display.isDisposed()) {
@@ -800,6 +1298,7 @@ public class ChatView extends ViewPart {
                 provider.streamComplete(request, chunk -> handleStreamChunk(chunk, display));
             } catch (Exception e) {
                 LOG.error("Streaming error: %s", e.getMessage()); //$NON-NLS-1$
+                inflight.set(false);
                 if (!display.isDisposed()) {
                     display.asyncExec(() -> {
                         if (!isDisposed()) {
@@ -817,6 +1316,7 @@ public class ChatView extends ViewPart {
     private void handleStreamChunk(LlmStreamChunk chunk, Display display) {
         if (chunk.isError()) {
             LOG.error("Stream error: %s", chunk.getErrorMessage()); //$NON-NLS-1$
+            inflight.set(false);
             if (!display.isDisposed()) {
                 display.asyncExec(() -> {
                     if (!isDisposed()) {
@@ -824,6 +1324,16 @@ public class ChatView extends ViewPart {
                         handleError(new RuntimeException(chunk.getErrorMessage()));
                     }
                 });
+            }
+            return;
+        }
+
+        // Plan 2.3: real provider-reported usage wins over local estimation.
+        // Register it once per round-trip and gate the estimator paths below.
+        if (chunk.hasUsage()) {
+            if (!usageRegisteredForThisRoundTrip) {
+                registerUsage(LlmResponse.builder().usage(chunk.getUsage()).build());
+                usageRegisteredForThisRoundTrip = true;
             }
             return;
         }
@@ -867,8 +1377,11 @@ public class ChatView extends ViewPart {
 
         // Handle tool calls if present
         if (chunk.hasToolCalls() || chunk.isToolUse()) {
+            if (!streamingHandledToolCalls.compareAndSet(false, true)) {
+                LOG.warn("[single-flight] dropped duplicate tool-calls chunk; first dispatch already in flight"); //$NON-NLS-1$
+                return;
+            }
             LOG.debug("Stream received tool calls"); //$NON-NLS-1$
-            streamingHandledToolCalls = true; // Mark that tool calls were handled
             final List<ToolCall> toolCalls = chunk.getToolCalls();
             final String accumulatedContent = streamingContent.toString();
             final String accumulatedReasoning = streamingReasoning.toString();
@@ -879,19 +1392,32 @@ public class ChatView extends ViewPart {
                         isStreaming = false;
                         setProcessingStage("Обработка инструментов..."); //$NON-NLS-1$
 
-                        // Create response object for tool handling
-                        LlmResponse toolResponse = LlmResponse.builder()
+                        // Create response object for tool handling. Only attach the
+                        // estimator when no real stream usage has been registered yet
+                        // — otherwise we'd double-count against the single-flight turn.
+                        LlmResponse.Builder toolBuilder = LlmResponse.builder()
                                 .content(accumulatedContent)
-                                .usage(estimateUsageForResponse(currentStreamingRequest, accumulatedContent, accumulatedReasoning))
+                                .reasoningContent(accumulatedReasoning)
                                 .toolCalls(toolCalls)
-                                .finishReason(LlmResponse.FINISH_REASON_TOOL_USE)
-                                .build();
-                        registerUsage(toolResponse);
+                                .finishReason(LlmResponse.FINISH_REASON_TOOL_USE);
+                        if (!usageRegisteredForThisRoundTrip) {
+                            toolBuilder.usage(estimateUsageForResponse(currentStreamingRequest, accumulatedContent,
+                                    accumulatedReasoning));
+                        }
+                        LlmResponse toolResponse = toolBuilder.build();
+                        if (!usageRegisteredForThisRoundTrip) {
+                            registerUsage(toolResponse);
+                            usageRegisteredForThisRoundTrip = true;
+                        }
 
-                        // Update the displayed message with current content and reasoning
+                        // Update the displayed message with current content and reasoning.
+                        // On a tool-call-only turn (no text/reasoning) drop the empty placeholder
+                        // bubble so it doesn't leave a blank row in tool-heavy sessions.
                         if (USE_BROWSER_RENDERING && browserChatPanel != null) {
                             if (!accumulatedReasoning.isEmpty() || !accumulatedContent.isEmpty()) {
                                 browserChatPanel.updateLastMessageWithReasoning(accumulatedContent, accumulatedReasoning);
+                            } else {
+                                browserChatPanel.removeLastMessageIfEmptyAssistant();
                             }
                         }
 
@@ -900,6 +1426,7 @@ public class ChatView extends ViewPart {
                         if (provider != null) {
                             handleResponseWithTools(toolResponse, provider, 0)
                                     .thenAccept(finalContent -> {
+                                        inflight.set(false);
                                         if (!display.isDisposed()) {
                                             display.asyncExec(() -> {
                                                 if (!isDisposed()) {
@@ -909,6 +1436,7 @@ public class ChatView extends ViewPart {
                                         }
                                     })
                                     .exceptionally(error -> {
+                                        inflight.set(false);
                                         if (!display.isDisposed()) {
                                             display.asyncExec(() -> {
                                                 if (!isDisposed()) {
@@ -918,6 +1446,8 @@ public class ChatView extends ViewPart {
                                         }
                                         return null;
                                     });
+                        } else {
+                            inflight.set(false);
                         }
                     }
                 });
@@ -927,10 +1457,11 @@ public class ChatView extends ViewPart {
 
         // Handle completion (without tool calls)
         // Skip if tool calls were already handled - they will manage completion themselves
-        if (chunk.isComplete() && !streamingHandledToolCalls) {
+        if (chunk.isComplete() && !streamingHandledToolCalls.get()) {
             final String finalContent = streamingContent.toString();
             LOG.debug("Stream complete, content length: %d", finalContent.length()); //$NON-NLS-1$
 
+            inflight.set(false);
             if (!display.isDisposed()) {
                 display.asyncExec(() -> {
                     if (!isDisposed()) {
@@ -938,14 +1469,20 @@ public class ChatView extends ViewPart {
 
                         // Add to conversation history
                         if (!finalContent.isEmpty()) {
-                            LlmResponse usageResponse = LlmResponse.builder()
-                                    .content(finalContent)
-                                    .usage(estimateUsageForResponse(currentStreamingRequest, finalContent,
-                                            streamingReasoning != null ? streamingReasoning.toString() : null))
-                                    .finishReason(LlmResponse.FINISH_REASON_STOP)
-                                    .build();
-                            registerUsage(usageResponse);
-                            conversationHistory.add(LlmMessage.assistant(finalContent));
+                            // Plan 2.3: only estimate when the real stream-usage path
+                            // did not already register usage for this round-trip.
+                            if (!usageRegisteredForThisRoundTrip) {
+                                LlmResponse usageResponse = LlmResponse.builder()
+                                        .content(finalContent)
+                                        .usage(estimateUsageForResponse(currentStreamingRequest, finalContent,
+                                                streamingReasoning != null ? streamingReasoning.toString() : null))
+                                        .finishReason(LlmResponse.FINISH_REASON_STOP)
+                                        .build();
+                                registerUsage(usageResponse);
+                                usageRegisteredForThisRoundTrip = true;
+                            }
+                            conversationHistory.add(LlmMessage.assistant(finalContent,
+                                    streamingReasoning != null ? streamingReasoning.toString() : null));
                             lastAssistantResponse = finalContent;
 
                             // Check for code blocks
@@ -957,7 +1494,7 @@ public class ChatView extends ViewPart {
                     }
                 });
             }
-        } else if (chunk.isComplete() && streamingHandledToolCalls) {
+        } else if (chunk.isComplete() && streamingHandledToolCalls.get()) {
             LOG.debug("Stream complete ignored - tool calls are being processed"); //$NON-NLS-1$
         }
     }
@@ -968,7 +1505,19 @@ public class ChatView extends ViewPart {
     private void startNonStreamingRequest(ILlmProvider provider, LlmRequest request, Display display) {
         LOG.debug("startNonStreamingRequest: using non-streaming mode"); //$NON-NLS-1$
 
+        long rt = roundTripSeq.incrementAndGet();
+        if (!inflight.compareAndSet(false, true)) {
+            LOG.warn("[single-flight] dropped duplicate request rt=%d (non-streaming entry)", rt); //$NON-NLS-1$
+            return;
+        }
+        currentRoundTripId = rt;
+        usageRegisteredForThisRoundTrip = false;
+        // Plan 2.4: count accepted round-trips for the session footer.
+        // Increment only after the CAS wins so duplicates don't inflate the count.
+        requestCount++;
+
         // Send request
+        currentRequestUsesDesktopController = false;
         currentRequest = provider.complete(request)
                 .thenCompose(response -> {
                     registerUsage(response);
@@ -989,6 +1538,7 @@ public class ChatView extends ViewPart {
                 })
                 .thenAccept(finalContent -> {
                     LOG.debug("startConversationLoop: chain completed successfully"); //$NON-NLS-1$
+                    inflight.set(false);
                     if (!display.isDisposed()) {
                         display.asyncExec(() -> {
                             if (!isDisposed()) {
@@ -1001,6 +1551,7 @@ public class ChatView extends ViewPart {
                 })
                 .exceptionally(error -> {
                     LOG.error("startConversationLoop: error in chain: %s", error.getMessage()); //$NON-NLS-1$
+                    inflight.set(false);
                     if (!display.isDisposed()) {
                         display.asyncExec(() -> {
                             if (!isDisposed()) {
@@ -1065,13 +1616,14 @@ public class ChatView extends ViewPart {
 
         // Check if we hit max iterations limit
         if (response.hasToolCalls() && iteration >= maxToolIterations) {
-            LOG.warn("handleResponseWithTools: max iterations (%d) reached, stopping tool loop", maxToolIterations); //$NON-NLS-1$
+            LOG.warn("handleResponseWithTools: tool budget (%d iterations) exhausted", maxToolIterations); //$NON-NLS-1$
             // Show warning to user
             if (!display.isDisposed()) {
                 display.asyncExec(() -> {
                     if (!isDisposed()) {
                         appendSystemMessage(String.format(
-                            "⚠️ Достигнут лимит итераций (%d). Агент остановлен для предотвращения бесконечного цикла.", //$NON-NLS-1$
+                            "Исчерпан бюджет инструментов текущего ответа (%d шагов). " //$NON-NLS-1$
+                                    + "Если задача еще не завершена, отправьте короткое продолжение: \"продолжай с текущего места\".", //$NON-NLS-1$
                             maxToolIterations));
                     }
                 });
@@ -1092,7 +1644,7 @@ public class ChatView extends ViewPart {
                     if (content != null && !content.isEmpty()) {
                         LOG.debug("handleResponseWithTools: appending assistant message, length=%d", content.length()); //$NON-NLS-1$
                         appendAssistantMessage(content);
-                        conversationHistory.add(LlmMessage.assistant(content));
+                        conversationHistory.add(LlmMessage.assistant(content, response.getReasoningContent()));
 
                         // Store response and check for code blocks
                         lastAssistantResponse = content;
@@ -1120,7 +1672,8 @@ public class ChatView extends ViewPart {
         String assistantContent = response.getContent();
 
         // Add assistant message with tool calls to history
-        conversationHistory.add(LlmMessage.assistantWithToolCalls(assistantContent, toolCalls));
+        conversationHistory.add(LlmMessage.assistantWithToolCalls(
+                assistantContent, response.getReasoningContent(), toolCalls));
 
         // Separate edit_file calls for preview from other tool calls
         List<ToolCall> editCalls = new ArrayList<>();
@@ -1153,7 +1706,7 @@ public class ChatView extends ViewPart {
                     setProcessingStage("Выполнение: " + toolNames.toString()); //$NON-NLS-1$
 
                     // Add rich tool call cards using browser panel
-                    if (USE_BROWSER_RENDERING && browserChatPanel != null && browserChatPanel.isBrowserAvailable()) {
+                    if (USE_BROWSER_RENDERING && browserChatPanel != null && !browserChatPanel.isDisposed()) {
                         // Show reasoning block if there's content between tool iterations
                         // (iteration > 0 means this is a follow-up after previous tool results)
                         if (currentIteration > 0 && reasoningContent != null && !reasoningContent.trim().isEmpty()) {
@@ -1340,6 +1893,46 @@ public class ChatView extends ViewPart {
         return prefs.getBoolean(VibePreferenceConstants.PREF_AGENT_SKIP_TOOL_CONFIRMATIONS, false);
     }
 
+    /**
+     * Plan 1.2: feeds one tool call through {@link #toolRepetitionDetector} and
+     * injects a synthetic USER nudge into the conversation history if the
+     * repetition threshold is tripped. Safe to call for every tool call — the
+     * detector is responsible for rate-limiting nudges.
+     */
+    private void observeAndInjectRepetitionNudge(ToolCall call) {
+        try {
+            String canonical = canonicalizeCallArgumentsForDetector(call.getArguments());
+            java.util.Optional<com.codepilot1c.core.agent.ToolRepetitionDetector.Trip> maybeTrip =
+                    toolRepetitionDetector.observe(call.getName(), canonical);
+            if (maybeTrip.isEmpty()) {
+                return;
+            }
+            com.codepilot1c.core.agent.ToolRepetitionDetector.Trip trip = maybeTrip.get();
+            conversationHistory.add(LlmMessage.user(trip.localizedMessage()));
+            LOG.debug("tool-repetition trip: %s x%d — nudge injected", //$NON-NLS-1$
+                    trip.toolName, trip.identicalCount);
+        } catch (RuntimeException e) {
+            LOG.debug("tool-repetition detector failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private static String canonicalizeCallArgumentsForDetector(String rawArgs) {
+        if (rawArgs == null || rawArgs.isEmpty() || "{}".equals(rawArgs)) { //$NON-NLS-1$
+            return com.codepilot1c.core.agent.ToolRepetitionDetector.canonicalizeArgs(
+                    new com.google.gson.JsonObject());
+        }
+        try {
+            com.google.gson.JsonElement parsed = com.google.gson.JsonParser.parseString(rawArgs);
+            if (parsed != null && parsed.isJsonObject()) {
+                return com.codepilot1c.core.agent.ToolRepetitionDetector.canonicalizeArgs(
+                        parsed.getAsJsonObject());
+            }
+            return rawArgs;
+        } catch (RuntimeException e) {
+            return rawArgs;
+        }
+    }
+
     private int getMaxToolIterations() {
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID);
         return prefs.getInt(
@@ -1366,10 +1959,17 @@ public class ChatView extends ViewPart {
             if (result == null) {
                 result = ToolResult.failure("Результат не найден"); //$NON-NLS-1$
             }
-            String resultContent = result.isSuccess()
-                    ? result.getContent()
-                    : "Error: " + result.getErrorMessage(); //$NON-NLS-1$
-            conversationHistory.add(LlmMessage.toolResult(call.getId(), resultContent));
+            conversationHistory.add(LlmMessage.toolResult(
+                    call.getId(),
+                    result.getContentForLlm(MAX_TOOL_RESULT_HISTORY_CHARS)));
+        }
+
+        // Plan 1.2: detect repetition loops only after all tool-result messages
+        // for the assistant tool_calls batch were appended. Inserting a USER nudge
+        // between assistant tool_calls and their tool results violates the OpenAI
+        // message protocol and causes follow-up requests to fail.
+        for (ToolCall call : toolCalls) {
+            observeAndInjectRepetitionNudge(call);
         }
 
         // Update tool call cards with results
@@ -1434,6 +2034,10 @@ public class ChatView extends ViewPart {
             StringBuilder reasoning = new StringBuilder();
             List<ToolCall> toolCalls = new java.util.ArrayList<>();
             final String[] finishReason = { LlmResponse.FINISH_REASON_STOP };
+            // Plan 2.3: capture real usage from the stream terminal usage chunk so
+            // it survives the stream→response conversion and is accumulated by the
+            // caller's registerUsage(nextResponse).
+            final LlmResponse.Usage[] streamUsage = { null };
 
             try {
                 provider.streamComplete(request, chunk -> {
@@ -1443,6 +2047,11 @@ public class ChatView extends ViewPart {
 
                     if (chunk.isError()) {
                         out.completeExceptionally(new RuntimeException(chunk.getErrorMessage()));
+                        return;
+                    }
+
+                    if (chunk.hasUsage() && streamUsage[0] == null) {
+                        streamUsage[0] = chunk.getUsage();
                         return;
                     }
 
@@ -1471,12 +2080,14 @@ public class ChatView extends ViewPart {
                                     .reasoningContent(reasoning.toString())
                                     .toolCalls(toolCalls)
                                     .finishReason(LlmResponse.FINISH_REASON_TOOL_USE)
+                                    .usage(streamUsage[0])
                                     .build());
                         } else {
                             out.complete(LlmResponse.builder()
                                     .content(content.toString())
                                     .reasoningContent(reasoning.toString())
                                     .finishReason(finishReason[0])
+                                    .usage(streamUsage[0])
                                     .build());
                         }
                     }
@@ -1490,12 +2101,14 @@ public class ChatView extends ViewPart {
                                 .reasoningContent(reasoning.toString())
                                 .toolCalls(toolCalls)
                                 .finishReason(LlmResponse.FINISH_REASON_TOOL_USE)
+                                .usage(streamUsage[0])
                                 .build());
                     } else {
                         out.complete(LlmResponse.builder()
                                 .content(content.toString())
                                 .reasoningContent(reasoning.toString())
                                 .finishReason(finishReason[0])
+                                .usage(streamUsage[0])
                                 .build());
                     }
                 }
@@ -1511,38 +2124,34 @@ public class ChatView extends ViewPart {
      * Updates a tool call card with the result (for browser-based rendering).
      */
     private void updateToolCallCardWithResult(ToolCall call, ToolResult result) {
-        if (USE_BROWSER_RENDERING && browserChatPanel != null && browserChatPanel.isBrowserAvailable()) {
+        if (USE_BROWSER_RENDERING && browserChatPanel != null && !browserChatPanel.isDisposed()) {
             // Determine status
             BrowserChatPanel.ToolCallStatus status = result.isSuccess()
                     ? BrowserChatPanel.ToolCallStatus.SUCCESS
                     : BrowserChatPanel.ToolCallStatus.ERROR;
 
-            // Build result summary (e.g., "1,240 chars" or error message)
+            // Build result summary (e.g., "Готово · 1,240 символов" or "Ошибка")
             String content = result.isSuccess() ? result.getContent() : result.getErrorMessage();
-            String resultSummary;
-            if (result.isSuccess() && content != null) {
-                int len = content.length();
-                if (len >= 1000) {
-                    resultSummary = String.format("%,d символов", len); //$NON-NLS-1$
-                } else {
-                    resultSummary = String.format("%d символов", len); //$NON-NLS-1$
-                }
-            } else if (!result.isSuccess()) {
-                resultSummary = "Ошибка"; //$NON-NLS-1$
-            } else {
-                resultSummary = "Выполнено"; //$NON-NLS-1$
+            int contentLength = content != null ? content.length() : 0;
+            String lengthLabel = ""; //$NON-NLS-1$
+            if (contentLength > 0) {
+                lengthLabel = contentLength >= 1000
+                        ? String.format("%,d символов", contentLength) //$NON-NLS-1$
+                        : String.format("%d символов", contentLength); //$NON-NLS-1$
             }
 
-            // Build result preview (full content with safety cap for UI responsiveness)
-            String resultPreview = ""; //$NON-NLS-1$
-            if (content != null && !content.isEmpty()) {
-                if (content.length() > MAX_TOOL_RESULT_PREVIEW_CHARS) {
-                    resultPreview = content.substring(0, MAX_TOOL_RESULT_PREVIEW_CHARS)
-                            + "\n... (обрезано в UI)"; //$NON-NLS-1$
-                } else {
-                    resultPreview = content;
-                }
+            String resultSummary;
+            if (result.isSuccess()) {
+                resultSummary = lengthLabel.isEmpty()
+                        ? "Готово" //$NON-NLS-1$
+                        : "Готово · " + lengthLabel; //$NON-NLS-1$
+            } else {
+                resultSummary = lengthLabel.isEmpty()
+                        ? "Ошибка" //$NON-NLS-1$
+                        : "Ошибка · " + lengthLabel; //$NON-NLS-1$
             }
+
+            String resultPreview = content != null ? content : ""; //$NON-NLS-1$
 
             browserChatPanel.updateToolCallResult(call.getId(), status, resultSummary, resultPreview);
         } else {
@@ -1565,10 +2174,6 @@ public class ChatView extends ViewPart {
 
         String content = result.isSuccess() ? result.getContent() : result.getErrorMessage();
         if (content != null && !content.isEmpty()) {
-            // Truncate very long results for display
-            if (content.length() > 1500) {
-                content = content.substring(0, 1500) + "\n... (обрезано)"; //$NON-NLS-1$
-            }
             sb.append(content);
         }
 
@@ -1817,8 +2422,13 @@ public class ChatView extends ViewPart {
             """); //$NON-NLS-1$
 
         // === TOOLS SECTION ===
+        // NB: we intentionally do NOT enumerate tools here. The full manifest is
+        // delivered via the structured `tools` parameter on the LLM request; mirroring
+        // it in the system prompt burned ~1200 tokens of redundant input per request
+        // (codex review of Phase 3 flagged this as the primary duplicated overhead).
         if (toolsEnabled) {
-            appendToolsSection(prompt);
+            boolean hasTools = !ToolRegistry.getInstance().getToolDefinitions().isEmpty();
+            ChatSystemPromptToolsSection.append(prompt, hasTools);
         }
 
         // === FINAL INSTRUCTIONS ===
@@ -1834,35 +2444,6 @@ public class ChatView extends ViewPart {
                 null,
                 "chat", //$NON-NLS-1$
                 currentRequestedSkills);
-    }
-
-    private void appendToolsSection(StringBuilder prompt) {
-        List<ToolDefinition> tools = ToolRegistry.getInstance().getToolDefinitions();
-        if (tools.isEmpty()) {
-            prompt.append("""
-            # Инструменты
-
-            Инструменты недоступны в текущей конфигурации.
-
-            """); //$NON-NLS-1$
-            return;
-        }
-
-        prompt.append("""
-        # Инструменты
-
-        Используйте инструменты при работе с кодом, файлами и проектом.
-        Если нужна информация из проекта, сначала вызывайте подходящий инструмент.
-
-        Доступные инструменты:
-        """); //$NON-NLS-1$
-
-        for (ToolDefinition tool : tools) {
-            prompt.append("- ").append(tool.getName()).append(": ") //$NON-NLS-1$ //$NON-NLS-2$
-                    .append(tool.getDescription()).append("\n"); //$NON-NLS-1$
-        }
-
-        prompt.append("\n"); //$NON-NLS-1$
     }
 
     private void handleError(Throwable error) {
@@ -1990,7 +2571,12 @@ public class ChatView extends ViewPart {
             if (provider != null) {
                 provider.cancel();
             }
+            if (currentRequestUsesDesktopController) {
+                AgentSessionController.getInstance().stopFromDesktop();
+            }
         }
+        currentRequestUsesDesktopController = false;
+        inflight.set(false);
         setProcessing(false);
     }
 
@@ -2011,46 +2597,163 @@ public class ChatView extends ViewPart {
         }
     }
 
+    /**
+     * This view's chat session (Phase 0 — persistence/multi-chat foundation). Bound on first use to
+     * the current session; the {@link #session} field is the seam for full per-view ownership later.
+     */
+    private Session viewSession() {
+        if (session == null) {
+            // Multi-view: each ChatView instance owns a distinct session (not the global current one).
+            session = SessionManager.getInstance().createSessionForCurrentProject();
+        }
+        return session;
+    }
+
+    /**
+     * Opens a new ChatView instance (multi-view) so the user can run another chat in parallel. The new
+     * instance gets a unique secondary id and starts a fresh session.
+     */
+    private void openNewChatWindow() {
+        try {
+            String secondaryId = "chat-" + Long.toHexString(System.nanoTime()); //$NON-NLS-1$
+            getSite().getWorkbenchWindow().getActivePage()
+                    .showView(ID, secondaryId, IWorkbenchPage.VIEW_ACTIVATE);
+        } catch (PartInitException e) {
+            LOG.warn("openNewChatWindow failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Appends the current UI conversation (USER/ASSISTANT text) into the given session record.
+     * Used at clear-chat and on close so the session reflects what the user sees.
+     */
+    private void syncSessionFromHistory(Session target) {
+        // Rebuild (not append) so re-saving a restored session does not duplicate messages.
+        target.clearMessages();
+        for (LlmMessage msg : conversationHistory) {
+            LlmMessage.Role role = msg.getRole();
+            if (role != LlmMessage.Role.USER && role != LlmMessage.Role.ASSISTANT) {
+                continue;
+            }
+            String content = msg.getContent();
+            if ((content == null || content.isBlank()) && msg.getContentParts() != null) {
+                StringBuilder sb = new StringBuilder();
+                for (var part : msg.getContentParts()) {
+                    if (part.getText() != null) {
+                        sb.append(part.getText());
+                    }
+                }
+                content = sb.toString();
+            }
+            if (content != null && !content.isBlank()) {
+                target.addMessage(role == LlmMessage.Role.USER
+                        ? SessionMessage.user(content)
+                        : SessionMessage.assistant(content, msg.getReasoningContent()));
+            }
+        }
+    }
+
+    /**
+     * Persists this view's session to disk. Save-on-close entry point (Phase 0): called from
+     * {@link #dispose()} so the conversation survives EDT restart. No-op for an empty chat.
+     */
+    private void persistSession() {
+        try {
+            if (conversationHistory.isEmpty()) {
+                return;
+            }
+            Session target = viewSession();
+            syncSessionFromHistory(target);
+            SessionManager.getInstance().saveSession(target);
+            LOG.debug("persistSession: saved session %s (%d messages)", //$NON-NLS-1$
+                    target.getId(), Integer.valueOf(target.getMessages().size()));
+        } catch (Exception e) {
+            LOG.debug("persistSession failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * On view open (Phase 0 — chat persistence): restores the most recent saved chat into this view,
+     * or shows the welcome message when there is nothing to restore.
+     */
+    private void restoreLastSessionOrWelcome() {
+        try {
+            Session restored = null;
+            if (restoredSessionId != null && !restoredSessionId.isBlank()) {
+                // Restart: Eclipse recreated this view instance — restore its exact session.
+                restored = SessionManager.getInstance().loadSession(restoredSessionId).orElse(null);
+            } else if (getViewSite().getSecondaryId() == null) {
+                // Primary view, fresh open: restore the most recent chat (Feature 1).
+                restored = loadMostRecentSession();
+            }
+            // else: a window explicitly opened by the user (secondary id, no memento) → start fresh.
+            if (restored != null && !restored.getMessages().isEmpty()) {
+                session = restored;
+                // Restore this window's per-view model choice.
+                overrideModelId = restored.getModelId();
+                SessionManager.getInstance().setCurrentSession(restored);
+                renderSession(restored);
+                updateModelButtonLabel();
+                return;
+            }
+        } catch (Exception e) {
+            LOG.debug("restoreLastSession failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        appendSystemMessage(Messages.ChatView_WelcomeMessage);
+    }
+
+    /** @return the most recent non-empty saved session, or {@code null}. */
+    private Session loadMostRecentSession() {
+        SessionManager manager = SessionManager.getInstance();
+        for (com.codepilot1c.core.session.ISessionStore.SessionSummary summary
+                : manager.listRecentSessions(10)) {
+            if (summary.getMessageCount() <= 0) {
+                continue;
+            }
+            Session loaded = manager.loadSession(summary.getId()).orElse(null);
+            if (loaded != null && !loaded.getMessages().isEmpty()) {
+                return loaded;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Replays a saved session into the view: seeds the LLM context and re-renders the visible
+     * user/assistant bubbles. Tool-call/system detail is not replayed in this v1.
+     */
+    private void renderSession(Session restored) {
+        conversationHistory.clear();
+        conversationHistory.addAll(restored.toLlmMessages());
+        for (SessionMessage msg : restored.getMessages()) {
+            String content = msg.getContent();
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+            switch (msg.getType()) {
+                case USER -> appendUserMessage(content);
+                case ASSISTANT -> appendAssistantMessage(content);
+                default -> { /* tool/system messages are not replayed in v1 */ }
+            }
+        }
+        LOG.debug("renderSession: restored %d messages from session %s", //$NON-NLS-1$
+                Integer.valueOf(restored.getMessages().size()), restored.getId());
+    }
+
     private void clearChat() {
         // Sync UI conversation history into SessionManager and complete session.
         // This triggers memory extraction for facts like "Запомни что...".
         try {
             if (!conversationHistory.isEmpty()) {
-                SessionManager sm = SessionManager.getInstance();
-                Session session = sm.getCurrentSession();
-                if (session == null) {
-                    // Force-create a session if none exists
-                    session = sm.startNewSession();
-                }
-                // Populate the session with UI conversation messages
-                for (LlmMessage msg : conversationHistory) {
-                    LlmMessage.Role role = msg.getRole();
-                    if (role == LlmMessage.Role.USER || role == LlmMessage.Role.ASSISTANT) {
-                        String content = msg.getContent();
-                        if (content == null || content.isBlank()) {
-                            if (msg.getContentParts() != null) {
-                                StringBuilder sb = new StringBuilder();
-                                for (var part : msg.getContentParts()) {
-                                    if (part.getText() != null) {
-                                        sb.append(part.getText());
-                                    }
-                                }
-                                content = sb.toString();
-                            }
-                        }
-                        if (content != null && !content.isBlank()) {
-                            session.addMessage(role == LlmMessage.Role.USER
-                                    ? SessionMessage.user(content)
-                                    : SessionMessage.assistant(content));
-                        }
-                    }
-                }
-                LOG.debug("clearChat: synced " + conversationHistory.size() //$NON-NLS-1$
-                        + " UI messages to session " + session.getId() //$NON-NLS-1$
-                        + " (now has " + session.getMessages().size() + " messages)"); //$NON-NLS-1$ //$NON-NLS-2$
+                Session target = viewSession();
+                syncSessionFromHistory(target);
+                // Complete THIS view's session (save + memory extraction), not the global current.
+                SessionManager.getInstance().completeSession(target);
+                LOG.debug("clearChat: completed session %s (%d UI messages)", //$NON-NLS-1$
+                        target.getId(), Integer.valueOf(conversationHistory.size()));
             }
-            // Complete the current session (triggers memory extraction) and start fresh
-            SessionManager.getInstance().startNewSession();
+            // Drop the per-view binding so the next turn rebinds to a fresh session.
+            session = null;
         } catch (Exception e) {
             LOG.debug("clearChat: session management failed: " + e.getMessage()); //$NON-NLS-1$
         }
@@ -2062,6 +2765,9 @@ public class ChatView extends ViewPart {
         }
 
         conversationHistory.clear();
+        // Plan 1.2: full clear is also a turn boundary — drop any pending
+        // repetition window so a fresh conversation starts clean.
+        toolRepetitionDetector.resetForNewTurn();
         draftAttachments.clear();
         lastAssistantResponse = null;
         resetTokenUsage();
@@ -2118,6 +2824,7 @@ public class ChatView extends ViewPart {
             if (attachButton != null && !attachButton.isDisposed()) {
                 attachButton.setEnabled(!processing);
             }
+            updateInitCodeMdButton();
             stopButton.setEnabled(processing);
             inputField.setEnabled(!processing);
             if (compactButton != null && !compactButton.isDisposed()) {
@@ -2179,7 +2886,8 @@ public class ChatView extends ViewPart {
      * Returns the currently active model name for display in message badges.
      */
     private String getCurrentModelName() {
-        return getEffectiveModelId();
+        String model = getEffectiveModelId();
+        return model != null && !model.isBlank() ? model : null;
     }
 
     private void appendSystemMessage(String message) {
@@ -2346,8 +3054,9 @@ public class ChatView extends ViewPart {
         if (conversationHistory.size() < 2) {
             return false;
         }
-        int tailMessages = automatic ? COMPACT_TAIL_MESSAGES
-                : Math.min(COMPACT_TAIL_MESSAGES, Math.max(4, conversationHistory.size() / 2));
+        int tailBudget = getCompactionTailMessages();
+        int tailMessages = automatic ? tailBudget
+                : Math.min(tailBudget, Math.max(4, conversationHistory.size() / 2));
         if (conversationHistory.size() <= tailMessages + 1) {
             return false;
         }
@@ -2473,6 +3182,8 @@ public class ChatView extends ViewPart {
         cachedInputTokensTotal = 0;
         outputTokensTotal = 0;
         totalTokensTotal = 0;
+        // Plan 2.4: new chat resets the request counter too.
+        requestCount = 0;
         scheduleTokenUsageDisplayUpdate();
     }
 
@@ -2498,11 +3209,21 @@ public class ChatView extends ViewPart {
     private void updateTokenUsageDisplay() {
         // Token counter is hidden — will be replaced by budget indicator in Phase 2.
         // Still accumulate values internally for backend usage tracking.
-        if (tokenUsageLabel == null || tokenUsageLabel.isDisposed()) {
-            return;
+        if (tokenUsageLabel != null && !tokenUsageLabel.isDisposed()) {
+            tokenUsageLabel.setVisible(false);
+            ((GridData) tokenUsageLabel.getLayoutData()).exclude = true;
         }
-        tokenUsageLabel.setVisible(false);
-        ((GridData) tokenUsageLabel.getLayoutData()).exclude = true;
+        // Plan 2.4: push the compact footer into the browser panel.
+        // Safe to call before the panel is ready — updateTokenFooter is a no-op
+        // until the browser finishes bootstrapping.
+        if (browserChatPanel != null && !browserChatPanel.isDisposed()) {
+            browserChatPanel.updateTokenFooter(
+                    inputTokensTotal,
+                    cachedInputTokensTotal,
+                    outputTokensTotal,
+                    totalTokensTotal,
+                    requestCount);
+        }
     }
 
     private void updateModelButtonVisibility() {
@@ -2515,27 +3236,47 @@ public class ChatView extends ViewPart {
         modelButton.getParent().layout(true, true);
     }
 
-    /** Default model when user has not explicitly selected one. */
-    private static final String DEFAULT_MODEL_ID = "kimi-k2.5"; //$NON-NLS-1$
-
     private void updateModelButtonLabel() {
         if (modelButton == null || modelButton.isDisposed()) {
             return;
         }
         String displayId = getEffectiveModelId();
-        modelButton.setText(displayId);
+        modelButton.setText(compactModelButtonLabel(displayId));
+        modelButton.setToolTipText(displayId);
         modelButton.getParent().layout(true, true);
     }
 
+    private String compactModelButtonLabel(String modelId) {
+        if (modelId == null || modelId.length() <= CHAT_MODEL_LABEL_MAX_CHARS) {
+            return modelId;
+        }
+        int prefixLength = Math.max(8, CHAT_MODEL_LABEL_MAX_CHARS / 2 - 1);
+        int suffixLength = Math.max(8, CHAT_MODEL_LABEL_MAX_CHARS - prefixLength - 3);
+        return modelId.substring(0, prefixLength) + "..." //$NON-NLS-1$
+                + modelId.substring(modelId.length() - suffixLength);
+    }
+
     /**
-     * Returns the model ID to use for requests and display.
-     * Falls back to {@link #DEFAULT_MODEL_ID} when no explicit selection.
+     * Returns the model ID to use for requests (CodePilot backend only) and for display.
+     * Without an explicit override, resolves the active provider's configured model.
      */
     private String getEffectiveModelId() {
         if (overrideModelId != null && !overrideModelId.isBlank()) {
             return overrideModelId;
         }
-        return DEFAULT_MODEL_ID;
+        String activeModel = resolveActiveProviderModel();
+        return activeModel != null ? activeModel : ""; //$NON-NLS-1$
+    }
+
+    private String resolveActiveProviderModel() {
+        try {
+            return LlmProviderConfigStore.getInstance().getActiveProvider()
+                    .map(LlmProviderConfig::getModel)
+                    .filter(model -> model != null && !model.isBlank())
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void openModelSelectionDialog() {
@@ -2576,6 +3317,10 @@ public class ChatView extends ViewPart {
                         if (selected != null) {
                             String previousModelId = overrideModelId;
                             overrideModelId = selected.getId();
+                            // Persist the per-view model choice with this window's session.
+                            Session modelSession = viewSession();
+                            modelSession.setModelId(overrideModelId);
+                            SessionManager.getInstance().saveSession(modelSession);
                             updateModelButtonLabel();
 
                             // Ask user whether to start a new chat when model changes mid-conversation
@@ -2622,8 +3367,37 @@ public class ChatView extends ViewPart {
         return value;
     }
 
+    /**
+     * Returns the number of tail messages to preserve verbatim during history
+     * compaction. Reads {@link VibePreferenceConstants#LLM_COMPACTION_TAIL_MESSAGES}
+     * with a fallback to {@link #COMPACT_TAIL_MESSAGES} (14). Values are clamped to
+     * a sensible range [4, 64] to avoid degenerate compactions (Plan 1.3).
+     */
+    private int getCompactionTailMessages() {
+        int fallback = COMPACT_TAIL_MESSAGES;
+        int value;
+        try {
+            IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID);
+            value = prefs.getInt(VibePreferenceConstants.LLM_COMPACTION_TAIL_MESSAGES, fallback);
+        } catch (Exception e) {
+            value = fallback;
+        }
+        if (value < 4) {
+            return 4;
+        }
+        if (value > 64) {
+            return 64;
+        }
+        return value;
+    }
+
     @Override
     public void setFocus() {
+        // Multi-view: the focused chat becomes the global current session, so remote-trigger and
+        // Code.md resolution target this window.
+        if (session != null) {
+            SessionManager.getInstance().setCurrentSession(session);
+        }
         inputField.setFocus();
     }
 
@@ -2702,9 +3476,15 @@ public class ChatView extends ViewPart {
 
     @Override
     public void dispose() {
+        // Phase 0: persist the conversation so it survives EDT close/restart.
+        persistSession();
         if (currentRequest != null && !currentRequest.isDone()) {
             currentRequest.cancel(true);
+            if (currentRequestUsesDesktopController) {
+                AgentSessionController.getInstance().stopFromDesktop();
+            }
         }
+        currentRequestUsesDesktopController = false;
         conversationHistory.clear();
 
         // Dispose typing indicator

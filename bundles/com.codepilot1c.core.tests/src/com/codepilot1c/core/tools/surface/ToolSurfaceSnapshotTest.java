@@ -1,6 +1,7 @@
 package com.codepilot1c.core.tools.surface;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
@@ -13,6 +14,8 @@ import org.junit.After;
 import org.junit.Test;
 
 import com.codepilot1c.core.agent.profiles.BuildAgentProfile;
+import com.codepilot1c.core.agent.prompts.ToolPromptRenderer;
+import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
@@ -21,10 +24,19 @@ import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.google.gson.Gson;
+import com.google.gson.JsonParser;
 
 import sun.misc.Unsafe;
 
 public class ToolSurfaceSnapshotTest {
+
+    private static final String EXPECTED_PROVIDER_NEUTRAL_DESCRIPTIONS = """
+            read_file=Read an existing workspace file or line range. Bare Code.md resolves to current project root; otherwise use workspace-relative paths. Tool routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
+            edit_file=Edit existing workspace text files; create only project-root Code.md. Never edit .mdo/.form/.mxl/DCS artifacts directly; use metadata/form/dcs/template tools. Tool routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
+            create_metadata=Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику. Tool routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
+            qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Tool routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
+            skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
+            """; //$NON-NLS-1$
 
     private final LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
 
@@ -34,69 +46,93 @@ public class ToolSurfaceSnapshotTest {
     }
 
     @Test
-    public void effectiveToolSurfaceSnapshotsStayStableAcrossProviderSelections() throws Exception {
+    public void effectiveToolSurfaceIsIdenticalAcrossProviderSelections() throws Exception {
         ToolRegistry registry = createIsolatedRegistry();
         registerSnapshotTools(registry);
-        String nonBackend = snapshotFor(registry, "openai-local", ProviderType.OPENAI_COMPATIBLE, "build"); //$NON-NLS-1$ //$NON-NLS-2$
-        String backend = snapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "build"); //$NON-NLS-1$ //$NON-NLS-2$
+        String codePilot = surfaceSnapshotFor(registry, "backend", ProviderType.CODEPILOT_BACKEND, "backend-coder"); //$NON-NLS-1$ //$NON-NLS-2$
+        String openAi = surfaceSnapshotFor(registry, "openai-local", ProviderType.OPENAI_COMPATIBLE, "gpt-5"); //$NON-NLS-1$ //$NON-NLS-2$
+        String ollama = surfaceSnapshotFor(registry, "ollama", ProviderType.OLLAMA, "llama3.2"); //$NON-NLS-1$ //$NON-NLS-2$
+        setStoreState(List.of(), null);
+        String noProvider = surfaceSnapshot(registry);
 
-        assertEquals("""
-                provider=openai-local
-                profile=build
-                read_file=Read file contents with optional line ranges.
-                edit_file=Edit an existing text file in place.
-                create_metadata=Создает новый объект метаданных 1С через EDT BM model и forceExport.
-                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation.
-                skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
-                """, nonBackend);
-
-        assertEquals("""
-                provider=backend
-                profile=build
-                read_file=Read an existing workspace file or a 1-based line range. Use it for exact source inspection after discovery and keep paths workspace-relative. Qwen routing: prefer read/search before mutation, keep paths workspace-relative, and switch to EDT semantic tools for platform/model questions.
-                edit_file=Edit an existing workspace file in place via full replace, targeted search/replace, or SEARCH/REPLACE blocks. Do not use it to create files or mutate EDT metadata descriptors unless an explicit emergency override is intended. Qwen routing: read before edit, patch the smallest necessary region, and do not mutate EDT metadata files directly when a semantic tool exists.
-                create_metadata=Создает новый объект метаданных 1С через EDT BM model и forceExport. Qwen routing: enforce edt_validate_request -> validation_token -> mutation -> diagnostics. Do not skip validation or diagnose success without re-running diagnostics.
-                qa_inspect=Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation. Qwen routing: follow the QA pipeline in order, treat generated context as ephemeral, and use steps search only as fallback support for scenario authoring.
-                skill=Показывает доступные skills и загружает инструкцию выбранного skill по имени. Используй для подключения специализированного workflow.
-                """, backend);
+        assertEquals(codePilot, openAi);
+        assertEquals(codePilot, ollama);
+        assertEquals(codePilot, noProvider);
+        assertEquals(EXPECTED_PROVIDER_NEUTRAL_DESCRIPTIONS, descriptionSnapshot(registry));
     }
 
-    private String snapshotFor(ToolRegistry registry, String activeProviderId, ProviderType type, String profileId)
-            throws Exception {
-        setStoreState(List.of(configured(activeProviderId, type)), activeProviderId);
+    @Test
+    public void providerNeutralSurfaceStaysWithinFormerBackendEnvelope() throws Exception {
+        ToolRegistry registry = createIsolatedRegistry();
+        registerSnapshotTools(registry);
         List<ToolDefinition> definitions = registry.getToolDefinitions(
                 registry.createRuntimeSurfaceContext(new BuildAgentProfile()));
-        return normalize("""
-                provider=%s
-                profile=%s
-                read_file=%s
-                edit_file=%s
-                create_metadata=%s
-                qa_inspect=%s
-                skill=%s
-                """.formatted(
-                activeProviderId,
-                profileId,
-                descriptionOf(definitions, "read_file"), //$NON-NLS-1$
-                descriptionOf(definitions, "edit_file"), //$NON-NLS-1$
-                descriptionOf(definitions, "create_metadata"), //$NON-NLS-1$
-                descriptionOf(definitions, "qa_inspect"), //$NON-NLS-1$
-                descriptionOf(definitions, "skill"))); //$NON-NLS-1$
+
+        assertEquals(5, definitions.size());
+        assertTrue(totalDescriptionChars(definitions) <= 1_600);
+        assertTrue(totalSchemaChars(definitions) <= 3_500);
+
+        List<LlmMessage> rendered = ToolPromptRenderer.applyToMessages(
+                List.of(LlmMessage.system("BASE")), definitions); //$NON-NLS-1$
+        assertTrue(rendered.get(0).getContent().length() <= 2_100);
     }
 
-    private String descriptionOf(List<ToolDefinition> definitions, String name) {
-        return definitions.stream()
-                .filter(definition -> name.equals(definition.getName()))
-                .findFirst()
-                .orElseThrow()
-                .getDescription()
+    private String surfaceSnapshotFor(ToolRegistry registry, String activeProviderId, ProviderType type, String model)
+            throws Exception {
+        setStoreState(List.of(configured(activeProviderId, type, model)), activeProviderId);
+        return surfaceSnapshot(registry);
+    }
+
+    private String surfaceSnapshot(ToolRegistry registry) {
+        List<ToolDefinition> definitions = registry.getToolDefinitions(
+                registry.createRuntimeSurfaceContext(new BuildAgentProfile()));
+        StringBuilder snapshot = new StringBuilder();
+        for (ToolDefinition definition : definitions) {
+            snapshot.append("name=").append(definition.getName()).append('\n'); //$NON-NLS-1$
+            snapshot.append("description=").append(normalizeDescription(definition.getDescription())).append('\n'); //$NON-NLS-1$
+            snapshot.append("schema=") //$NON-NLS-1$
+                    .append(JsonParser.parseString(definition.getParametersSchema()).toString())
+                    .append('\n');
+        }
+        return snapshot.toString();
+    }
+
+    private String descriptionSnapshot(ToolRegistry registry) {
+        StringBuilder snapshot = new StringBuilder();
+        List<ToolDefinition> definitions = registry.getToolDefinitions(
+                registry.createRuntimeSurfaceContext(new BuildAgentProfile()));
+        for (String name : List.of("read_file", "edit_file", "create_metadata", "qa_inspect", "skill")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            ToolDefinition definition = definitions.stream()
+                    .filter(candidate -> name.equals(candidate.getName()))
+                    .findFirst()
+                    .orElseThrow();
+            snapshot.append(name)
+                    .append('=')
+                    .append(normalizeDescription(definition.getDescription()))
+                    .append('\n');
+        }
+        return snapshot.toString();
+    }
+
+    private String normalizeDescription(String description) {
+        return description
                 .replace('\n', ' ')
                 .replaceAll("\\s+", " ") //$NON-NLS-1$ //$NON-NLS-2$
                 .trim();
     }
 
-    private String normalize(String value) {
-        return value.stripIndent();
+    private int totalDescriptionChars(List<ToolDefinition> definitions) {
+        return definitions.stream()
+                .map(ToolDefinition::getDescription)
+                .mapToInt(String::length)
+                .sum();
+    }
+
+    private int totalSchemaChars(List<ToolDefinition> definitions) {
+        return definitions.stream()
+                .map(ToolDefinition::getParametersSchema)
+                .mapToInt(String::length)
+                .sum();
     }
 
     private static void registerSnapshotTools(ToolRegistry registry) {
@@ -120,14 +156,14 @@ public class ToolSurfaceSnapshotTest {
         activeField.set(store, activeProviderId);
     }
 
-    private static LlmProviderConfig configured(String id, ProviderType type) {
+    private static LlmProviderConfig configured(String id, ProviderType type, String model) {
         LlmProviderConfig config = new LlmProviderConfig();
         config.setId(id);
         config.setName(id);
         config.setType(type);
         config.setBaseUrl("https://example.com/v1"); //$NON-NLS-1$
         config.setApiKey("key"); //$NON-NLS-1$
-        config.setModel("model"); //$NON-NLS-1$
+        config.setModel(model);
         return config;
     }
 

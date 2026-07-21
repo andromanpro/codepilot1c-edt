@@ -12,7 +12,7 @@ public class ToolGraphRouterEnsureModuleArtifactTest {
 
     @Test
     public void metadataGraphRequiresValidationBeforeEnsureAndAllowsDiagnosticsAfterEnsure() {
-        ToolGraphRouter router = ToolGraphRouter.createDefault();
+        ToolGraphRouter router = ToolGraphTestSupport.createRouter();
         router.initialize("graph=metadata", AgentConfig.defaults()); //$NON-NLS-1$
 
         ToolGraphToolFilter beforeValidation = router.buildToolFilter();
@@ -30,7 +30,7 @@ public class ToolGraphRouterEnsureModuleArtifactTest {
 
     @Test
     public void bslGraphHidesEnsureUntilValidationAndThenAllowsDiagnosticsFlow() {
-        ToolGraphRouter router = ToolGraphRouter.createDefault();
+        ToolGraphRouter router = ToolGraphTestSupport.createRouter();
         router.initialize("graph=bsl", AgentConfig.defaults()); //$NON-NLS-1$
 
         ToolGraphToolFilter beforeValidation = router.buildToolFilter();

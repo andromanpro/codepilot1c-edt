@@ -308,6 +308,35 @@ public class AgentSessionController {
         }
     }
 
+    public CompletableFuture<AgentResult> submitFromDesktopFresh(String prompt, String profileId) {
+        Objects.requireNonNull(prompt, "prompt"); //$NON-NLS-1$
+        String profileToUse;
+        synchronized (lock) {
+            if (isRunning()) {
+                return CompletableFuture.failedFuture(new IllegalStateException("Agent session is already running")); //$NON-NLS-1$
+            }
+            sessionId = UUID.randomUUID().toString();
+            conversationHistory = new ArrayList<>();
+            pendingAgentConfirmation = null;
+            pendingRemoteAction = null;
+            activeRunner = null;
+            activeTask = null;
+            currentState = AgentState.IDLE;
+            lastErrorMessage = null;
+            profileToUse = normalizeProfile(profileId != null && !profileId.isBlank() ? profileId : currentProfileId);
+            currentProfileId = profileToUse;
+        }
+        emitRemote("session_reset", payload("reason", "desktop_fresh")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        RemoteCommandResult result = submitPrompt(prompt, profileToUse, true);
+        if (!result.isOk()) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException(result.getCode() + ": " + result.getMessage())); //$NON-NLS-1$
+        }
+        synchronized (lock) {
+            return activeTask;
+        }
+    }
+
     public void stopFromDesktop() {
         synchronized (lock) {
             if (activeRunner != null) {

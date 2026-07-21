@@ -24,6 +24,8 @@ public final class ToolDisplayNames {
             case "read_file" -> "Чтение файла"; //$NON-NLS-1$ //$NON-NLS-2$
             case "edit_file" -> "Редактирование файла"; //$NON-NLS-1$ //$NON-NLS-2$
             case "write_file" -> "Создание файла"; //$NON-NLS-1$ //$NON-NLS-2$
+            case "workspace_copy_transform" -> "Копирование файла с заменами"; //$NON-NLS-1$ //$NON-NLS-2$
+            case "workspace_copy_transform_batch" -> "Пакетное копирование с заменами"; //$NON-NLS-1$ //$NON-NLS-2$
             case "list_files" -> "Список файлов"; //$NON-NLS-1$ //$NON-NLS-2$
             case "glob" -> "Поиск файлов"; //$NON-NLS-1$ //$NON-NLS-2$
             case "grep" -> "Поиск текста"; //$NON-NLS-1$ //$NON-NLS-2$

@@ -89,22 +89,51 @@ public class ApplyFormRecipeTool extends AbstractTool {
                     "properties": {
                       "action": {
                         "type": "string",
-                        "description": "Действие с реквизитом (case-insensitive). Accepted values: add, create, new, update, set, patch, modify, upsert, ensure, apply, merge, remove, delete, drop"
+                        "enum": ["create", "update", "upsert", "remove", "add", "new", "set", "patch", "modify", "ensure", "apply", "merge", "delete", "drop"],
+                        "description": "Form attribute action: create/update/upsert/remove; aliases accepted."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Form attribute name, not a visual item id. Required for create/upsert unless id is used."
+                      },
+                      "type": {
+                        "description": "Data value type for the form attribute, e.g. String(150), Number(15,2), Date, Boolean, CatalogRef.Номенклатура, ValueTable/ТаблицаЗначений, ValueTree/ДеревоЗначений. For ValueTable/ValueTree provide a 'columns' array. Do not guess SpreadsheetDocument/ТабличныйДокумент; inspect candidates or use a type accepted by EDT for this form."
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {"type": "string", "description": "Column identifier name."},
+                            "type": {"description": "Column value type, e.g. String(50), Number(15,3), Date, CatalogRef.Номенклатура."}
+                          },
+                          "additionalProperties": true
+                        },
+                        "description": "Columns for a ValueTable/ValueTree form attribute. Each column is a named sub-attribute with its own type. Ignored for scalar attribute types."
+                      },
+                      "data_path": {
+                        "type": "string",
+                        "description": "Optional binding path used by visual fields; create/upsert this form attribute before layout add_field references it."
+                      },
+                      "set": {
+                        "type": "object",
+                        "description": "Properties for an existing or new form attribute. Use valueType/type for attribute data type, not visual widget type."
                       }
-                    }
+                    },
+                    "additionalProperties": true
                   },
-                  "description": "Реквизиты формы. Каждый элемент: {name|id, action, type|field_type|fieldType, set, properties}. Для update/remove нужен name или id."
+                  "description": "Form attributes are data-bearing form реквизиты, separate from visual items. Use create/update/upsert/remove. Before binding UI fields, inspect_form_layout if unsure, then create/upsert the attribute with explicit type and bind layout via data_path."
                 },
                 "layout": {
                   "type": "array",
                   "items": {
                     "type": "object"
                   },
-                  "description": "Операции по макету формы (mutate_form_model)"
+                  "description": "Visual layout operations compatible with mutate_form_model. add_field creates a visual item only; data_path must point to an existing form attribute."
                 },
                 "validation_token": {
                   "type": "string",
-                  "description": "Одноразовый токен из edt_validate_request for this recipe application."
+                  "description": "Required unchanged token from edt_validate_request for this exact recipe payload."
                 }
               },
               "required": ["project", "validation_token"]
@@ -125,7 +154,7 @@ public class ApplyFormRecipeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Применяет декларативный recipe к управляемой форме: создание, поиск, атрибуты и layout."; //$NON-NLS-1$
+        return "Создает/обновляет форму, form attributes and layout with validation token."; //$NON-NLS-1$
     }
 
     @Override

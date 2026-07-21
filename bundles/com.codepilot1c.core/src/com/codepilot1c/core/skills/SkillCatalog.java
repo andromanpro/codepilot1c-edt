@@ -31,7 +31,8 @@ public final class SkillCatalog {
 
     private static final List<String> BUNDLED_SKILLS = List.of(
             "review", "refactor", "explain", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "architect", "validator"); //$NON-NLS-1$ //$NON-NLS-2$
+            "architect", "validator", //$NON-NLS-1$ //$NON-NLS-2$
+            "verify-web-client", "web-e2e-qa"); //$NON-NLS-1$ //$NON-NLS-2$
 
     private final Path projectRoot;
     private final WorkspacePromptSourceResolver sourceResolver;

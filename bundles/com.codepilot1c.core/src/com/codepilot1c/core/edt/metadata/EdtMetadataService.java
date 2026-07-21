@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.IdentityHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -48,24 +49,32 @@ import com._1c.g5.v8.bm.core.BmNameAlreadyInUseException;
 import com._1c.g5.v8.bm.core.IBmNamespace;
 import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.bm.core.IBmPlatformTransaction;
+import com._1c.g5.v8.dt.rights.IRightInfosService;
 import com._1c.g5.v8.bm.core.IBmTransaction;
 import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
 import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IExternalObjectProject;
+import com._1c.g5.v8.dt.core.platform.IDependentProject;
 import com._1c.g5.v8.dt.core.platform.IDtProject;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
 import com._1c.g5.v8.dt.form.model.AbstractDataPath;
 import com._1c.g5.v8.dt.form.model.AbstractFormAttribute;
 import com._1c.g5.v8.dt.form.model.Button;
 import com._1c.g5.v8.dt.form.model.CommandHandler;
 import com._1c.g5.v8.dt.form.model.DataPath;
 import com._1c.g5.v8.dt.form.model.DynamicListExtInfo;
+import com._1c.g5.v8.dt.form.model.EventHandler;
+import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
+import com._1c.g5.v8.dt.form.model.EventHandlerExtension;
+import com._1c.g5.v8.dt.form.model.ExtendedMethodCallType;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttribute;
 import com._1c.g5.v8.dt.form.model.FormAttributeColumn;
 import com._1c.g5.v8.dt.form.model.FormCommand;
+import com._1c.g5.v8.dt.form.model.FormVisualEntity;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
@@ -85,13 +94,16 @@ import com._1c.g5.v8.dt.form.model.UsualGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.UsualGroupRepresentation;
 import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.FormItemContainer;
+import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
 import com._1c.g5.v8.dt.mcore.DateFractions;
+import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.McorePackage;
 import com._1c.g5.v8.dt.mcore.NamedElement;
@@ -110,6 +122,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
+import com._1c.g5.v8.dt.metadata.mdclass.BasicCommand;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
@@ -117,6 +130,8 @@ import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassPackage;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
+import com._1c.g5.v8.dt.metadata.mdclass.ObjectBelonging;
+import com._1c.g5.v8.dt.md.extension.adopt.IModelObjectAdopter;
 import com._1c.g5.v8.dt.moxel.Cell;
 import com._1c.g5.v8.dt.moxel.Column;
 import com._1c.g5.v8.dt.moxel.Columns;
@@ -130,8 +145,13 @@ import com._1c.g5.v8.dt.moxel.Rect;
 import com._1c.g5.v8.dt.moxel.Row;
 import com._1c.g5.v8.dt.moxel.RowsArea;
 import com._1c.g5.v8.dt.moxel.SpreadsheetDocument;
+import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator;
+import com.codepilot1c.core.edt.forms.BslHandlerStubWriter;
+import com.codepilot1c.core.edt.forms.BslHandlerStubWriter.StubWriteOutcome;
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.CreateFormResult;
+import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
+import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -139,11 +159,14 @@ import com.codepilot1c.core.edt.forms.FormRecipeResult;
 import com.codepilot1c.core.edt.forms.FormUsage;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutRequest;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutResult;
+import com.codepilot1c.core.edt.forms.ModuleFileWriter;
+import com.codepilot1c.core.edt.forms.ModuleFileWriter.IFileModuleFileWriter;
 import com.codepilot1c.core.edt.forms.UpdateFormModelRequest;
 import com.codepilot1c.core.edt.forms.UpdateFormModelResult;
 import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
+import java.util.function.Consumer;
 import org.osgi.framework.Bundle;
 
 /**
@@ -163,6 +186,8 @@ public class EdtMetadataService {
     private static final String FORM_BUNDLE_ID = "com._1c.g5.v8.dt.form"; //$NON-NLS-1$
     private static final String PLATFORM_BUNDLE_ID = "com._1c.g5.v8.dt.platform"; //$NON-NLS-1$
     private static final String FORM_PLUGIN_CLASS = "com._1c.g5.v8.dt.internal.form.FormPlugin"; //$NON-NLS-1$
+    private static final String RIGHTS_BUNDLE_ID = "com._1c.g5.v8.dt.rights"; //$NON-NLS-1$
+    private static final String RIGHTS_PLUGIN_CLASS = "com._1c.g5.v8.dt.rights.RightsPlugin"; //$NON-NLS-1$
     private static final String FORM_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormFieldGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_INFO_CLASS = "com._1c.g5.v8.dt.form.generator.FormFieldInfo"; //$NON-NLS-1$
@@ -177,6 +202,10 @@ public class EdtMetadataService {
     private static final Map<String, Set<String>> RESERVED_ATTRIBUTE_FALLBACK = createReservedAttributeFallback();
     private static final Set<String> FORBIDDEN_FORM_ATTRIBUTE_TYPE_PREFIXES = Set.of(
             "array", "map", "массив", "соответствие"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+    private static final String FORM_ATTRIBUTE_NOT_FOUND_RECOVERY =
+            "recovery_hint={inspect_form_layout:true, next_step:'create_or_upsert_form_attribute_first_or_use_correct_name', tool:'apply_form_recipe.attributes'}"; //$NON-NLS-1$
+    private static final String FORM_ATTRIBUTE_TYPE_RECOVERY =
+            "recovery_hint={inspect_type_candidates:true, avoid_blind_guess:'SpreadsheetDocument/ТабличныйДокумент', next_step:'use_supported_attribute_type_or_visual_field_widget'}"; //$NON-NLS-1$
     private static final Set<String> FORM_MUTATION_META_KEYS = Set.of(
             "op", //$NON-NLS-1$
             "name", //$NON-NLS-1$
@@ -195,6 +224,10 @@ public class EdtMetadataService {
     private final EdtMetadataGateway gateway;
     private final MetadataProjectReadinessChecker readinessChecker;
     private final FormOwnerStrategy formOwnerStrategy;
+    private final CommandGroupResolver commandGroupResolver;
+    private final EventHandlerTargetResolver eventHandlerTargetResolver;
+    private final ModuleFileWriter moduleFileWriter;
+    private final ExtendedMethodCallTypeResolver extendedMethodCallTypeResolver;
 
     private record TypeSpec(
             String typeQuery,
@@ -215,13 +248,43 @@ public class EdtMetadataService {
     }
 
     public EdtMetadataService(EdtMetadataGateway gateway) {
+        this(gateway, new EventHandlerTargetResolver());
+    }
+
+    /**
+     * Test/DI-injection constructor: accepts an {@link EventHandlerTargetResolver}
+     * instance (e.g. one backed by a fake {@code EventHandlerCatalog}), so event-handler
+     * wiring stays unit-testable without a live EDT/BM/OSGi session.
+     */
+    EdtMetadataService(EdtMetadataGateway gateway, EventHandlerTargetResolver eventHandlerTargetResolver) {
+        this(gateway, eventHandlerTargetResolver, new IFileModuleFileWriter());
+    }
+
+    /**
+     * Test/DI-injection constructor: additionally accepts a {@link ModuleFileWriter}
+     * seam (e.g. an in-memory fake), so the post-export BSL handler-stub write
+     * (07-03, STUB-01/STUB-06) stays unit-testable without a live workspace {@code IFile}.
+     */
+    EdtMetadataService(
+            EdtMetadataGateway gateway,
+            EventHandlerTargetResolver eventHandlerTargetResolver,
+            ModuleFileWriter moduleFileWriter) {
         this.gateway = gateway;
         this.readinessChecker = new MetadataProjectReadinessChecker(gateway);
         this.formOwnerStrategy = FormOwnerStrategy.defaultStrategy();
+        this.commandGroupResolver = new CommandGroupResolver();
+        this.eventHandlerTargetResolver = eventHandlerTargetResolver;
+        this.moduleFileWriter = moduleFileWriter;
+        this.extendedMethodCallTypeResolver = new ExtendedMethodCallTypeResolver();
     }
 
     public boolean isEdtAvailable() {
         return gateway.isEdtAvailable();
+    }
+
+    private String resolvePlatformVersionString(IProject project) {
+        Object version = gateway.resolvePlatformVersion(project);
+        return version == null ? null : version.toString();
     }
 
     public MetadataOperationResult createMetadata(CreateMetadataRequest request) {
@@ -248,6 +311,10 @@ public class EdtMetadataService {
 
         String fqn = request.kind().getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
         LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
+
+        Map<String, TypeItem> topLevelPropertyTypes = preResolveTopLevelPropertyTypes(project, request.properties());
+        final Map<String, TypeItem> capturedTopLevelPropertyTypes = topLevelPropertyTypes;
+        final String platformVersion = resolvePlatformVersionString(project);
 
         executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
@@ -280,6 +347,8 @@ public class EdtMetadataService {
                     request.kind(),
                     request.properties(),
                     transaction,
+                    capturedTopLevelPropertyTypes,
+                    platformVersion,
                     opId,
                     fqn);
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
@@ -287,21 +356,27 @@ public class EdtMetadataService {
             return null;
         });
         rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
-        forceExportTopLevelObject(project, fqn, opId);
+        boolean derivedDataReady = forceExportTopLevelObject(project, fqn, opId);
         verifyTopLevelPersisted(project, fqn, opId);
         verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
         refreshProjectSafely(project);
-        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
+        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s derivedDataReady=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                fqn);
+                fqn,
+                Boolean.valueOf(derivedDataReady));
 
+        String message = derivedDataReady
+                ? "Metadata object created successfully" //$NON-NLS-1$
+                : "Metadata object created successfully. Derived-data recomputation is still in progress, " //$NON-NLS-1$
+                        + "so the project may briefly report PROJECT_NOT_READY; re-run reads " //$NON-NLS-1$
+                        + "(scan_metadata_index/get_diagnostics) shortly. Do NOT recreate this object."; //$NON-NLS-1$
         return new MetadataOperationResult(
                 true,
                 request.projectName(),
                 request.kind().name(),
                 request.name(),
                 fqn,
-                "Metadata object created successfully"); //$NON-NLS-1$
+                message);
     }
 
     public CreateFormResult createForm(CreateFormRequest request) {
@@ -430,6 +505,7 @@ public class EdtMetadataService {
                     "Cannot resolve project configuration", false); //$NON-NLS-1$
         }
 
+        List<PendingStub> pendingStubs = new ArrayList<>();
         List<String> operationSummaries = executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
             MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, request.formFqn());
@@ -439,7 +515,7 @@ public class EdtMetadataService {
                         "Form metadata not found: " + request.formFqn(), false); //$NON-NLS-1$
             }
             Form formModel = resolveManagedFormModel(basicForm, request.formFqn());
-            List<String> applied = applyFormModelOperations(formModel, request.operations());
+            List<String> applied = applyFormModelOperations(formModel, request.operations(), pendingStubs);
             ensureUuidsRecursively(basicForm, opId, request.formFqn());
             return applied;
         });
@@ -447,6 +523,17 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(request.formFqn());
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectPersisted(project, request.formFqn(), opId);
+
+        // PHASE C (07-03, STUB-06): BSL handler stub write, strictly AFTER the BM
+        // export/verify above — never inside the executeWrite transaction that
+        // committed the model slot.
+        if (!pendingStubs.isEmpty()) {
+            List<String> stubSummaries = writeHandlerStubs(
+                    project, configuration, request.formFqn(), topLevelFqn, pendingStubs, opId);
+            operationSummaries = new ArrayList<>(operationSummaries);
+            operationSummaries.addAll(stubSummaries);
+        }
+
         refreshProjectSafely(project);
         LOG.info("[%s] updateFormModel SUCCESS in %s form=%s operations=%d", //$NON-NLS-1$
                 opId,
@@ -459,6 +546,122 @@ public class EdtMetadataService {
                 request.formFqn(),
                 operationSummaries.size(),
                 operationSummaries);
+    }
+
+    /**
+     * Post-export tail (07-03, STUB-06): for each pending stub, ensures {@code Module.bsl}
+     * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
+     * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} runs the
+     * compensating {@link #rollbackHandlerSlot} + re-export, then throws
+     * {@code EDT_TRANSACTION_FAILED} (STUB-01 both-or-neither).
+     * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
+     * model slot stays wired, NO rollback (Pitfall 3).
+     */
+    private List<String> writeHandlerStubs(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId) {
+        ScriptVariant variant = resolveScriptVariant(configuration);
+        String modulePath = ensureFormModulePath(project, formFqn, opId);
+        List<String> summaries = new ArrayList<>();
+        BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
+        for (PendingStub pending : pendingStubs) {
+            Event freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
+            BslHandlerStubGenerator.StubText stub = generator.generate(freshEvent, pending.handlerName(), variant);
+            StubWriteOutcome outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+            switch (outcome) {
+                case WRITTEN -> summaries.add(
+                        "stub generated: " + pending.handlerName() + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                case SKIPPED_EXISTING_WARN -> {
+                    LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
+                            opId, pending.handlerName());
+                    summaries.add("stub skipped (exists): " + pending.handlerName()); //$NON-NLS-1$
+                }
+                case WRITE_FAILURE -> {
+                    LOG.error("[%s] Stub write failed for handler '%s'; rolling back handler slot", //$NON-NLS-1$
+                            opId, pending.handlerName());
+                    rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
+                    forceExportTopLevelObject(project, topLevelFqn, opId);
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                            "Stub write failed for handler '" + pending.handlerName() //$NON-NLS-1$
+                                    + "'; handler slot rolled back", true); //$NON-NLS-1$
+                }
+                default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
+            }
+        }
+        return summaries;
+    }
+
+    /**
+     * Ensures the form's {@code Module.bsl} exists (Pitfall 4: the very-first mutation on a
+     * fresh form must not fail with file-not-found) and returns its workspace-relative path.
+     */
+    private String ensureFormModulePath(IProject project, String formFqn, String opId) {
+        ModuleArtifactResult result = ensureModuleArtifact(new EnsureModuleArtifactRequest(
+                project.getName(), formFqn, ModuleArtifactKind.MODULE, true, "")); //$NON-NLS-1$
+        LOG.debug("[%s] ensureFormModulePath resolved path=%s (created=%s)", //$NON-NLS-1$
+                opId, result.modulePath(), Boolean.valueOf(result.created()));
+        return result.modulePath();
+    }
+
+    /**
+     * Re-resolves a FRESH {@code Event} for stub generation (directive/signature source),
+     * completely independent of the original (by-now-committed) transaction's object graph
+     * (Pitfall 2) — re-runs the exact same target/container/event resolution
+     * {@link #wireEventHandler} used, via a fresh read-only {@code executeRead}.
+     */
+    private Event resolveFreshEvent(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending) {
+        return executeRead(project, tx -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
+            if (txConfiguration == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM read transaction", false); //$NON-NLS-1$
+            }
+            MdObject resolved = resolveByFqn(txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + formFqn, false); //$NON-NLS-1$
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
+            EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
+            return eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
+        });
+    }
+
+    /**
+     * Compensating transaction (STUB-01 "both or neither"): re-resolves the Form/container/
+     * handler completely FRESH inside a NEW {@code executeWrite} — never closing over the
+     * original transaction's (now-stale) object references (Pitfall 2) — and removes the
+     * just-wired handler slot.
+     */
+    private void rollbackHandlerSlot(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
+        executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                LOG.warn("[%s] rollbackHandlerSlot: form metadata not found: %s", opId, formFqn); //$NON-NLS-1$
+                return null;
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
+            EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
+            Event freshEvent = eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
+            EventHandler existing = findExistingHandler(container, freshEvent);
+            if (existing != null) {
+                container.getHandlers().remove(existing);
+            }
+            return null;
+        });
     }
 
     public FormRecipeResult applyFormRecipe(FormRecipeRequest request) {
@@ -791,6 +994,20 @@ public class EdtMetadataService {
     }
 
     private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations) {
+        return applyFormModelOperations(formModel, operations, new ArrayList<>());
+    }
+
+    /**
+     * Same as {@link #applyFormModelOperations(Form, List)}, additionally threading out
+     * a {@code pendingStubs} list: every {@code add_event_handler}/{@code set_event_handler}
+     * upsert appends a {@link PendingStub} record here, consumed by {@code updateFormModel}'s
+     * post-export tail (07-03) to generate/write the matching BSL stub strictly AFTER
+     * {@code forceExportTopLevelObject}/{@code verifyObjectPersisted} (STUB-06). The
+     * {@code remove_event_handler} case records nothing. The single-arg overload above
+     * (used by {@code EventHandlerWiringTest} via reflection) simply discards this list.
+     */
+    private List<String> applyFormModelOperations(
+            Form formModel, List<Map<String, Object>> operations, List<PendingStub> pendingStubs) {
         List<String> summaries = new ArrayList<>();
         IFormItemManagementService itemManagementService = resolveOptionalFormItemManagementService();
         int operationIndex = 1;
@@ -850,11 +1067,16 @@ public class EdtMetadataService {
                     rejectTableIncompatibleFieldType(parentContainer, operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Object fieldDataPathValue = getMapValueIgnoreCase(set, "data_path"); //$NON-NLS-1$
+                    if (fieldDataPathValue == null) {
+                        fieldDataPathValue = getMapValueIgnoreCase(set, "dataPath"); //$NON-NLS-1$
+                    }
                     FormField field = addFieldItem(
                             formModel,
                             parentContainer,
                             operation,
                             name,
+                            fieldDataPathValue,
                             index,
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -864,6 +1086,37 @@ public class EdtMetadataService {
                     applyDefaultVisibility(field, effectiveSet);
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
+                }
+                case "addtable", "createtable" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid table name: " + name, false); //$NON-NLS-1$
+                    }
+                    Object dataPathValue = getMapValueIgnoreCase(operation, "data_path"); //$NON-NLS-1$
+                    if (dataPathValue == null) {
+                        dataPathValue = getMapValueIgnoreCase(operation, "dataPath"); //$NON-NLS-1$
+                    }
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Table table = addTableItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            dataPathValue,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> set = extractAddFieldSet(operation);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(
+                            set, "name", "title", "type", "data_path", "datapath"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(table, effectiveSet);
+                    }
+                    applyDefaultVisibility(table, effectiveSet);
+                    summaries.add("add_table[" + operationIndex + "]: name=" + table.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(table)); //$NON-NLS-1$
                 }
                 case "setitemprops", "setitem", "updateitem", "set" -> {
                     FormItem item = resolveRequiredItem(formModel, operation);
@@ -966,6 +1219,33 @@ public class EdtMetadataService {
                             + ", id=" + safeItemId(button) //$NON-NLS-1$
                             + (commandRef != null ? ", command=" + commandRef : "")); //$NON-NLS-1$ //$NON-NLS-2$
                 }
+                case "addeventhandler", "seteventhandler" -> {
+                    WiredEventHandler wired = wireEventHandler(formModel, operation);
+                    EventHandler handler = wired.handler();
+                    pendingStubs.add(new PendingStub(operation, handler.getEvent().getName(), handler.getName()));
+                    StringBuilder summary = new StringBuilder("add_event_handler[") //$NON-NLS-1$
+                            .append(operationIndex)
+                            .append("]: event=") //$NON-NLS-1$
+                            .append(handler.getEvent().getName())
+                            .append(", handler=") //$NON-NLS-1$
+                            .append(handler.getName());
+                    if (wired.adopted()) {
+                        summary.append(", call_type=").append(wired.callType().getLiteral()); //$NON-NLS-1$
+                        summary.append(", base_handler_exists=").append(wired.baseHandlerExists()); //$NON-NLS-1$
+                    }
+                    summaries.add(summary.toString());
+                }
+                case "removeeventhandler" -> {
+                    FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
+                    EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
+                    String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+                    Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
+                    EventHandler existing = findExistingHandler(container, event);
+                    if (existing != null) {
+                        container.getHandlers().remove(existing);
+                    }
+                    summaries.add("remove_event_handler[" + operationIndex + "]: event=" + event.getName()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Unsupported form operation: " + rawOp, false); //$NON-NLS-1$
@@ -973,6 +1253,229 @@ public class EdtMetadataService {
             operationIndex++;
         }
         return summaries;
+    }
+
+    /**
+     * Resolves the target {@link FormVisualEntity} for an event-handler operation.
+     * If {@code target=="form"} (or no item reference is present), the {@code Form}
+     * root itself is returned — {@code resolveRequiredItem} cannot provide this since
+     * {@code Form} does not implement {@link FormItem}, only {@link FormVisualEntity}.
+     * Otherwise the resolution delegates to {@link #resolveRequiredItem}.
+     */
+    private FormVisualEntity resolveEventHandlerFormItem(Form formModel, Map<String, Object> operation) {
+        String target = asString(getMapValueIgnoreCase(operation, "target")); //$NON-NLS-1$
+        boolean explicitFormTarget = target != null && "form".equalsIgnoreCase(target); //$NON-NLS-1$
+        boolean noItemReference = target == null
+                && getMapValueIgnoreCase(operation, "item_id") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "id") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "item_name") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "name") == null; //$NON-NLS-1$
+        if (explicitFormTarget || noItemReference) {
+            return formModel;
+        }
+        return resolveRequiredItem(formModel, operation);
+    }
+
+    /**
+     * Upsert-by-(target,event) implementation shared by {@code add_event_handler} and
+     * {@code set_event_handler}: re-wiring the same event never duplicates the handler.
+     *
+     * <p>Extension-adoption branch (EXT-01/EXT-02/EXT-03, Phase 8): if the form's owning
+     * {@code BasicForm} is {@link ObjectBelonging#ADOPTED} (a single uniform signal reached
+     * via {@code formModel.getMdForm()} — NOT a per-item {@code ExtensionAdoptedProperty}
+     * check, since {@code Table} does not implement it), the created handler is an
+     * {@link EventHandlerExtension} with an explicit-or-resolved
+     * {@link ExtendedMethodCallType} (never relying on the EMF-unset implicit default),
+     * and a {@code baseHandlerExists} observability flag is computed via the adopter's
+     * reverse lookup ({@link IModelObjectAdopter#getSource}). A NATIVE target continues to
+     * get a plain {@link EventHandler} exactly as Phase 6 — unchanged.</p>
+     *
+     * <p>EXT-03 note: no {@code generateExternalPropertyFqn}/{@code attachTopObject} call is
+     * added here — this SUPERSEDES the CONTEXT.md suggestion to reuse that mechanism.
+     * {@code resolveManagedFormModel} (already used by the caller to resolve
+     * {@code formModel}) already resolves the correct, already-adopted, already-materialized
+     * {@code Form} via {@code basicForm.getForm()} — the SAME path base config uses. The
+     * external-property FQN mechanism is a form-CREATION-time concern
+     * (see {@code createForm}/{@code linkGeneratedFormToTransaction}), not an event-wiring
+     * concern, per D-RESEARCH Pattern 3.</p>
+     */
+    private WiredEventHandler wireEventHandler(Form formModel, Map<String, Object> operation) {
+        FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
+        EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
+        String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+        Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
+        String handlerName = asString(getMapValueIgnoreCase(operation, "handler_name")); //$NON-NLS-1$
+        if (handlerName == null || handlerName.isBlank()) {
+            handlerName = defaultHandlerName(target, event);
+        }
+        if (!MetadataNameValidator.isValidName(handlerName)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "Invalid event handler name: " + handlerName, false); //$NON-NLS-1$
+        }
+        boolean adopted = isAdoptedTarget(formModel);
+        ExtendedMethodCallType requestedCallType = extendedMethodCallTypeResolver.resolve(
+                asString(getMapValueIgnoreCase(operation, "call_type"))); //$NON-NLS-1$
+        EventHandler handler = findExistingHandler(container, event);
+        if (handler == null) {
+            handler = createHandlerForTarget(adopted, requestedCallType);
+            handler.setEvent(event);
+            container.getHandlers().add(handler);
+        } else if (adopted && handler instanceof EventHandlerExtension extensionHandler) {
+            extensionHandler.setCallType(requestedCallType);
+        }
+        handler.setName(handlerName);
+        boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
+        return new WiredEventHandler(handler, requestedCallType, adopted, baseExists);
+    }
+
+    /**
+     * EClass auto-detection (EXT-01): a single boolean check on data already in scope,
+     * uniform across {@code Form}/{@code FormField}/{@code Table} (D-RESEARCH Pattern 1).
+     */
+    private boolean isAdoptedTarget(Form formModel) {
+        BasicForm mdForm = formModel.getMdForm();
+        return mdForm != null && mdForm.getObjectBelonging() == ObjectBelonging.ADOPTED;
+    }
+
+    private EventHandler createHandlerForTarget(boolean adopted, ExtendedMethodCallType callType) {
+        if (adopted) {
+            EventHandlerExtension extensionHandler = FormFactory.eINSTANCE.createEventHandlerExtension();
+            extensionHandler.setCallType(callType);
+            return extensionHandler;
+        }
+        return FormFactory.eINSTANCE.createEventHandler();
+    }
+
+    /**
+     * Base-handler-exists detection (EXT-02): resolves the BASE configuration's
+     * corresponding form via {@link IModelObjectAdopter#getSource} (the reverse of
+     * {@code getAdopted}), re-runs {@link #resolveEventHandlerFormItem} against it to reach
+     * the same-shape container, then checks for a handler matching the wired event's NAME —
+     * never by {@code Event} object reference, since the base side resolves a separate
+     * {@code Event} instance for the same event name (Pitfall 5). This flag is OBSERVABILITY
+     * only; it never gates or changes the resolved {@code call_type}.
+     *
+     * <p>If the {@link IModelObjectAdopter} service itself is unavailable (e.g. a headless
+     * unit-test double with no live {@code VibeCorePlugin}, or a genuinely degraded EDT
+     * runtime), this resolves to {@code false} rather than failing the whole wiring
+     * operation — the flag is best-effort observability, not a hard dependency of EXT-01's
+     * primary EClass/call_type behavior.</p>
+     */
+    private boolean baseHandlerExists(Form adoptedFormModel, Map<String, Object> operation, Event event) {
+        BasicForm adoptedBasicForm = adoptedFormModel.getMdForm();
+        if (adoptedBasicForm == null) {
+            return false;
+        }
+        BasicForm baseBasicForm;
+        try {
+            baseBasicForm = gateway.getModelObjectAdopter().getSource(adoptedBasicForm);
+        } catch (MetadataOperationException e) {
+            if (e.getCode() == MetadataOperationCode.EDT_SERVICE_UNAVAILABLE) {
+                return false;
+            }
+            throw e;
+        }
+        if (baseBasicForm == null || baseBasicForm.getForm() == null) {
+            return false;
+        }
+        if (!(baseBasicForm.getForm() instanceof Form baseFormModel)) {
+            return false;
+        }
+        FormVisualEntity baseTarget;
+        try {
+            baseTarget = resolveEventHandlerFormItem(baseFormModel, operation);
+        } catch (RuntimeException e) {
+            // The base side may not (yet) have the same-shape item resolvable (e.g. a
+            // brand-new adopted-only item) — base_handler_exists is observability only,
+            // never a hard failure of the wiring operation itself.
+            return false;
+        }
+        if (!(baseTarget instanceof EventHandlerContainer baseContainer)) {
+            return false;
+        }
+        return containsHandlerForEventName(baseContainer, event.getName());
+    }
+
+    /**
+     * Pure name-matching helper (Pitfall 5): whether {@code container} already has a
+     * handler for the event whose {@code getName()} String-equals {@code eventName}.
+     * Factored out so it is unit-testable headlessly (no live BM transaction) against a
+     * pre-seeded base-side fixture, independent of the live {@code getSource} lookup.
+     */
+    private boolean containsHandlerForEventName(EventHandlerContainer container, String eventName) {
+        if (eventName == null) {
+            return false;
+        }
+        for (EventHandler handler : container.getHandlers()) {
+            if (handler != null && handler.getEvent() != null && eventName.equals(handler.getEvent().getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private EventHandler findExistingHandler(EventHandlerContainer container, Event event) {
+        for (EventHandler handler : container.getHandlers()) {
+            if (handler != null && handler.getEvent() == event) {
+                return handler;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Carries {@link #wireEventHandler}'s applied handler plus the resolved/observability
+     * facts the {@code add_event_handler}/{@code set_event_handler} summary echoes for
+     * adopted targets (EXT-01/EXT-02). For NATIVE targets, {@code callType} is still resolved
+     * (validated) but never applied/echoed — {@code adopted} is {@code false}.
+     */
+    private record WiredEventHandler(
+            EventHandler handler, ExtendedMethodCallType callType, boolean adopted, boolean baseHandlerExists) {
+    }
+
+    /**
+     * A recorded {@code add_event_handler}/{@code set_event_handler} upsert awaiting its
+     * post-export BSL stub write (07-03, STUB-06).
+     *
+     * <p>{@code operation} is the ORIGINAL operation map and {@code eventName} the
+     * resolved event's EN name — both retained (rather than the live, transaction-scoped
+     * {@code Event}/container EMF references) so BOTH the stub-write tail and the
+     * compensating rollback ({@link #rollbackHandlerSlot}) re-resolve the
+     * target/container/event completely FRESH via {@link #resolveEventHandlerFormItem} +
+     * {@code resolveConcreteEvent} inside their own transactions — never touching a
+     * reference from the (by-then-committed, transaction-scoped) original transaction
+     * (Pitfall 2).</p>
+     *
+     * <p>{@code handlerName} is the already-validated handler procedure name (validated
+     * upstream by {@code MetadataNameValidator.isValidName} in {@link #wireEventHandler} —
+     * not re-validated here or downstream, per V5).</p>
+     */
+    private record PendingStub(Map<String, Object> operation, String eventName, String handlerName) {
+    }
+
+    /**
+     * Deterministic fallback handler name: {@code {ItemOrForm}{EventNameEn}} PascalCase.
+     * The event-name portion is derived ONLY from the resolved {@link Event#getName()}
+     * (the EN name) — never a hardcoded literal (EVT-04).
+     */
+    private String defaultHandlerName(FormVisualEntity target, Event event) {
+        String itemPart;
+        if (target instanceof NamedElement namedElement && namedElement.getName() != null
+                && !namedElement.getName().isBlank()) {
+            itemPart = pascalCase(namedElement.getName());
+        } else {
+            itemPart = "Form"; //$NON-NLS-1$
+        }
+        String eventPart = pascalCase(event.getName());
+        return itemPart + eventPart;
+    }
+
+    private String pascalCase(String value) {
+        if (value == null || value.isBlank()) {
+            return ""; //$NON-NLS-1$
+        }
+        return Character.toUpperCase(value.charAt(0)) + value.substring(1);
     }
 
     private Map<String, Object> extractOperationSet(Map<String, Object> operation) {
@@ -1055,14 +1558,25 @@ public class EdtMetadataService {
             FormItemContainer parentContainer,
             Map<String, Object> operation,
             String name,
+            Object dataPathValue,
             Integer index,
             IFormItemManagementService itemManagementService) {
         FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        boolean atIndex = index != null && index.intValue() >= 0
+                && index.intValue() <= parentContainer.getItems().size();
         if (itemManagementService != null) {
-            if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
-                return itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor);
+            // When the field is bound to a data path, pass it to EDT so it picks the widget by
+            // the attribute's type (Boolean -> CheckBoxField, etc.) — exactly like dragging the
+            // attribute onto the form. The path-less overload always yields a plain InputField.
+            AbstractDataPath path = dataPathValue != null ? toDataPath(dataPathValue, "data_path") : null; //$NON-NLS-1$
+            if (path != null) {
+                return atIndex
+                        ? itemManagementService.addField(parentContainer, path, index.intValue(), formModel, descriptor)
+                        : itemManagementService.addField(parentContainer, path, formModel, descriptor);
             }
-            return itemManagementService.addField(parentContainer, formModel, descriptor);
+            return atIndex
+                    ? itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor)
+                    : itemManagementService.addField(parentContainer, formModel, descriptor);
         }
         FormField field = FormFactory.eINSTANCE.createFormField();
         field.setId(nextFormItemId(formModel));
@@ -1070,6 +1584,41 @@ public class EdtMetadataService {
         applyTitleValue(field, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
         insertItemIntoContainer(parentContainer, field, index);
         return field;
+    }
+
+    /**
+     * Adds a visual {@code Table} item via EDT's form item service. When {@code data_path} points to
+     * a collection attribute (ValueTable/ValueTree or a tabular section), {@code createColumns=true}
+     * makes EDT auto-generate the column fields from that attribute — the same result as dragging the
+     * attribute onto the form. A simple {@code add_field} cannot do this (a table is a distinct item
+     * kind, not a FormField type).
+     */
+    private Table addTableItem(
+            Form formModel,
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String name,
+            Object dataPathValue,
+            Integer index,
+            IFormItemManagementService itemManagementService) {
+        if (itemManagementService == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Form item management service is unavailable; cannot create a form table.", false); //$NON-NLS-1$
+        }
+        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        boolean atIndex = index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size();
+        if (dataPathValue != null) {
+            AbstractDataPath path = toDataPath(dataPathValue, "data_path"); //$NON-NLS-1$
+            if (atIndex) {
+                return itemManagementService.addTable(parentContainer, path, true, index.intValue(), formModel, descriptor);
+            }
+            return itemManagementService.addTable(parentContainer, path, true, formModel, descriptor);
+        }
+        if (atIndex) {
+            return itemManagementService.addTable(parentContainer, index.intValue(), formModel, descriptor);
+        }
+        return itemManagementService.addTable(parentContainer, formModel, descriptor);
     }
 
     private FormCommand addCommandToForm(
@@ -1811,7 +2360,12 @@ public class EdtMetadataService {
         }
         throw new MetadataOperationException(
                 MetadataOperationCode.METADATA_NOT_FOUND,
-                "Form attribute not found: id=" + id + ", name=" + name, false); //$NON-NLS-1$ //$NON-NLS-2$
+                formAttributeNotFoundMessage(id, name), false);
+    }
+
+    private static String formAttributeNotFoundMessage(Integer id, String name) {
+        return "Form attribute not found: id=" + id + ", name=" + name + ". " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                + FORM_ATTRIBUTE_NOT_FOUND_RECOVERY;
     }
 
     private void applyFormAttributePatch(FormAttribute attribute, Map<String, Object> patch) {
@@ -1990,7 +2544,7 @@ public class EdtMetadataService {
                 if (mode == FormRecipeMode.UPDATE || isUpdate) {
                     throw new MetadataOperationException(
                             MetadataOperationCode.METADATA_NOT_FOUND,
-                            "Form attribute not found: " + (name != null ? name : id), false); //$NON-NLS-1$
+                            formAttributeNotFoundMessage(id, name), false);
                 }
                 if (!MetadataNameValidator.isValidName(name)) {
                     throw new MetadataOperationException(
@@ -2000,16 +2554,17 @@ public class EdtMetadataService {
                 FormAttribute created = FormFactory.eINSTANCE.createFormAttribute();
                 created.setId(nextFormAttributeId(formModel));
                 created.setName(name);
+                // Attach the attribute to the form (and thus the project resource) BEFORE resolving
+                // its type: TypeProviderService requires the context object to be contained in the
+                // project to compute the available types, otherwise it raises
+                // "Object must be contained in project".
+                formModel.getAttributes().add(created);
                 FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
                 if (patch.typeValue != null) {
                     applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
                 applyFormAttributePatch(created, patch.patch);
-                formModel.getAttributes().add(created);
-                if (patch.columnsValue != null) {
-                    applyFormAttributeColumns(formModel, created, patch.columnsValue,
-                            transaction, preResolvedTypes, txConfiguration);
-                }
+                applyFormAttributeColumns(formModel, created, patch.columns, transaction, preResolvedTypes, txConfiguration);
                 stats.created++;
                 byId.put(created.getId(), created);
                 if (created.getName() != null) {
@@ -2028,10 +2583,7 @@ public class EdtMetadataService {
                 applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
             applyFormAttributePatch(existing, patch.patch);
-            if (patch.columnsValue != null) {
-                applyFormAttributeColumns(formModel, existing, patch.columnsValue,
-                        transaction, preResolvedTypes, txConfiguration);
-            }
+            applyFormAttributeColumns(formModel, existing, patch.columns, transaction, preResolvedTypes, txConfiguration);
             stats.updated++;
         }
 
@@ -2079,9 +2631,12 @@ public class EdtMetadataService {
             typeValue = setType != null ? setType : propsType;
         }
 
-        Object columnsValue = removeMapValueIgnoreCase(patch, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
-        Object setColumns = removeMapValueIgnoreCase(set, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
-        Object propsColumns = removeMapValueIgnoreCase(props, "columns", "column"); //$NON-NLS-1$ //$NON-NLS-2$
+        Object columnsValue = removeMapValueIgnoreCase(
+                patch, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Object setColumns = removeMapValueIgnoreCase(
+                set, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Object propsColumns = removeMapValueIgnoreCase(
+                props, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         if (columnsValue == null) {
             columnsValue = setColumns != null ? setColumns : propsColumns;
         }
@@ -2096,7 +2651,7 @@ public class EdtMetadataService {
         } else {
             patch.remove("properties"); //$NON-NLS-1$
         }
-        return new FormAttributePatch(patch, typeValue, columnsValue);
+        return new FormAttributePatch(patch, typeValue, asListOfMaps(columnsValue));
     }
 
     private void applyFormAttributeType(
@@ -2148,9 +2703,17 @@ public class EdtMetadataService {
             }
         }
         if (txTypeItem == null) {
+            // Last resort: resolve from the set EDT reports as available for this form-attribute
+            // context (TypeProviderService — the form Type Chooser engine). This is the authoritative
+            // list of valid form-attribute types and covers form-valid platform value types
+            // (ValueTable/ValueTree/Picture/Color/...) that the metadata lookups above cannot find.
+            txTypeItem = resolveFormAttributeTypeViaProvider(attribute, typeSpec, transaction);
+        }
+        if (txTypeItem == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "Type value cannot be resolved for form attribute: " + typeQuery, false); //$NON-NLS-1$
+                    "Type value cannot be resolved for form attribute: " + typeQuery //$NON-NLS-1$
+                            + ". " + FORM_ATTRIBUTE_TYPE_RECOVERY, false); //$NON-NLS-1$
         }
 
         TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
@@ -2196,6 +2759,83 @@ public class EdtMetadataService {
         setTypeDescriptionOnEObject(attribute, typeDesc);
     }
 
+    /**
+     * Resolves a form-attribute value type from the set EDT reports as available for this exact
+     * context, using {@code TypeProviderService} (the engine behind the form Type Chooser dialog).
+     * This is the authoritative set of valid form-attribute types — primitives, references and
+     * form-valid platform value types (ValueTable, ValueTree, Picture, Color, Font, ValueList, ...).
+     * Returns {@code null} when the requested type is not an available form type, so the caller
+     * fails with its standard message (which is correct: EDT itself does not offer that type for a
+     * form attribute).
+     */
+    private TypeItem resolveFormAttributeTypeViaProvider(
+            AbstractFormAttribute attribute,
+            TypeSpec typeSpec,
+            IBmPlatformTransaction transaction
+    ) {
+        if (attribute == null || typeSpec == null) {
+            return null;
+        }
+        String wanted = normalizeTypeRootToken(typeSpec.typeQuery());
+        if (wanted.isBlank()) {
+            return null;
+        }
+        EStructuralFeature valueTypeFeature = resolveStructuralFeatureIgnoreCase(attribute, "valueType"); //$NON-NLS-1$
+        if (!(valueTypeFeature instanceof EReference valueTypeReference)) {
+            return null;
+        }
+        TypeDescriptionInfoWithTypeInfo info;
+        try {
+            info = TypeProviderService.INSTANCE.getTypeDescriptionInfoWithTypeInfo(attribute, valueTypeReference, null);
+        } catch (RuntimeException e) {
+            LOG.debug("resolveFormAttributeTypeViaProvider: provider failed for type=%s: %s", //$NON-NLS-1$
+                    typeSpec.typeQuery(), e.getMessage());
+            return null;
+        }
+        if (info == null || info.getTypeInfos() == null) {
+            return null;
+        }
+        for (TypeInfo typeInfo : info.getTypeInfos()) {
+            if (typeInfo == null || typeInfo.getType() == null || !formTypeInfoMatches(wanted, typeInfo)) {
+                continue;
+            }
+            TypeItem type = typeInfo.getType();
+            try {
+                TypeItem txType = transaction.toTransactionObject(type);
+                if (txType != null) {
+                    return txType;
+                }
+            } catch (RuntimeException e) {
+                LOG.debug("resolveFormAttributeTypeViaProvider: toTransactionObject failed for type=%s: %s", //$NON-NLS-1$
+                        wanted, e.getMessage());
+            }
+            return type;
+        }
+        LOG.debug("resolveFormAttributeTypeViaProvider: '%s' is not an available form-attribute type", //$NON-NLS-1$
+                typeSpec.typeQuery());
+        return null;
+    }
+
+    private boolean formTypeInfoMatches(String wantedRootToken, TypeInfo typeInfo) {
+        TypeItem type = typeInfo.getType();
+        if (matchesFormTypeToken(wantedRootToken, type.getName())
+                || matchesFormTypeToken(wantedRootToken, type.getNameRu())) {
+            return true;
+        }
+        if (typeInfo.getCode() != null && matchesFormTypeToken(wantedRootToken, String.valueOf(typeInfo.getCode()))) {
+            return true;
+        }
+        return typeInfo.getCodeRu() != null
+                && matchesFormTypeToken(wantedRootToken, String.valueOf(typeInfo.getCodeRu()));
+    }
+
+    private boolean matchesFormTypeToken(String wantedRootToken, String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        return wantedRootToken.equals(normalizeTypeRootToken(candidate));
+    }
+
     private void validateFormAttributeType(Object typeValue) {
         if (typeValue instanceof List<?> list) {
             for (Object item : list) {
@@ -2215,7 +2855,8 @@ public class EdtMetadataService {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_PROPERTY_VALUE,
                         "Form attribute type is not supported: " + typeQuery
-                                + ". Use FixedArray/FixedMap or a supported scalar type.", false); //$NON-NLS-1$
+                                + ". Use FixedArray/FixedMap or a supported scalar type. " //$NON-NLS-1$
+                                + FORM_ATTRIBUTE_TYPE_RECOVERY, false);
             }
         }
     }
@@ -2268,7 +2909,76 @@ public class EdtMetadataService {
         return maxId + 1;
     }
 
-    private int nextFormColumnId(Form formModel) {
+    /**
+     * Creates, updates or removes columns of a composite form attribute (ValueTable/ValueTree). Each column
+     * is a {@link FormAttributeColumn} with its own name and value type, resolved through the same
+     * type pipeline as a scalar attribute. Columns are matched/upserted by name.
+     */
+    private void applyFormAttributeColumns(
+            Form formModel,
+            FormAttribute attribute,
+            List<Map<String, Object>> columns,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
+        if (attribute == null || columns == null || columns.isEmpty()) {
+            return;
+        }
+        Map<String, FormAttributeColumn> existingByName = new HashMap<>();
+        for (FormAttributeColumn column : attribute.getColumns()) {
+            if (column != null && column.getName() != null && !column.getName().isBlank()) {
+                existingByName.put(normalizeToken(column.getName()), column);
+            }
+        }
+        int nextId = nextFormElementId(formModel);
+        for (Map<String, Object> descriptor : columns) {
+            if (descriptor == null || descriptor.isEmpty()) {
+                continue;
+            }
+            String columnName = asString(getMapValueIgnoreCase(descriptor, "name")); //$NON-NLS-1$
+            if (columnName == null) {
+                columnName = asString(getMapValueIgnoreCase(descriptor, "column")); //$NON-NLS-1$
+            }
+            String action = normalizeToken(asString(getMapValueIgnoreCase(descriptor, "action"))); //$NON-NLS-1$
+            FormAttributeColumn column = existingByName.get(normalizeToken(columnName));
+            if ("remove".equals(action) || "delete".equals(action) || "drop".equals(action)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                if (column != null) {
+                    attribute.getColumns().remove(column);
+                    existingByName.remove(normalizeToken(column.getName()));
+                }
+                continue;
+            }
+            if (column == null) {
+                if (!MetadataNameValidator.isValidName(columnName)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_NAME,
+                            "Invalid form attribute column name: " + columnName, false); //$NON-NLS-1$
+                }
+                column = FormFactory.eINSTANCE.createFormAttributeColumn();
+                column.setId(nextId++);
+                column.setName(columnName);
+                attribute.getColumns().add(column);
+                existingByName.put(normalizeToken(columnName), column);
+            }
+            Object columnType = getMapValueIgnoreCase(descriptor, "type"); //$NON-NLS-1$
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(descriptor, "field_type"); //$NON-NLS-1$
+            }
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(descriptor, "fieldType"); //$NON-NLS-1$
+            }
+            if (columnType != null) {
+                applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
+            }
+        }
+    }
+
+    /**
+     * Next free numeric id across the form attribute tree (attributes and their columns), so newly
+     * created columns do not collide with existing attribute/column ids.
+     */
+    private int nextFormElementId(Form formModel) {
         int maxId = 0;
         if (formModel != null) {
             for (FormAttribute attribute : formModel.getAttributes()) {
@@ -2286,77 +2996,6 @@ public class EdtMetadataService {
         return maxId + 1;
     }
 
-    /**
-     * Creates/updates/removes columns of a ValueTable form attribute.
-     * Columns are containment children ({@code FormAttribute.getColumns()}),
-     * not a settable reference — they cannot go through applyFormPropertySet.
-     * Reuses {@link #applyFormAttributeType} (now {@link AbstractFormAttribute}-typed)
-     * for column value-type resolution.
-     */
-    private void applyFormAttributeColumns(
-            Form formModel,
-            FormAttribute attribute,
-            Object columnsValue,
-            IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes,
-            Configuration txConfiguration
-    ) {
-        if (attribute == null || columnsValue == null) {
-            return;
-        }
-        List<Map<String, Object>> columnSpecs = asListOfMaps(columnsValue);
-        if (columnSpecs.isEmpty()) {
-            return;
-        }
-        Map<String, FormAttributeColumn> byName = new HashMap<>();
-        for (FormAttributeColumn column : attribute.getColumns()) {
-            if (column != null && column.getName() != null) {
-                byName.put(normalizeToken(column.getName()), column);
-            }
-        }
-        for (Map<String, Object> spec : columnSpecs) {
-            if (spec == null || spec.isEmpty()) {
-                continue;
-            }
-            String name = asString(getMapValueIgnoreCase(spec, "name")); //$NON-NLS-1$
-            if (name == null) {
-                name = asString(getMapValueIgnoreCase(spec, "column")); //$NON-NLS-1$
-            }
-            String action = normalizeToken(asString(getMapValueIgnoreCase(spec, "action"))); //$NON-NLS-1$
-            FormAttributeColumn existing = name == null ? null : byName.get(normalizeToken(name));
-            if ("remove".equals(action) || "delete".equals(action) || "drop".equals(action)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                if (existing != null) {
-                    attribute.getColumns().remove(existing);
-                    byName.remove(normalizeToken(existing.getName()));
-                }
-                continue;
-            }
-            FormAttributeColumn column = existing;
-            if (column == null) {
-                if (!MetadataNameValidator.isValidName(name)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_METADATA_NAME,
-                            "Invalid form attribute column name: " + name, false); //$NON-NLS-1$
-                }
-                column = FormFactory.eINSTANCE.createFormAttributeColumn();
-                column.setName(name);
-                column.setId(nextFormColumnId(formModel));
-                attribute.getColumns().add(column);
-                byName.put(normalizeToken(name), column);
-            }
-            Object columnType = getMapValueIgnoreCase(spec, "type"); //$NON-NLS-1$
-            if (columnType == null) {
-                columnType = getMapValueIgnoreCase(spec, "field_type"); //$NON-NLS-1$
-            }
-            if (columnType == null) {
-                columnType = getMapValueIgnoreCase(spec, "fieldType"); //$NON-NLS-1$
-            }
-            if (columnType != null) {
-                applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
-            }
-        }
-    }
-
     private Map<String, TypeItem> preResolveFormAttributeTypes(
             IProject project,
             List<Map<String, Object>> attributes
@@ -2369,13 +3008,17 @@ public class EdtMetadataService {
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                } else {
+                    // Best-effort cache only: types not resolvable as BM/metadata types in the read
+                    // transaction (platform value types such as Font, ValueTable, ValueTree, ValueList,
+                    // ValueStorage, ...) are intentionally left unresolved here. They are resolved at
+                    // apply time by applyFormAttributeType from the form-available type set
+                    // (TypeProviderService), which raises a clear error if a type is genuinely
+                    // unsupported. Failing fast here previously blocked every such valid type.
+                    LOG.debug("preResolveFormAttributeTypes: '%s' not in BM; deferring to apply-time resolution", //$NON-NLS-1$
+                            typeString);
                 }
             }
             return null;
@@ -2522,8 +3165,9 @@ public class EdtMetadataService {
             }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
-                    "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
-                            + "add_button, set_item, remove_item, move_item, set_form_props", false); //$NON-NLS-1$
+                    "Operation requires \"op\" field. Valid values: add_field, add_table, add_group, add_command, " //$NON-NLS-1$
+                            + "add_button, set_item, remove_item, move_item, set_form_props, " //$NON-NLS-1$
+                            + "add_event_handler, set_event_handler, remove_event_handler", false); //$NON-NLS-1$
         }
 
         // Detect "type":"field" hallucination — model should use op:"add_field"
@@ -2595,14 +3239,21 @@ public class EdtMetadataService {
         return "To mutate this form with mutate_form_model, use: " //$NON-NLS-1$
                 + "form_fqn=\"" + formFqn + "\", operations:[{op:\"add_field\", name:\"...\", " //$NON-NLS-1$ //$NON-NLS-2$
                 + "parent_item_id:<id from items above>, data_path:\"...\", field_type:\"LABEL_FIELD\"}]. " //$NON-NLS-1$
+                + "Parent may be parent_item_id:<id> OR parent_item_name:\"<name>\"; use parent_item_name to target an item " //$NON-NLS-1$
+                + "created earlier in this SAME operations batch (e.g. a group from a prior add_group) whose id is not known yet. " //$NON-NLS-1$
+                + "For a ValueTable/ValueTree attribute use {op:\"add_table\", name:\"...\", data_path:\"<attr>\"} to auto-generate its columns. " //$NON-NLS-1$
                 + "For set_item use item_id:<id> (NOT id). " //$NON-NLS-1$
-                + "For move_item use parent_item_id:<id> (NOT parent_id or parent). " //$NON-NLS-1$
+                + "For move_item use parent_item_id:<id> or parent_item_name:\"<name>\" (NOT parent_id or parent). " //$NON-NLS-1$
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
                 + "Inside a Table parent, Boolean columns must use field_type=\"INPUT_FIELD\" (the platform draws a checkmark automatically); " //$NON-NLS-1$
                 + "CHECK_BOX_FIELD/RADIO_BUTTON_FIELD/PROGRESS_BAR_FIELD/TRACK_BAR_FIELD are rejected by SU107 in Tables. " //$NON-NLS-1$
-                + "Valid ops: add_field, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
+                + "For form-level events: {op:\"add_event_handler\", target:\"form\", event:\"<eventName>\", handler_name:\"...\"}. " //$NON-NLS-1$
+                + "For a field/table event: {op:\"add_event_handler\", item_id:<id>, event:\"<eventName>\"} — omit handler_name for a deterministic default. " //$NON-NLS-1$
+                + "set_event_handler upserts the same (target,event) pair; remove_event_handler removes it. " //$NON-NLS-1$
+                + "Valid ops: add_field, add_table, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props, " //$NON-NLS-1$
+                + "add_event_handler, set_event_handler, remove_event_handler."; //$NON-NLS-1$
     }
 
     private Map<String, Object> collectFormRootProperties(
@@ -2621,7 +3272,28 @@ public class EdtMetadataService {
         if (includeProperties) {
             result.put("properties", collectScalarProperties(formModel, includeTitles)); //$NON-NLS-1$
         }
+        List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = collectEventHandlerInfos(formModel);
+        if (!eventHandlers.isEmpty()) {
+            result.put("eventHandlers", eventHandlers); //$NON-NLS-1$
+        }
         return result;
+    }
+
+    /**
+     * Surfaces the {@code {event, handlerName}} pairs already wired on an
+     * {@link EventHandlerContainer} (form root or a form item). Read path only,
+     * unconditional (not gated by include_properties/include_titles) — INSP-01.
+     * Handlers whose {@link EventHandler#getEvent()} is {@code null} are skipped.
+     */
+    private List<InspectFormLayoutResult.EventHandlerInfo> collectEventHandlerInfos(EventHandlerContainer container) {
+        if (container == null || container.getHandlers().isEmpty()) {
+            return List.of();
+        }
+        return container.getHandlers().stream()
+                .filter(handler -> handler != null && handler.getEvent() != null)
+                .map(handler -> new InspectFormLayoutResult.EventHandlerInfo(
+                        handler.getEvent().getName(), handler.getName()))
+                .toList();
     }
 
     private List<InspectFormLayoutResult.FormItemNode> collectFormItemNodes(
@@ -2703,6 +3375,9 @@ public class EdtMetadataService {
                     commandRef = namedCmd.getName();
                 }
             }
+            List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = item instanceof EventHandlerContainer handlerContainer
+                    ? collectEventHandlerInfos(handlerContainer)
+                    : List.of();
 
             result.add(new InspectFormLayoutResult.FormItemNode(
                     item.getId(),
@@ -2718,6 +3393,7 @@ public class EdtMetadataService {
                     dataPath,
                     fieldType,
                     commandRef,
+                    eventHandlers,
                     properties,
                     children));
             index++;
@@ -3010,24 +3686,9 @@ public class EdtMetadataService {
 
         // Pre-resolve all TypeItems from changes (top-level set and children_ops)
         Set<String> typeStrings = collectTypeStrings(request.changes());
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
-        if (!typeStrings.isEmpty()) {
-            executeRead(project, readTx -> {
-                for (String typeString : typeStrings) {
-                    TypeItem item = resolveTypeItem(typeString, readTx);
-                    if (item == null && !isSimpleTypeQuery(typeString)) {
-                        throw new MetadataOperationException(
-                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                                "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                    }
-                    if (item != null) {
-                        cacheResolvedTypeItem(preResolvedTypes, typeString, item);
-                    }
-                }
-                return null;
-            });
-        }
+        Map<String, TypeItem> preResolvedTypes = preResolveTypeStrings(project, typeStrings);
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
+        final String platformVersion = resolvePlatformVersionString(project);
 
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -3043,7 +3704,7 @@ public class EdtMetadataService {
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
             applyObjectChanges(txConfiguration, target, request.changes(), request.targetFqn(),
-                    transaction, capturedTypes);
+                    transaction, capturedTypes, platformVersion);
             ensureUuidsRecursively(target, opId, request.targetFqn());
             return request.targetFqn();
         });
@@ -3089,11 +3750,16 @@ public class EdtMetadataService {
                         MetadataOperationCode.METADATA_NOT_FOUND,
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
+            if ("group".equalsIgnoreCase(fieldName) && target.eClass() != null //$NON-NLS-1$
+                    && "CommonCommand".equals(target.eClass().getName())) { //$NON-NLS-1$
+                return standardCommandGroupCandidates(request.projectName(), request.targetFqn(), fieldName, limit);
+            }
             EStructuralFeature feature = resolveFeatureIgnoreCase(target, fieldName);
             if (!(feature instanceof EReference typeReference)) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
-                        "Field is not a reference: " + fieldName, false); //$NON-NLS-1$
+                        buildFieldNotTypedMessage(request.targetFqn(), target, fieldName, feature == null),
+                        false);
             }
 
             LinkedHashMap<String, FieldTypeCandidate> unique = new LinkedHashMap<>();
@@ -3112,6 +3778,7 @@ public class EdtMetadataService {
                                 typeReference,
                                 null));
             }
+            collectDependentParentTypeCandidates(unique, project);
 
             List<FieldTypeCandidate> allCandidates = new ArrayList<>(unique.values());
             int total = allCandidates.size();
@@ -3125,6 +3792,42 @@ public class EdtMetadataService {
                     total,
                     allCandidates);
         });
+    }
+
+    private FieldTypeCandidatesResult standardCommandGroupCandidates(String projectName, String targetFqn,
+            String fieldName, int limit) {
+        List<FieldTypeCandidate> candidates = new ArrayList<>();
+        for (String group : commandGroupResolver.availableStandardCommandGroups()) {
+            candidates.add(new FieldTypeCandidate(group, null, "StandardCommandGroup." + group, //$NON-NLS-1$
+                    null, "StandardCommandGroup", true)); //$NON-NLS-1$
+        }
+        int total = candidates.size();
+        if (candidates.size() > limit) {
+            candidates = new ArrayList<>(candidates.subList(0, limit));
+        }
+        return new FieldTypeCandidatesResult(projectName, targetFqn, fieldName, total, candidates);
+    }
+
+    /**
+     * Builds an actionable error for {@code edt_field_type_candidates} when the requested field is
+     * not a typed reference. Owner objects (Document, Catalog, ...) have no {@code type} field of
+     * their own — types live on their child attributes/dimensions/resources — so the previous bare
+     * "Field is not a reference" message was misleading. This points the caller to the correct
+     * child FQN form instead.
+     */
+    private String buildFieldNotTypedMessage(String targetFqn, MdObject target, String fieldName, boolean missing) {
+        String ownerClass = target != null ? target.eClass().getName() : "?"; //$NON-NLS-1$
+        String sample = targetFqn + ".Attribute.<ИмяРеквизита>"; //$NON-NLS-1$
+        if (missing) {
+            return "Object '" + targetFqn + "' (" + ownerClass + ") has no field '" + fieldName //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    + "'. edt_field_type_candidates expects the FQN of an existing typed field " //$NON-NLS-1$
+                    + "(an Attribute, Dimension or Resource), for example '" + sample + "'. " //$NON-NLS-1$ //$NON-NLS-2$
+                    + "To choose a type for a new attribute, create it first via add_metadata_child, " //$NON-NLS-1$
+                    + "then request candidates on that child FQN."; //$NON-NLS-1$
+        }
+        return "Field '" + fieldName + "' of '" + targetFqn + "' (" + ownerClass //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                + ") is not a typed reference. Request edt_field_type_candidates on an existing typed " //$NON-NLS-1$
+                + "child FQN instead, for example '" + sample + "'."; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     public MetadataOperationResult deleteMetadata(DeleteMetadataRequest request) {
@@ -3951,6 +4654,12 @@ public class EdtMetadataService {
         if (kind == ModuleArtifactKind.OBJECT) {
             return "ObjectModule.bsl"; //$NON-NLS-1$
         }
+        if (kind == ModuleArtifactKind.COMMAND) {
+            return "CommandModule.bsl"; //$NON-NLS-1$
+        }
+        if ("CommonCommand".equals(className)) { //$NON-NLS-1$
+            return "CommandModule.bsl"; //$NON-NLS-1$
+        }
         if ("CommonModule".equals(className) || (className != null && className.contains("Form"))) { //$NON-NLS-1$ //$NON-NLS-2$
             return "Module.bsl"; //$NON-NLS-1$
         }
@@ -4187,7 +4896,7 @@ public class EdtMetadataService {
         }
         IFile ownerMdoFile = project.getFile(ownerMdoPath);
 
-        // QWEN-307: trigger BM-to-disk export for the owner before polling,
+        // EDT-EXPORT-307: trigger BM-to-disk export for the owner before polling,
         // otherwise the form entry may exist only in BM and never appear on disk.
         try {
             String topLevelFqn = extractTopLevelFqn(ownerFqn);
@@ -4402,6 +5111,7 @@ public class EdtMetadataService {
                 parent.eClass().getName(), parent.getName());
 
         MetadataChildKind effectiveKind = normalizeChildKind(parent, request.childKind());
+        rejectUnsupportedChildKind(parent, effectiveKind);
         return createGenericChildForResolvedParent(
                 configuration,
                 parent,
@@ -4409,6 +5119,35 @@ public class EdtMetadataService {
                 transaction,
                 preResolvedTypes,
                 effectiveKind);
+    }
+
+    /**
+     * Fails fast with an actionable message for parent kinds whose children are not modelled as
+     * plain containment children creatable via {@code add_metadata_child}. Without this guard a
+     * request such as {@code HTTPService.X.Template.Y} resolves the parent (so it is no longer a
+     * "parent not found"), then fails deep inside the EMF factory with a cryptic message. These
+     * objects (HTTP service URL templates and their methods, web service operations) require a
+     * dedicated child-kind that is not implemented yet.
+     */
+    private void rejectUnsupportedChildKind(MdObject parent, MetadataChildKind kind) {
+        if (parent == null) {
+            return;
+        }
+        String parentClass = normalizeToken(parent.eClass().getName());
+        if ("httpservice".equals(parentClass)) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "HTTPService children (URL templates and their methods) are not supported via " //$NON-NLS-1$
+                            + "add_metadata_child yet, so child_kind=" + kind + " cannot be created on an HTTP service. " //$NON-NLS-1$ //$NON-NLS-2$
+                            + "Create the HTTP service itself with create_metadata; URL templates must be added through a " //$NON-NLS-1$
+                            + "dedicated tool once available.", false); //$NON-NLS-1$
+        }
+        if ("webservice".equals(parentClass)) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "WebService children (operations) are not supported via add_metadata_child yet, so child_kind=" //$NON-NLS-1$
+                            + kind + " cannot be created on a web service.", false); //$NON-NLS-1$
+        }
     }
 
     private String createGenericChildInExternalProject(
@@ -4966,6 +5705,32 @@ public class EdtMetadataService {
         return injector;
     }
 
+    private Object resolvePluginInjector(Bundle bundle, String pluginClassName) throws ReflectiveOperationException {
+        Class<?> pluginClass = loadBundleClass(bundle, pluginClassName);
+        Method getDefault = pluginClass.getMethod("getDefault"); //$NON-NLS-1$
+        Object plugin = getDefault.invoke(null);
+        if (plugin == null) {
+            try {
+                bundle.start(Bundle.START_TRANSIENT);
+            } catch (Exception e) {
+                throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                        "Failed to start EDT bundle " + bundle.getSymbolicName() + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            plugin = getDefault.invoke(null);
+        }
+        if (plugin == null) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Plugin instance unavailable: " + pluginClassName, false); //$NON-NLS-1$
+        }
+        Method getInjector = pluginClass.getMethod("getInjector"); //$NON-NLS-1$
+        Object injector = getInjector.invoke(plugin);
+        if (injector == null) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Plugin injector unavailable: " + pluginClassName, false); //$NON-NLS-1$
+        }
+        return injector;
+    }
+
     private Object resolveInjectorService(Object injector, Class<?> serviceClass) throws ReflectiveOperationException {
         Class<?> injectorApiClass = resolveInjectorApiClass(injector);
         Method getInstance = injectorApiClass.getMethod("getInstance", Class.class); //$NON-NLS-1$
@@ -5227,21 +5992,14 @@ public class EdtMetadataService {
     }
 
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
-        String normalized = normalizeToken(type);
-        List<? extends MdObject> topLevel = switch (normalized) {
-            case "catalog", "справочник" -> configuration.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "документ" -> configuration.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "регистрсведений" -> configuration.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "регистрнакопления" -> configuration.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonmodule", "общиймодуль" -> configuration.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "перечисление" -> configuration.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "отчет", "отчёт" -> configuration.getReports(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "dataprocessor", "обработка" -> configuration.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "константа" -> configuration.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "subsystem", "subsystems", "подсистема" -> configuration.getSubsystems(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            default -> Collections.emptyList();
-        };
-        for (MdObject object : topLevel) {
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(type);
+        } catch (MetadataOperationException e) {
+            LOG.debug("findTopLevel: unsupported top-level type token: %s", type); //$NON-NLS-1$
+            return null;
+        }
+        for (MdObject object : topLevelCollectionForKind(configuration, kind)) {
             if (name.equalsIgnoreCase(object.getName())) {
                 return object;
             }
@@ -5486,22 +6244,103 @@ public class EdtMetadataService {
         if (typeStrings.isEmpty()) {
             return Map.of();
         }
+        return preResolveTypeStrings(project, typeStrings);
+    }
+
+    private Map<String, TypeItem> preResolveTopLevelPropertyTypes(
+            IProject project,
+            Map<String, Object> properties
+    ) {
+        Set<String> typeStrings = collectTopLevelPropertyTypeStrings(properties);
+        if (typeStrings.isEmpty()) {
+            return Map.of();
+        }
+        return preResolveTypeStrings(project, typeStrings);
+    }
+
+    private Map<String, TypeItem> preResolveTypeStrings(IProject project, Set<String> typeStrings) {
+        if (typeStrings == null || typeStrings.isEmpty()) {
+            return Map.of();
+        }
         Map<String, TypeItem> preResolvedTypes = new HashMap<>();
+        Set<String> unresolved = new LinkedHashSet<>();
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                } else {
+                    unresolved.add(typeString);
                 }
             }
             return null;
         });
+
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject != null && !unresolved.isEmpty()) {
+            Set<String> stillUnresolved = new LinkedHashSet<>();
+            try {
+                readinessChecker.ensureReady(parentProject);
+                executeRead(parentProject, readTx -> {
+                    for (String typeString : unresolved) {
+                        TypeItem item = resolveTypeItem(typeString, readTx);
+                        if (item != null) {
+                            cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                        } else {
+                            stillUnresolved.add(typeString);
+                        }
+                    }
+                    return null;
+                });
+                unresolved.clear();
+                unresolved.addAll(stillUnresolved);
+            } catch (RuntimeException e) {
+                LOG.debug("preResolveTypeStrings: parent project type lookup failed for %s -> %s: %s", //$NON-NLS-1$
+                        project == null ? null : project.getName(),
+                        parentProject.getName(),
+                        e.getMessage());
+            }
+        }
+
+        for (String typeString : unresolved) {
+            if (!isSimpleTypeQuery(typeString)) {
+                LOG.debug("preResolveTypeStrings: deferring unresolved metadata type to contextual resolver: %s", //$NON-NLS-1$
+                        typeString);
+            }
+        }
         return preResolvedTypes;
+    }
+
+    private IProject resolveDependentParentProject(IProject project) {
+        if (project == null) {
+            return null;
+        }
+        try {
+            IV8Project v8Project = gateway.getV8ProjectManager().getProject(project);
+            if (v8Project instanceof IDependentProject dependentProject) {
+                IProject parentProject = dependentProject.getParentProject();
+                if (parentProject != null && parentProject.exists()
+                        && !parentProject.getName().equalsIgnoreCase(project.getName())) {
+                    return parentProject;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("resolveDependentParentProject failed for project=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    e.getMessage());
+        }
+        return null;
+    }
+
+    private Set<String> collectTopLevelPropertyTypeStrings(Map<String, Object> properties) {
+        Set<String> typeStrings = new LinkedHashSet<>();
+        if (properties == null || properties.isEmpty()) {
+            return typeStrings;
+        }
+        addTypeStringIfPresent(typeStrings, properties, "type"); //$NON-NLS-1$
+        addTypeStringIfPresent(typeStrings, properties, "commandParameterType"); //$NON-NLS-1$
+        addTypeStringIfPresent(typeStrings, properties, "source"); //$NON-NLS-1$
+        return typeStrings;
     }
 
     @SuppressWarnings("unchecked")
@@ -5769,7 +6608,8 @@ public class EdtMetadataService {
             Map<String, Object> changes,
             String targetFqn,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            String platformVersion
     ) {
         Map<String, Object> setChanges = normalizeSetChangesForTarget(target, asMap(changes.get("set"))); //$NON-NLS-1$
         List<?> unsetChanges = changes.get("unset") instanceof List<?> list ? list : List.of(); //$NON-NLS-1$
@@ -5834,7 +6674,8 @@ public class EdtMetadataService {
             if (consumedSetKeys.contains(key)) {
                 continue;
             }
-            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes,
+                    platformVersion);
         }
 
         for (Object rawKey : unsetChanges) {
@@ -5865,7 +6706,7 @@ public class EdtMetadataService {
             allChildOps = new ArrayList<>(childOps);
             allChildOps.addAll(syntheticChildOps);
         }
-        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes);
+        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes, platformVersion);
     }
 
     private Map<String, Object> normalizeSetChangesForTarget(MdObject target, Map<String, Object> rawSetChanges) {
@@ -6081,7 +6922,8 @@ public class EdtMetadataService {
             String parentTargetFqn,
             List<Map<String, Object>> childOps,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            String platformVersion
     ) {
         for (Map<String, Object> op : childOps) {
             String opType = asString(op.get("op")); //$NON-NLS-1$
@@ -6167,7 +7009,7 @@ public class EdtMetadataService {
                         }
                     }
                     applyObjectChanges(configuration, child, nestedChanges, childFqn,
-                            transaction, preResolvedTypes);
+                            transaction, preResolvedTypes, platformVersion);
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -6323,7 +7165,7 @@ public class EdtMetadataService {
     }
 
     private void setFeatureValue(Configuration configuration, MdObject target, String fieldName, Object value,
-            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes, String platformVersion) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -6364,6 +7206,12 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
+            if (applyCommandGroupValue(target, reference, value, platformVersion)) {
+                return;
+            }
+            if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction, preResolvedTypes)) {
+                return;
+            }
             applyReferenceValue(configuration, target, reference, value);
             return;
         }
@@ -6380,6 +7228,150 @@ public class EdtMetadataService {
 
         Object converted = convertAttributeValue(attribute, value);
         target.eSet(eFeature, converted);
+    }
+
+    private boolean applyCommandGroupValue(MdObject target, EReference reference, Object value, String platformVersion) {
+        if (!(target instanceof BasicCommand command) || reference == null
+                || !"group".equalsIgnoreCase(reference.getName())) { //$NON-NLS-1$
+            return false;
+        }
+        if (value == null || String.valueOf(value).trim().isBlank()) {
+            command.setGroup(null);
+            return true;
+        }
+        org.eclipse.emf.ecore.resource.ResourceSet resourceSet = target.eResource() == null
+                ? null : target.eResource().getResourceSet();
+        Optional<CommandGroup> group = commandGroupResolver.resolveStandardCommandGroup(
+                resourceSet,
+                value,
+                platformVersion);
+        if (group.isPresent()) {
+            command.setGroup(group.get());
+            return true;
+        }
+        if (commandGroupResolver.isStandardCommandGroup(value)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Standard command group is not available in EDT platform resource: " + value //$NON-NLS-1$
+                            + " (platformVersion=" + (platformVersion == null ? "" : platformVersion) + ")", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    false);
+        }
+        return false;
+    }
+
+    private boolean applyTypeDescriptionProperty(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+        if (target == null || reference == null || !reference.isContainment()) {
+            return false;
+        }
+        if (!isTypeDescriptionPropertyName(reference.getName())) {
+            return false;
+        }
+        if (value instanceof TypeDescription typeDescription) {
+            target.eSet(reference, typeDescription);
+            return true;
+        }
+        TypeDescription typeDescription = createTypeDescription(configuration, target, reference, value,
+                transaction, preResolvedTypes);
+        target.eSet(reference, typeDescription);
+        return true;
+    }
+
+    private boolean isTypeDescriptionPropertyName(String name) {
+        if (name == null) {
+            return false;
+        }
+        return switch (name) {
+            case "type", "commandParameterType", "source" -> true; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            default -> false;
+        };
+    }
+
+    private TypeDescription createTypeDescription(Configuration configuration, MdObject target, EReference reference,
+            Object value, IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+        List<TypeSpec> specs = normalizeTypeSpecs(value);
+        if (specs.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "TypeDescription field '" + reference.getName() + "' requires at least one type", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        TypeDescription description = McoreFactory.eINSTANCE.createTypeDescription();
+        for (TypeSpec spec : specs) {
+            TypeItem item = lookupPreResolvedTypeItem(preResolvedTypes, spec.typeQuery());
+            if (item == null && target instanceof BasicFeature feature) {
+                item = resolveTypeItemForFeature(feature, configuration, spec.typeQuery(), preResolvedTypes);
+            }
+            if (item == null) {
+                item = resolveTypeItemFromTypeProvider(target, configuration, reference, spec.typeQuery());
+                if (item != null) {
+                    cacheResolvedTypeItem(preResolvedTypes, spec.typeQuery(), item);
+                }
+            }
+            if (item == null) {
+                item = resolveSimpleTypeItemFromConfiguration(configuration, spec.typeQuery());
+            }
+            TypeItem txItem = toTransactionTypeItem(transaction, item, spec);
+            if (txItem == null) {
+                throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type not found for field '" + reference.getName() + "': " + spec.typeQuery(), false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            description.getTypes().add(txItem);
+        }
+        TypeSpec first = specs.get(0);
+        String typeName = resolveTypeNameForQualifiers(description.getTypes().isEmpty() ? null : description.getTypes().get(0), first);
+        if (isNumberType(typeName)) {
+            NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
+            nq.setPrecision(firstPositive(first.numberPrecision(), null, 15));
+            nq.setScale(firstNonNegative(first.numberScale(), null, 2));
+            nq.setNonNegative(first.numberNonNegative() != null && first.numberNonNegative().booleanValue());
+            description.setNumberQualifiers(nq);
+        } else if (isStringType(typeName)) {
+            StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
+            sq.setLength(resolveStringLength(first.stringLength(), null, 150));
+            sq.setFixed(first.stringFixed() != null && first.stringFixed().booleanValue());
+            description.setStringQualifiers(sq);
+        } else if (isDateType(typeName)) {
+            DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
+            dq.setDateFractions(first.dateFractions() != null ? first.dateFractions() : DateFractions.DATE_TIME);
+            description.setDateQualifiers(dq);
+        }
+        return description;
+    }
+
+    private TypeItem toTransactionTypeItem(IBmPlatformTransaction transaction, TypeItem item, TypeSpec spec) {
+        if (item == null) {
+            return null;
+        }
+        try {
+            TypeItem txItem = transaction.toTransactionObject(item);
+            if (txItem != null) {
+                return txItem;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("toTransactionTypeItem failed for type=%s: %s", //$NON-NLS-1$
+                    spec == null ? null : spec.typeQuery(), e.getMessage());
+        }
+        TypeItem namespaceItem = resolveTypeItemInCandidateNamespace(transaction, item, spec);
+        if (namespaceItem != null) {
+            return namespaceItem;
+        }
+        return resolveExternalTypeItemCandidate(transaction, item, spec);
+    }
+
+    private List<TypeSpec> normalizeTypeSpecs(Object value) {
+        if (value instanceof List<?> list) {
+            List<TypeSpec> specs = new ArrayList<>();
+            for (Object item : list) {
+                specs.addAll(normalizeTypeSpecs(item));
+            }
+            return specs;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Object types = getMapValueIgnoreCase(map, "types"); //$NON-NLS-1$
+            if (types != null) {
+                return normalizeTypeSpecs(types);
+            }
+        }
+        return List.of(normalizeTypeSpec(value));
     }
 
     /**
@@ -6833,40 +7825,49 @@ public class EdtMetadataService {
         if (typeReference == null) {
             return null;
         }
+        return resolveTypeItemFromTypeProvider(feature, context, typeReference, typeQuery);
+    }
+
+    private TypeItem resolveTypeItemFromTypeProvider(EObject context, EObject parentContext,
+            EReference typeReference, String typeQuery) {
+        if (context == null || typeReference == null || typeQuery == null || typeQuery.isBlank()) {
+            return null;
+        }
         Set<String> queries = expandTypeQueries(typeQuery);
         try {
             TypeDescriptionInfoWithTypeInfo info = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, typeReference, null);
             TypeItem direct = findTypeItemInTypeInfo(info, queries);
             if (direct != null) {
                 return direct;
             }
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService resolve failed for type=%s feature=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService resolve failed for type=%s context=%s reference=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    context.eClass().getName(),
+                    typeReference.getName(),
                     e.getMessage());
         }
-        if (context == null) {
+        if (parentContext == null) {
             return null;
         }
         try {
             TypeDescriptionInfoWithTypeInfo contextualInfo = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, context, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, parentContext, typeReference, null);
             TypeItem contextual = findTypeItemInTypeInfo(contextualInfo, queries);
             if (contextual != null) {
                 return contextual;
             }
-            LOG.debug("TypeProviderService returned no matching types for type=%s feature=%s context=%s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService returned no matching types for type=%s context=%s parentContext=%s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
-                    context.eClass().getName());
+                    context.eClass().getName(),
+                    parentContext.eClass().getName());
             return null;
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService contextual resolve failed for type=%s feature=%s context=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService contextual resolve failed for type=%s context=%s parentContext=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
                     context.eClass().getName(),
+                    parentContext.eClass().getName(),
                     e.getMessage());
             return null;
         }
@@ -6944,6 +7945,55 @@ public class EdtMetadataService {
             String code = typeInfo.getCode() != null ? String.valueOf(typeInfo.getCode()) : ""; //$NON-NLS-1$
             String codeRu = typeInfo.getCodeRu() != null ? String.valueOf(typeInfo.getCodeRu()) : ""; //$NON-NLS-1$
             String typeClass = describeTypeClass(typeInfo.getTypeClass());
+            boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
+            String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
+        }
+    }
+
+    private void collectDependentParentTypeCandidates(Map<String, FieldTypeCandidate> sink, IProject project) {
+        if (sink == null || project == null) {
+            return;
+        }
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject == null) {
+            return;
+        }
+        try {
+            readinessChecker.ensureReady(parentProject);
+            executeRead(parentProject, tx -> {
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getTopObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getContainedObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                return null;
+            });
+        } catch (RuntimeException e) {
+            LOG.debug("collectDependentParentTypeCandidates failed for project=%s parent=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    parentProject.getName(),
+                    e.getMessage());
+        }
+    }
+
+    private void collectTypeCandidatesFromIterator(Map<String, FieldTypeCandidate> sink,
+            java.util.Iterator<IBmObject> iterator, String typeClass) {
+        if (sink == null || iterator == null) {
+            return;
+        }
+        while (iterator.hasNext()) {
+            IBmObject object = iterator.next();
+            if (!(object instanceof TypeItem type)) {
+                continue;
+            }
+            String name = firstNonBlank(type.getName(), McoreUtil.getTypeName(type), ""); //$NON-NLS-1$
+            String nameRu = firstNonBlank(type.getNameRu(), McoreUtil.getTypeNameRu(type), ""); //$NON-NLS-1$
+            String code = firstNonBlank(McoreUtil.getTypeName(type), type.getName(), ""); //$NON-NLS-1$
+            String codeRu = firstNonBlank(McoreUtil.getTypeNameRu(type), type.getNameRu(), ""); //$NON-NLS-1$
             boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
             String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
@@ -7263,20 +8313,17 @@ public class EdtMetadataService {
     }
 
     /**
-     * Collects all "type" string values from changes (top-level set and children_ops).
+     * Collects all TypeDescription string values from changes (top-level set and children_ops).
      */
     @SuppressWarnings("unchecked")
     private Set<String> collectTypeStrings(Map<String, Object> changes) {
         Set<String> typeStrings = new LinkedHashSet<>();
-        // Top-level set.type
+        // Top-level set.type / set.commandParameterType / set.source
         Map<String, Object> setMap = extractSetMap(changes);
         if (setMap != null) {
-            if (hasMapKeyIgnoreCase(setMap, "type")) { //$NON-NLS-1$
-                String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(setMap, "type")); //$NON-NLS-1$
-                if (typeStr != null && !typeStr.isBlank()) {
-                    typeStrings.add(typeStr);
-                }
-            }
+            addTypeStringIfPresent(typeStrings, setMap, "type"); //$NON-NLS-1$
+            addTypeStringIfPresent(typeStrings, setMap, "commandParameterType"); //$NON-NLS-1$
+            addTypeStringIfPresent(typeStrings, setMap, "source"); //$NON-NLS-1$
             // Also scan set values that are Maps containing "type"
             // (auto-redirect case: {"set":{"AttrName":{"type":"CatalogRef.Foo"}}})
             for (Object val : setMap.values()) {
@@ -7327,6 +8374,16 @@ public class EdtMetadataService {
             }
         }
         return typeStrings;
+    }
+
+    private void addTypeStringIfPresent(Set<String> typeStrings, Map<String, Object> map, String key) {
+        if (typeStrings == null || map == null || key == null || !hasMapKeyIgnoreCase(map, key)) {
+            return;
+        }
+        String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(map, key));
+        if (typeStr != null && !typeStr.isBlank()) {
+            typeStrings.add(typeStr);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -7478,14 +8535,20 @@ public class EdtMetadataService {
 
         Integer numberPrecision = firstParsedInteger(
                 getMapValueIgnoreCase(numberQualifiers, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(numberQualifiers, "digits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(numberQualifiers, "length"), //$NON-NLS-1$
                 getMapValueIgnoreCase(root, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(root, "digits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(nestedTypeMap, "precision"), //$NON-NLS-1$
+                getMapValueIgnoreCase(nestedTypeMap, "digits"), //$NON-NLS-1$
                 inline == null ? null : inline.numberPrecision());
         Integer numberScale = firstParsedInteger(
                 getMapValueIgnoreCase(numberQualifiers, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(numberQualifiers, "fractionDigits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(root, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(root, "fractionDigits"), //$NON-NLS-1$
                 getMapValueIgnoreCase(nestedTypeMap, "scale"), //$NON-NLS-1$
+                getMapValueIgnoreCase(nestedTypeMap, "fractionDigits"), //$NON-NLS-1$
                 inline == null ? null : inline.numberScale());
         Boolean numberNonNegative = firstParsedBoolean(
                 getMapValueIgnoreCase(numberQualifiers, "nonNegative"), //$NON-NLS-1$
@@ -7763,13 +8826,14 @@ public class EdtMetadataService {
             MetadataKind kind,
             Map<String, Object> properties,
             IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            String platformVersion,
             String opId,
             String targetFqn
     ) {
         if (target == null || properties == null || properties.isEmpty()) {
             return;
         }
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
         List<String> applied = new ArrayList<>();
         for (Map.Entry<String, Object> entry : properties.entrySet()) {
             String rawKey = entry.getKey();
@@ -7781,8 +8845,17 @@ public class EdtMetadataService {
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Property '" + rawKey + "' is managed by dedicated create_metadata arguments", false); //$NON-NLS-1$ //$NON-NLS-2$
             }
+            if (isChildCollectionProperty(rawKey)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "create_metadata creates only the top-level object; child collections such as '" //$NON-NLS-1$
+                                + rawKey + "' are not supported here. Create the object first, then add each " //$NON-NLS-1$
+                                + "child with add_metadata_child (e.g. child_kind=EnumValue to add enum values).", //$NON-NLS-1$
+                        false);
+            }
             String resolvedField = resolveTopLevelPropertyField(target, kind, rawKey);
-            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes,
+                    platformVersion);
             applied.add(rawKey + "->" + resolvedField); //$NON-NLS-1$
         }
         if (!applied.isEmpty()) {
@@ -7800,6 +8873,48 @@ public class EdtMetadataService {
                 || "synonym".equals(token) //$NON-NLS-1$
                 || "comment".equals(token) //$NON-NLS-1$
                 || "uuid".equals(token); //$NON-NLS-1$
+    }
+
+    private boolean isChildCollectionProperty(String key) {
+        String token = normalizeToken(key);
+        return "children".equals(token) //$NON-NLS-1$
+                || "enumvalues".equals(token) //$NON-NLS-1$
+                || "attributes".equals(token) //$NON-NLS-1$
+                || "tabularsections".equals(token); //$NON-NLS-1$
+    }
+
+    /**
+     * Resolves the effective top-level object name for a configuration extension that declares a
+     * "Name Prefix" (the 1C SU189 policy, e.g. "ар_"): prepends the prefix when {@code name} does
+     * not already start with it. Returns {@code name} unchanged for base configurations (blank
+     * prefix), projects without a resolvable {@link Configuration}, or when the prefix is already
+     * present.
+     *
+     * <p>Applied by the agent-facing create tool so agent-created top-level objects comply with
+     * SU189. Programmatic callers that need exact names call {@link #createMetadata} directly and
+     * are intentionally not rewritten — the service stays a faithful executor. Scope is limited to
+     * independent top-level objects; SU189 does not apply to subordinate children (attributes, enum
+     * values, forms, …), so child creation never routes through here.
+     */
+    public String applyExtensionNamePrefix(String projectName, String name) {
+        if (name == null || name.isBlank()) {
+            return name;
+        }
+        IProject project = gateway.resolveProject(projectName);
+        if (project == null || !project.exists()) {
+            return name;
+        }
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        if (configuration == null) {
+            return name;
+        }
+        String prefix = configuration.getNamePrefix();
+        if (prefix == null || prefix.isBlank() || name.startsWith(prefix)) {
+            return name;
+        }
+        String prefixedName = prefix + name;
+        LOG.info("Extension name prefix '%s' applied (SU189): %s -> %s", prefix, name, prefixedName); //$NON-NLS-1$
+        return prefixedName;
     }
 
     private String resolveTopLevelPropertyField(MdObject target, MetadataKind kind, String requestedKey) {
@@ -8015,7 +9130,7 @@ public class EdtMetadataService {
 
     /**
      * EMap-safe variant of {@link #applyStringMapPatch} that avoids casting
-     * {@code EBmStoreEcoreEMap} to {@code java.util.Map} (QWEN-305).
+     * {@code EBmStoreEcoreEMap} to {@code java.util.Map} (EDT-EMAP-305).
      * The EMap interface provides its own {@code put}/{@code removeKey} methods
      * that work across OSGi classloader boundaries.
      */
@@ -8941,56 +10056,19 @@ public class EdtMetadataService {
     }
 
     private boolean existsTopLevel(Configuration configuration, MetadataKind kind, String name) {
-        return switch (kind) {
-            case CATALOG -> containsMdObjectName(configuration.getCatalogs(), name);
-            case DOCUMENT -> containsMdObjectName(configuration.getDocuments(), name);
-            case INFORMATION_REGISTER -> containsMdObjectName(configuration.getInformationRegisters(), name);
-            case ACCUMULATION_REGISTER -> containsMdObjectName(configuration.getAccumulationRegisters(), name);
-            case ACCOUNTING_REGISTER -> containsMdObjectName(configuration.getAccountingRegisters(), name);
-            case CALCULATION_REGISTER -> containsMdObjectName(configuration.getCalculationRegisters(), name);
-            case COMMON_MODULE -> containsMdObjectName(configuration.getCommonModules(), name);
-            case COMMON_ATTRIBUTE -> containsMdObjectName(configuration.getCommonAttributes(), name);
-            case ENUM -> containsMdObjectName(configuration.getEnums(), name);
-            case REPORT -> containsMdObjectName(configuration.getReports(), name);
-            case DATA_PROCESSOR -> containsMdObjectName(configuration.getDataProcessors(), name);
-            case CONSTANT -> containsMdObjectName(configuration.getConstants(), name);
-            case COMMAND_GROUP -> containsMdObjectName(configuration.getCommandGroups(), name);
-            case INTERFACE -> containsMdObjectName(configuration.getInterfaces(), name);
-            case LANGUAGE -> containsMdObjectName(configuration.getLanguages(), name);
-            case STYLE -> containsMdObjectName(configuration.getStyles(), name);
-            case STYLE_ITEM -> containsMdObjectName(configuration.getStyleItems(), name);
-            case SESSION_PARAMETER -> containsMdObjectName(configuration.getSessionParameters(), name);
-            case SETTINGS_STORAGE -> containsMdObjectName(configuration.getSettingsStorages(), name);
-            case XDTO_PACKAGE -> containsMdObjectName(configuration.getXDTOPackages(), name);
-            case WS_REFERENCE -> containsMdObjectName(configuration.getWsReferences(), name);
-            case ROLE -> containsMdObjectName(configuration.getRoles(), name);
-            case SUBSYSTEM -> containsMdObjectName(configuration.getSubsystems(), name);
-            case EXCHANGE_PLAN -> containsMdObjectName(configuration.getExchangePlans(), name);
-            case CHART_OF_ACCOUNTS -> containsMdObjectName(configuration.getChartsOfAccounts(), name);
-            case CHART_OF_CHARACTERISTIC_TYPES -> containsMdObjectName(configuration.getChartsOfCharacteristicTypes(), name);
-            case CHART_OF_CALCULATION_TYPES -> containsMdObjectName(configuration.getChartsOfCalculationTypes(), name);
-            case BUSINESS_PROCESS -> containsMdObjectName(configuration.getBusinessProcesses(), name);
-            case TASK -> containsMdObjectName(configuration.getTasks(), name);
-            case COMMON_FORM -> containsMdObjectName(configuration.getCommonForms(), name);
-            case COMMON_COMMAND -> containsMdObjectName(configuration.getCommonCommands(), name);
-            case COMMON_TEMPLATE -> containsMdObjectName(configuration.getCommonTemplates(), name);
-            case COMMON_PICTURE -> containsMdObjectName(configuration.getCommonPictures(), name);
-            case SCHEDULED_JOB -> containsMdObjectName(configuration.getScheduledJobs(), name);
-            case FILTER_CRITERION -> containsMdObjectName(configuration.getFilterCriteria(), name);
-            case DEFINED_TYPE -> containsMdObjectName(configuration.getDefinedTypes(), name);
-            case SEQUENCE -> containsMdObjectName(configuration.getSequences(), name);
-            case DOCUMENT_JOURNAL -> containsMdObjectName(configuration.getDocumentJournals(), name);
-            case DOCUMENT_NUMERATOR -> containsMdObjectName(configuration.getDocumentNumerators(), name);
-            case EVENT_SUBSCRIPTION -> containsMdObjectName(configuration.getEventSubscriptions(), name);
-            case FUNCTIONAL_OPTION -> containsMdObjectName(configuration.getFunctionalOptions(), name);
-            case FUNCTIONAL_OPTIONS_PARAMETER -> containsMdObjectName(configuration.getFunctionalOptionsParameters(), name);
-            case WEB_SERVICE -> containsMdObjectName(configuration.getWebServices(), name);
-            case HTTP_SERVICE -> containsMdObjectName(configuration.getHttpServices(), name);
-            case EXTERNAL_DATA_SOURCE -> containsMdObjectName(configuration.getExternalDataSources(), name);
-            case INTEGRATION_SERVICE -> containsMdObjectName(configuration.getIntegrationServices(), name);
-            case BOT -> containsMdObjectName(configuration.getBots(), name);
-            case WEB_SOCKET_CLIENT -> containsMdObjectName(configuration.getWebSocketClients(), name);
-        };
+        return containsMdObjectName(topLevelCollectionForKind(configuration, kind), name);
+    }
+
+    /**
+     * Canonical mapping from {@link MetadataKind} to its backing top-level configuration collection.
+     *
+     * <p>This is the single source of truth for resolving and enumerating top-level metadata
+     * objects by kind. It is intentionally exhaustive over {@link MetadataKind} so the compiler
+     * rejects any future kind that forgets to register its collection here, preventing the class of
+     * "type silently unsupported" bugs (e.g. Task/HTTPService) caused by partial switch lists.</p>
+     */
+    private List<? extends MdObject> topLevelCollectionForKind(Configuration configuration, MetadataKind kind) {
+        return MetadataConfigurationCollections.topLevelForKind(configuration, kind);
     }
 
     private boolean containsMdObjectName(List<? extends MdObject> objects, String name) {
@@ -9259,7 +10337,14 @@ public class EdtMetadataService {
                 opId, fqn, configFile.getFullPath());
     }
 
-    private void forceExportTopLevelObject(IProject project, String fqn, String opId) {
+    /**
+     * Schedules the export/derived-data recompute for a just-committed top-level object and waits
+     * for it to settle. The BM commit is authoritative, so this method never fails the operation on
+     * a derived-data timeout; it returns {@code false} to signal that the recompute is still running
+     * in the background (project may briefly report {@code PROJECT_NOT_READY}), and {@code true} when
+     * derived data settled within the timeout.
+     */
+    private boolean forceExportTopLevelObject(IProject project, String fqn, String opId) {
         IBmModelManager modelManager = gateway.getBmModelManager();
         IDtProjectManager projectManager = gateway.getDtProjectManager();
         IDtProject dtProject = projectManager.getDtProject(project);
@@ -9297,10 +10382,12 @@ public class EdtMetadataService {
         }
 
         LOG.debug("[%s] forceExport targets=%s result=%s", opId, targets, exported); //$NON-NLS-1$
-        waitExportDerivedData(dtProject, opId, fqn);
-        flushDerivedDataPipeline(dtProject, opId, fqn);
+        // Non-short-circuiting so the flush step always runs even if the first wait timed out.
+        boolean derivedDataReady = waitExportDerivedData(dtProject, opId, fqn);
+        derivedDataReady &= flushDerivedDataPipeline(dtProject, opId, fqn);
         modelManager.waitModelSynchronization(project);
         LOG.debug("[%s] waitModelSynchronization completed for project=%s", opId, project.getName()); //$NON-NLS-1$
+        return derivedDataReady;
     }
 
     private List<String> buildExportTargets(String fqn) {
@@ -9312,7 +10399,7 @@ public class EdtMetadataService {
         return List.copyOf(targets);
     }
 
-    private void waitExportDerivedData(IDtProject dtProject, String opId, String fqn) {
+    private boolean waitExportDerivedData(IDtProject dtProject, String opId, String fqn) {
         IDerivedDataManager ddManager = gateway.getDerivedDataManagerProvider().get(dtProject);
         if (ddManager == null) {
             throw new MetadataOperationException(
@@ -9327,11 +10414,18 @@ public class EdtMetadataService {
                     EXPORT_SEGMENT_BLOBS);
             LOG.debug("[%s] waitComputation(EXP_O,EXP_B) for %s: %s", opId, fqn, done); //$NON-NLS-1$
             if (!done) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                        "Timed out waiting export derived-data for " + fqn + " in " + EXPORT_DERIVED_WAIT_MS + "ms", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                        true);
+                // The BM commit is authoritative for the operation result. A derived-data export that
+                // does not settle in time (e.g. because the EDT scheduler is blocked on another
+                // operation such as 'Sort-MD-objects') must NOT fail the already-committed mutation:
+                // the object exists and the export finishes in the background. Report a soft lag
+                // instead of throwing, so callers can surface a "pending" status rather than a
+                // misleading hard failure that tempts the agent to recreate the object.
+                LOG.warn("[%s] Export derived-data still pending for %s after %dms; " //$NON-NLS-1$
+                        + "BM object is committed, operation treated as successful " //$NON-NLS-1$
+                        + "(derived-data recompute continues in background).", //$NON-NLS-1$
+                        opId, fqn, EXPORT_DERIVED_WAIT_MS);
             }
+            return done;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new MetadataOperationException(
@@ -9340,7 +10434,7 @@ public class EdtMetadataService {
         }
     }
 
-    private void flushDerivedDataPipeline(IDtProject dtProject, String opId, String fqn) {
+    private boolean flushDerivedDataPipeline(IDtProject dtProject, String opId, String fqn) {
         IDerivedDataManager ddManager = gateway.getDerivedDataManagerProvider().get(dtProject);
         if (ddManager == null) {
             throw new MetadataOperationException(
@@ -9354,6 +10448,7 @@ public class EdtMetadataService {
             if (!importantDone) {
                 LOG.warn("[%s] waitImportantDataComputations timed out for %s in %dms", opId, fqn, EXPORT_DERIVED_WAIT_MS); //$NON-NLS-1$
             }
+            return importantDone;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new MetadataOperationException(
@@ -9671,6 +10766,40 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Resolves the EDT {@link IRightInfosService} (configuration rights catalog) via the rights
+     * plugin Guice injector — the same reflective pattern used for form services.
+     */
+    public IRightInfosService resolveRightInfosService() {
+        try {
+            Bundle rightsBundle = requireBundle(RIGHTS_BUNDLE_ID);
+            Object injector = resolvePluginInjector(rightsBundle, RIGHTS_PLUGIN_CLASS);
+            return (IRightInfosService) resolveInjectorService(injector, IRightInfosService.class);
+        } catch (MetadataOperationException e) {
+            throw e;
+        } catch (ReflectiveOperationException e) {
+            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve IRightInfosService: " + e.getMessage(), false, e); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Runs {@code mutation} inside a BM write transaction on the project, then force-exports the given
+     * top object (FQN) to the filesystem and refreshes the project. Shared write+export plumbing for
+     * callers (e.g. role rights) that mutate a single top object's contained model.
+     */
+    public void mutateTopObjectAndExport(String projectName, String topObjectFqn,
+            Consumer<IBmPlatformTransaction> mutation) {
+        IProject project = requireProject(projectName);
+        String opId = LogSanitizer.newId("mutate-top"); //$NON-NLS-1$
+        executeWrite(project, transaction -> {
+            mutation.accept(transaction);
+            return null;
+        });
+        forceExportTopLevelObject(project, topObjectFqn, opId);
+        refreshProjectSafely(project);
+    }
+
     private <T> T executeRead(IProject project, ReadTransactionTask<T> task) {
         IBmModelManager modelManager = gateway.getBmModelManager();
         try {
@@ -9775,7 +10904,7 @@ public class EdtMetadataService {
         }
     }
 
-    private record FormAttributePatch(Map<String, Object> patch, Object typeValue, Object columnsValue) {
+    private record FormAttributePatch(Map<String, Object> patch, Object typeValue, List<Map<String, Object>> columns) {
     }
 
     private record FormRecipeApplyResult(FormAttributeRecipeStats stats, List<String> layoutSummaries) {

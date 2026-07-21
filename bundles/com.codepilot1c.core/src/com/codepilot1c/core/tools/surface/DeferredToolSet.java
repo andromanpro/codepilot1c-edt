@@ -18,7 +18,7 @@ import java.util.Set;
  * for the relevant category.</p>
  *
  * <p>This split is only active for providers that do NOT support
- * native deferred loading (i.e., OpenAI-compatible APIs like Qwen, Ollama).</p>
+ * native deferred loading (for example, generic OpenAI-compatible APIs and Ollama).</p>
  */
 public final class DeferredToolSet {
 

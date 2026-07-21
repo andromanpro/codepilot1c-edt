@@ -20,6 +20,11 @@ import com.google.gson.JsonObject;
  */
 public class ToolResult {
 
+    private static final String LLM_TRUNCATION_HEADER =
+            "[tool result truncated by CodePilot1C]\n"; //$NON-NLS-1$
+    private static final String LLM_TRUNCATION_SEPARATOR =
+            "\n\n...[truncated middle]...\n\n"; //$NON-NLS-1$
+
     private final boolean success;
     private final String content;
     private final String errorMessage;
@@ -91,6 +96,17 @@ public class ToolResult {
      */
     public static ToolResult failure(String errorMessage) {
         return new ToolResult(false, null, errorMessage, ToolResultType.ERROR, null);
+    }
+
+    /**
+     * Creates a failure result with machine-readable structured data.
+     *
+     * @param errorMessage the error message
+     * @param structured machine-readable structured data
+     * @return the tool result
+     */
+    public static ToolResult failure(String errorMessage, JsonObject structured) {
+        return new ToolResult(false, null, errorMessage, ToolResultType.ERROR, structured);
     }
 
     /**
@@ -204,6 +220,63 @@ public class ToolResult {
         } else {
             return "Error: " + errorMessage; //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Returns bounded content to send back to the LLM while keeping the full
+     * {@link #getContent()} payload available for UI/tool-card rendering.
+     *
+     * @param maxChars maximum number of characters to place into model history
+     * @return original content when within the cap, otherwise a head/tail excerpt
+     */
+    public String getContentForLlm(int maxChars) {
+        String raw = getContentForLlm();
+        if (raw == null || maxChars <= 0 || raw.length() <= maxChars) {
+            return raw;
+        }
+
+        String metadata = LLM_TRUNCATION_HEADER
+                + "original_length_chars: " + raw.length() + '\n' //$NON-NLS-1$
+                + "result_type: " + type + '\n' //$NON-NLS-1$
+                + "full_result_visible_in_tool_card: true\n\n"; //$NON-NLS-1$
+        if (metadata.length() >= maxChars) {
+            return buildCompactTruncatedContent(raw, maxChars);
+        }
+
+        int excerptBudget = maxChars - metadata.length();
+        if (excerptBudget <= LLM_TRUNCATION_SEPARATOR.length()) {
+            return metadata + raw.substring(0, excerptBudget);
+        }
+
+        int contentBudget = excerptBudget - LLM_TRUNCATION_SEPARATOR.length();
+        if (contentBudget < 64) {
+            return metadata + raw.substring(0, Math.min(excerptBudget, raw.length()));
+        }
+        int headChars = (contentBudget * 2) / 3;
+        int tailChars = contentBudget - headChars;
+        if (headChars + tailChars >= raw.length()) {
+            return metadata + raw.substring(0, excerptBudget);
+        }
+
+        StringBuilder builder = new StringBuilder(maxChars);
+        builder.append(metadata);
+        builder.append(raw, 0, headChars);
+        builder.append(LLM_TRUNCATION_SEPARATOR);
+        if (tailChars > 0) {
+            builder.append(raw, raw.length() - tailChars, raw.length());
+        }
+        return builder.toString();
+    }
+
+    private String buildCompactTruncatedContent(String raw, int maxChars) {
+        String metadata = LLM_TRUNCATION_HEADER
+                + "original_length_chars: " + raw.length() + '\n' //$NON-NLS-1$
+                + "result_type: " + type + "\n\n"; //$NON-NLS-1$
+        if (metadata.length() >= maxChars) {
+            return metadata.substring(0, maxChars);
+        }
+        int contentBudget = maxChars - metadata.length();
+        return metadata + raw.substring(0, Math.min(contentBudget, raw.length()));
     }
 
     /**

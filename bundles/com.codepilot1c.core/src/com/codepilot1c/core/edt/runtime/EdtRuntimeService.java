@@ -241,6 +241,124 @@ public class EdtRuntimeService {
         return null;
     }
 
+    /**
+     * Web client (and designer) URLs of the project's standalone-server infobase, plus the server
+     * state. The web client URL ({@link #webClientUrl()}) is what a browser/Playwright session should
+     * navigate to in order to verify the running 1C interface. The URL already embeds host and port.
+     */
+    public record WebClientInfo(
+            boolean available,
+            String message,
+            String webClientUrl,
+            String designerUrl,
+            boolean serverRunning,
+            String serverState,
+            String serverName) {
+        static WebClientInfo unavailable(String message) {
+            return new WebClientInfo(false, message, null, null, false, null, null);
+        }
+    }
+
+    /**
+     * Resolves the web client URL of the standalone-server infobase bound to the given project,
+     * using {@code IStandaloneServerService.getInfobaseUrl(...)}. Never throws — returns an
+     * {@code available=false} {@link WebClientInfo} with a human-readable {@code message} instead.
+     */
+    public WebClientInfo resolveWebClientInfo(String projectName) {
+        IProject project;
+        try {
+            project = gateway.resolveProject(projectName);
+        } catch (RuntimeException e) {
+            return WebClientInfo.unavailable("Project not found: " + projectName); //$NON-NLS-1$
+        }
+        if (project == null) {
+            return WebClientInfo.unavailable("Project not found: " + projectName); //$NON-NLS-1$
+        }
+        IStandaloneServerService service = gateway.peekStandaloneServerService();
+        if (service == null) {
+            return WebClientInfo.unavailable("Standalone server service is not available in this EDT session."); //$NON-NLS-1$
+        }
+        java.util.List<IServer> servers;
+        try {
+            servers = service.getServers();
+        } catch (Exception | NoSuchMethodError e) {
+            if (e instanceof InterruptedException || Thread.interrupted()) {
+                Thread.currentThread().interrupt();
+            }
+            return WebClientInfo.unavailable("Failed to enumerate standalone servers: " + e.getMessage()); //$NON-NLS-1$
+        }
+        if (servers == null || servers.isEmpty()) {
+            return WebClientInfo.unavailable("No standalone server is registered in this EDT workspace."); //$NON-NLS-1$
+        }
+        for (IServer server : servers) {
+            if (server == null) {
+                continue;
+            }
+            IModule[] modules = server.getModules();
+            if (modules == null) {
+                continue;
+            }
+            for (IModule module : modules) {
+                if (!(module instanceof StandaloneServerInfobase standaloneInfobase)
+                        || !matchesProject(standaloneInfobase, project, project.getName())) {
+                    continue;
+                }
+                String webUrl = standaloneUrlString(() -> service.getInfobaseUrl(standaloneInfobase));
+                String designerUrl = standaloneUrlString(() -> service.getDesignerUrl(standaloneInfobase));
+                return new WebClientInfo(true, "", webUrl, designerUrl, //$NON-NLS-1$
+                        isServerRunning(server), serverStateName(server), safeServerName(server));
+            }
+        }
+        return WebClientInfo.unavailable(
+                "No standalone-server infobase is bound to project '" + project.getName() //$NON-NLS-1$
+                        + "'. Connect/create the infobase and start the server first."); //$NON-NLS-1$
+    }
+
+    @FunctionalInterface
+    private interface UrlSupplier {
+        Object get() throws Exception; // NOSONAR — wraps EDT's checked StandaloneServerException
+    }
+
+    private static String standaloneUrlString(UrlSupplier supplier) {
+        try {
+            Object uri = supplier.get();
+            return uri == null ? null : uri.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static boolean isServerRunning(IServer server) {
+        try {
+            return server.getServerState() == IServer.STATE_STARTED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String serverStateName(IServer server) {
+        try {
+            return switch (server.getServerState()) {
+                case IServer.STATE_STARTED -> "started"; //$NON-NLS-1$
+                case IServer.STATE_STARTING -> "starting"; //$NON-NLS-1$
+                case IServer.STATE_STOPPED -> "stopped"; //$NON-NLS-1$
+                case IServer.STATE_STOPPING -> "stopping"; //$NON-NLS-1$
+                default -> "unknown"; //$NON-NLS-1$
+            };
+        } catch (Exception e) {
+            return "unknown"; //$NON-NLS-1$
+        }
+    }
+
+    private static String safeServerName(IServer server) {
+        try {
+            String name = server.getName();
+            return name == null ? "" : name; //$NON-NLS-1$
+        } catch (Exception e) {
+            return ""; //$NON-NLS-1$
+        }
+    }
+
     public AccessSettings resolveAccessSettings(String projectName) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         return resolveAccessSettings(infobase);
@@ -510,33 +628,42 @@ public class EdtRuntimeService {
                 loader);
         return Proxy.newProxyInstance(callbackInterface.getClassLoader(),
                 new Class<?>[] { callbackInterface },
-                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(method, args));
+                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(proxy, method, args));
     }
 
-    @SuppressWarnings("unchecked")
-    private static Object handleUpdateCallback(Method method, Object[] args) throws Exception {
+    private static Object handleUpdateCallback(Object proxy, Method method, Object[] args) {
         String name = method.getName();
         if ("onConfirm".equals(name)) { //$NON-NLS-1$
             return Boolean.TRUE;
         }
-        if ("onInfobaseChanges".equals(name)) { //$NON-NLS-1$
-            if (args == null || args.length < 7) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+        // EDT 2025.2.x calls resolveInfobaseChanges (from IInfobaseChangesResolver); the legacy
+        // onInfobaseChanges name is kept for other API versions. Headless policy: the project overrides
+        // the infobase. We must ACTUALLY perform the override via the conflict resolver passed in the
+        // callback args (IInfobaseUpdateConflictResolver.overrideConflict) — just returning OVERRIDDEN
+        // reports success while leaving the infobase unsynced, so updateInfobase() returns false. We
+        // fall back to reporting OVERRIDDEN only when the resolver cannot be invoked.
+        if ("resolveInfobaseChanges".equals(name) || "onInfobaseChanges".equals(name)) { //$NON-NLS-1$ //$NON-NLS-2$
+            Object resolved = invokeConflictOverride(args);
+            if (resolved != null) {
+                return resolved;
             }
-            Object conflictResolver = args[4];
-            if (conflictResolver == null) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            Object overridden = enumValue(method.getReturnType(), "OVERRIDDEN"); //$NON-NLS-1$
+            if (overridden != null) {
+                return overridden;
             }
-            Method override = findMethod(conflictResolver.getClass(), "overrideConflict", 6); //$NON-NLS-1$
-            if (override != null) {
-                return override.invoke(conflictResolver, args[0], args[1], args[2], args[3], args[5], args[6]);
-            }
-            return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            Object deferred = enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            return deferred != null ? deferred : defaultValue(method.getReturnType());
         }
-        if ("toString".equals(name)) { //$NON-NLS-1$
+        if ("toString".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
             return "AutoUpdateCallbackProxy"; //$NON-NLS-1$
         }
-        return null;
+        if ("hashCode".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
+            return Integer.valueOf(System.identityHashCode(proxy));
+        }
+        if ("equals".equals(name) && method.getParameterCount() == 1) { //$NON-NLS-1$
+            return Boolean.valueOf(args != null && args.length == 1 && proxy == args[0]);
+        }
+        return defaultValue(method.getReturnType());
     }
 
     private static Method findUpdateMethod(Class<?> managerClass) {
@@ -552,10 +679,118 @@ public class EdtRuntimeService {
         return null;
     }
 
+    /**
+     * Performs the infobase override by reflectively invoking {@code overrideConflict(...)} on the
+     * conflict resolver passed in the callback args (the arg exposing such a method). Arguments are
+     * matched to the available callback args by type, so it tolerates signature differences across EDT
+     * versions. Returns the resolver's result enum, or {@code null} when it cannot be invoked (the
+     * caller then safely falls back to reporting OVERRIDDEN).
+     */
+    private static Object invokeConflictOverride(Object[] args) {
+        if (args == null) {
+            return null;
+        }
+        for (Object resolver : args) {
+            if (resolver == null) {
+                continue;
+            }
+            Method override = findMethodByName(resolver.getClass(), "overrideConflict"); //$NON-NLS-1$
+            if (override == null) {
+                continue;
+            }
+            Object[] callArgs = matchArgsByType(override.getParameterTypes(), args, resolver);
+            if (callArgs == null) {
+                continue;
+            }
+            try {
+                override.setAccessible(true);
+                return override.invoke(resolver, callArgs);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                LOG.warn("overrideConflict invocation failed; reporting OVERRIDDEN instead: " //$NON-NLS-1$
+                        + e.getMessage());
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Method findMethodByName(Class<?> type, String name) {
+        for (Method method : type.getMethods()) {
+            if (method.getName().equals(name)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Best-effort matching of {@code paramTypes} against the available callback args (excluding
+     * {@code exclude}, the resolver itself), by assignability. Returns {@code null} when any
+     * non-primitive parameter has no assignable arg, so the caller can fall back instead of mis-invoking.
+     */
+    private static Object[] matchArgsByType(Class<?>[] paramTypes, Object[] available, Object exclude) {
+        Object[] result = new Object[paramTypes.length];
+        boolean[] used = new boolean[available.length];
+        for (int p = 0; p < paramTypes.length; p++) {
+            Object match = null;
+            for (int a = 0; a < available.length; a++) {
+                Object arg = available[a];
+                if (used[a] || arg == null || arg == exclude) {
+                    continue;
+                }
+                if (paramTypes[p].isInstance(arg)) {
+                    match = arg;
+                    used[a] = true;
+                    break;
+                }
+            }
+            if (match == null && !paramTypes[p].isPrimitive()) {
+                return null;
+            }
+            result[p] = match;
+        }
+        return result;
+    }
+
     @SuppressWarnings("unchecked")
     private static Object enumValue(Class<?> type, String name) {
         if (type != null && type.isEnum()) {
-            return Enum.valueOf((Class<Enum>) type, name);
+            try {
+                return Enum.valueOf((Class<Enum>) type, name);
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Object defaultValue(Class<?> type) {
+        if (type == null || type == Void.TYPE || !type.isPrimitive()) {
+            return null;
+        }
+        if (type == Boolean.TYPE) {
+            return Boolean.FALSE;
+        }
+        if (type == Character.TYPE) {
+            return Character.valueOf('\0');
+        }
+        if (type == Byte.TYPE) {
+            return Byte.valueOf((byte) 0);
+        }
+        if (type == Short.TYPE) {
+            return Short.valueOf((short) 0);
+        }
+        if (type == Integer.TYPE) {
+            return Integer.valueOf(0);
+        }
+        if (type == Long.TYPE) {
+            return Long.valueOf(0L);
+        }
+        if (type == Float.TYPE) {
+            return Float.valueOf(0F);
+        }
+        if (type == Double.TYPE) {
+            return Double.valueOf(0D);
         }
         return null;
     }

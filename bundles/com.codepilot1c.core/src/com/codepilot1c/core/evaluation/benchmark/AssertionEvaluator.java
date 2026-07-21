@@ -13,7 +13,7 @@ import com.codepilot1c.core.evaluation.benchmark.EvalScenario.ToolBehavior;
 /**
  * Evaluates a {@link BenchmarkRun} against an {@link EvalScenario}'s assertions.
  * <p>
- * Mirrors the assertion checks from the Python {@code run-qwen-mcp-suite.py} runner:
+ * Mirrors the assertion checks from the Python provider benchmark runner:
  * tool path validation, mutation flow compliance, QA gate checks, and final answer checks.
  */
 public class AssertionEvaluator {

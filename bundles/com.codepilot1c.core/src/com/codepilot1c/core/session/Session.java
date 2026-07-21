@@ -56,6 +56,8 @@ public class Session {
     private final List<SessionMessage> messages;
     private String systemPrompt;
     private String agentProfile;
+    /** Per-view model id chosen for this session (multi-view: each chat window keeps its own model). */
+    private String modelId;
     private int totalTokens;
 
     /**
@@ -238,6 +240,21 @@ public class Session {
     }
 
     /**
+     * Идентификатор модели, выбранной для этой сессии (per-view выбор модели в мульти-вью).
+     */
+    public String getModelId() {
+        return modelId;
+    }
+
+    /**
+     * Устанавливает идентификатор модели сессии.
+     */
+    public void setModelId(String modelId) {
+        this.modelId = modelId;
+        touch();
+    }
+
+    /**
      * Общее количество токенов (примерная оценка).
      */
     public int getTotalTokens() {
@@ -280,9 +297,9 @@ public class Session {
                 case ASSISTANT:
                     if (msg.hasToolCalls()) {
                         result.add(LlmMessage.assistantWithToolCalls(
-                                msg.getContent(), msg.getToolCalls()));
+                                msg.getContent(), msg.getReasoningContent(), msg.getToolCalls()));
                     } else {
-                        result.add(LlmMessage.assistant(msg.getContent()));
+                        result.add(LlmMessage.assistant(msg.getContent(), msg.getReasoningContent()));
                     }
                     break;
                 case SYSTEM:

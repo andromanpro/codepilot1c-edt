@@ -10,6 +10,7 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
+import com.codepilot1c.core.tools.util.ToolResultTruncator;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -55,6 +56,9 @@ public class ListFilesTool extends AbstractTool {
 
     private static final int MAX_FILES = 100;
 
+    /** Upper bound in characters for the rendered tool output (token-budget cap). */
+    private static final int MAX_OUTPUT_CHARS = 40000;
+
     @Override
     public String getDescription() {
         return "Показывает файлы и папки в каталоге workspace. Используй для обзора структуры проекта."; //$NON-NLS-1$
@@ -70,6 +74,12 @@ public class ListFilesTool extends AbstractTool {
         return CompletableFuture.supplyAsync(() -> {
             String path = params.optString("path", null); //$NON-NLS-1$
             String pattern = params.optString("pattern", null); //$NON-NLS-1$
+            // Treat an empty/blank pattern as "no filter". LLMs routinely send "" for optional
+            // string params; without this an empty pattern compiled to the regex "" and matched no
+            // file name, so list_files silently hid every file and showed only sub-folders.
+            if (pattern != null && pattern.isBlank()) {
+                pattern = null;
+            }
             boolean recursive = params.optBoolean("recursive", false); //$NON-NLS-1$
 
             try {
@@ -157,29 +167,57 @@ public class ListFilesTool extends AbstractTool {
     }
 
     private ToolResult listContents(IContainer container, String pattern, boolean recursive) throws CoreException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("**Contents of:** `").append(container.getFullPath().toString()).append("`\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
-
+        // Best-effort sync with the filesystem so files created/changed outside the Eclipse
+        // workbench (e.g. by git operations in the surrounding repo) are visible.
+        try {
+            container.refreshLocal(recursive ? IResource.DEPTH_INFINITE : IResource.DEPTH_ONE, null);
+        } catch (CoreException e) {
+            // Fall back to the cached resource tree if the refresh is rejected.
+        }
         List<String> files = new ArrayList<>();
         collectFiles(container, pattern, recursive, "", files); //$NON-NLS-1$
+        String header = "**Contents of:** `" + container.getFullPath().toString() + "`\n\n"; //$NON-NLS-1$ //$NON-NLS-2$
+        return renderListContents(header, files, pattern);
+    }
 
+    /**
+     * Package-private pure formatter. Extracted to make truncation behavior
+     * testable without standing up an Eclipse workspace.
+     */
+    static ToolResult renderListContents(String header, List<String> files, String pattern) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(header);
         if (files.isEmpty()) {
             sb.append("No files found"); //$NON-NLS-1$
             if (pattern != null) {
                 sb.append(" matching pattern: ").append(pattern); //$NON-NLS-1$
             }
             sb.append(".\n"); //$NON-NLS-1$
-        } else {
-            for (String file : files) {
-                sb.append(file).append("\n"); //$NON-NLS-1$
-            }
-
-            if (files.size() == MAX_FILES) {
-                sb.append("\n*Results limited to ").append(MAX_FILES).append(" files.*\n"); //$NON-NLS-1$ //$NON-NLS-2$
-            }
+            return ToolResult.success(sb.toString(), ToolResult.ToolResultType.FILE_LIST);
         }
 
-        return ToolResult.success(sb.toString(), ToolResult.ToolResultType.FILE_LIST);
+        int rendered = 0;
+        int droppedEntries = 0;
+        for (String file : files) {
+            int projected = sb.length() + file.length() + 1;
+            // Reserve a small budget for the trailing truncated_entries marker and the MAX_FILES note.
+            if (projected > MAX_OUTPUT_CHARS - 96) {
+                droppedEntries = files.size() - rendered;
+                break;
+            }
+            sb.append(file).append("\n"); //$NON-NLS-1$
+            rendered++;
+        }
+
+        if (droppedEntries == 0 && files.size() == MAX_FILES) {
+            sb.append("\n*Results limited to ").append(MAX_FILES).append(" files.*\n"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (droppedEntries > 0) {
+            sb.append("truncated_entries: ").append(droppedEntries).append('\n'); //$NON-NLS-1$
+        }
+
+        String capped = ToolResultTruncator.truncateText(sb.toString(), MAX_OUTPUT_CHARS);
+        return ToolResult.success(capped, ToolResult.ToolResultType.FILE_LIST);
     }
 
     private void collectFiles(IContainer container, String pattern, boolean recursive,

@@ -60,7 +60,7 @@ public class SkillFileService {
      * Creates a new user skill SKILL.md file.
      *
      * @param name         skill name (must match {@code [a-z0-9-]+})
-     * @param description  short description (≤200 chars for Qwen compat)
+     * @param description  short description for provider compatibility
      * @param allowedTools list of tool names
      * @param backendOnly  whether skill is backend-only
      * @param body         skill instruction body

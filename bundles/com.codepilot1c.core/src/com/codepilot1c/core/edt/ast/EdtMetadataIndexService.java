@@ -174,6 +174,35 @@ public class EdtMetadataIndexService {
             Map.entry("commoncommands", "CommonCommands") //$NON-NLS-1$ //$NON-NLS-2$
     );
 
+    /**
+     * Canonical collection tokens (as produced by {@link #canonicalScope(String)} over a
+     * configuration containment reference name) that represent top-level metadata object
+     * collections. Decoupled from {@link #TYPE_LABELS_EN}/{@link #TYPE_LABELS_RU}, which only drive
+     * localized display: previously the support gate reused the label maps, so kinds without a
+     * label (HTTPService, WebService, CommonForm, XDTOPackage, ...) were silently skipped by the
+     * reflective scan. Unlabeled kinds still scan correctly and fall back to their raw kind name.
+     */
+    private static final Set<String> SUPPORTED_TOP_LEVEL_COLLECTIONS = Set.of(
+            "catalogs", "documents", //$NON-NLS-1$ //$NON-NLS-2$
+            "informationregisters", "accumulationregisters", "accountingregisters", "calculationregisters", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "commonmodules", "commonattributes", //$NON-NLS-1$ //$NON-NLS-2$
+            "enums", "reports", "dataprocessors", "constants", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "commandgroups", "interfaces", "languages", "styles", "styleitems", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            "sessionparameters", "sessions", "settingsstorages", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "xdtopackages", "wsreferences", //$NON-NLS-1$ //$NON-NLS-2$
+            "roles", "subsystems", "exchangeplans", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "chartsofaccounts", "chartofaccounts", //$NON-NLS-1$ //$NON-NLS-2$
+            "chartsofcharacteristictypes", "chartofcharacteristictypes", //$NON-NLS-1$ //$NON-NLS-2$
+            "chartsofcalculationtypes", "chartofcalculationtypes", //$NON-NLS-1$ //$NON-NLS-2$
+            "businessprocesses", "tasks", //$NON-NLS-1$ //$NON-NLS-2$
+            "commonforms", "commoncommands", "commontemplates", "commonpictures", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "scheduledjobs", "filtercriteria", "definedtypes", "sequences", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "documentjournals", "documentnumerators", "eventsubscriptions", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "functionaloptions", "functionaloptionsparameters", //$NON-NLS-1$ //$NON-NLS-2$
+            "webservices", "httpservices", //$NON-NLS-1$ //$NON-NLS-2$
+            "externaldatasources", "integrationservices", "bots", "websocketclients" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+    );
+
     private final EdtServiceGateway gateway;
     private final ProjectReadinessChecker readinessChecker;
 
@@ -349,6 +378,30 @@ public class EdtMetadataIndexService {
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "sessions", configuration.getSessionParameters()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "scheduledjobs", configuration.getScheduledJobs()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commoncommands", configuration.getCommonCommands()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonattributes", configuration.getCommonAttributes()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commandgroups", configuration.getCommandGroups()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "languages", configuration.getLanguages()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styles", configuration.getStyles()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styleitems", configuration.getStyleItems()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "settingsstorages", configuration.getSettingsStorages()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "xdtopackages", configuration.getXDTOPackages()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "wsreferences", configuration.getWsReferences()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonforms", configuration.getCommonForms()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commontemplates", configuration.getCommonTemplates()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonpictures", configuration.getCommonPictures()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "filtercriteria", configuration.getFilterCriteria()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "definedtypes", configuration.getDefinedTypes()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentjournals", configuration.getDocumentJournals()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentnumerators", configuration.getDocumentNumerators()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "eventsubscriptions", configuration.getEventSubscriptions()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptions", configuration.getFunctionalOptions()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptionsparameters", configuration.getFunctionalOptionsParameters()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "webservices", configuration.getWebServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "httpservices", configuration.getHttpServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "externaldatasources", configuration.getExternalDataSources()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "integrationservices", configuration.getIntegrationServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "bots", configuration.getBots()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "websocketclients", configuration.getWebSocketClients()); //$NON-NLS-1$
         return items;
     }
 
@@ -410,7 +463,9 @@ public class EdtMetadataIndexService {
         if (canonicalCollection == null || canonicalCollection.isBlank()) {
             return false;
         }
-        return TYPE_LABELS_EN.containsKey(canonicalCollection) || TYPE_LABELS_RU.containsKey(canonicalCollection);
+        return SUPPORTED_TOP_LEVEL_COLLECTIONS.contains(canonicalCollection)
+                || TYPE_LABELS_EN.containsKey(canonicalCollection)
+                || TYPE_LABELS_RU.containsKey(canonicalCollection);
     }
 
     private boolean matchesScope(String scope, String collectionToken, String singularToken, String kind) {

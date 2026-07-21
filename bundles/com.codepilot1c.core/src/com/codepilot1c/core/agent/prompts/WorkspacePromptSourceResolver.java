@@ -56,7 +56,7 @@ public final class WorkspacePromptSourceResolver {
             Path normalized = current.toAbsolutePath().normalize();
             reversed.add(normalized);
             // Stop at project/repo root — do not walk above it
-            if (!reversed.isEmpty() && reversed.size() > 1 && isProjectRoot(normalized)) {
+            if (isProjectRoot(normalized)) {
                 break;
             }
             current = current.getParent();
@@ -84,6 +84,14 @@ public final class WorkspacePromptSourceResolver {
             addHiddenPromptCandidates(candidates, directory, fileName);
         }
         return candidates;
+    }
+
+    WorkspacePromptSourceResolver withProjectStart(Path newProjectStart) {
+        return new WorkspacePromptSourceResolver(newProjectStart, userHome);
+    }
+
+    Path getProjectStart() {
+        return projectStart;
     }
 
     public List<Path> systemPromptOverrideCandidates(boolean backendSelectedInUi) {

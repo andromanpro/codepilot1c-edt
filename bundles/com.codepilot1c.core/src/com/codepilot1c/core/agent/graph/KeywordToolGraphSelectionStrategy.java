@@ -14,6 +14,14 @@ public class KeywordToolGraphSelectionStrategy implements ToolGraphSelectionStra
         }
         String prompt = userPrompt.toLowerCase();
 
+        if (isMultiDomainFeaturePrompt(prompt)) {
+            return ToolGraphRegistry.FEATURE_GRAPH_ID;
+        }
+
+        if (isPrimarilyDcsPrompt(prompt)) {
+            return ToolGraphRegistry.DCS_GRAPH_ID;
+        }
+
         if (containsAny(prompt, List.of("форма", "форму", "формы", "управляемая форма"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             return ToolGraphRegistry.FORMS_GRAPH_ID;
         }
@@ -27,6 +35,41 @@ public class KeywordToolGraphSelectionStrategy implements ToolGraphSelectionStra
         }
 
         return ToolGraphRegistry.GENERAL_GRAPH_ID;
+    }
+
+    private boolean isPrimarilyDcsPrompt(String prompt) {
+        if (!containsAny(prompt, List.of("отчет", "отчёт", "скд", "компоновк", "dcs", "data composition"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            return false;
+        }
+        return countFeatureDomains(prompt) <= 1
+                && !containsAny(prompt, List.of("форма", "форму", "формы", "документ", "регистр", "учет", "учёт")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$
+    }
+
+    private boolean isMultiDomainFeaturePrompt(String prompt) {
+        if (!containsAny(prompt, List.of("учет", "учёт", "функционал", "подсистема", "сценарий"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            return false;
+        }
+        return countFeatureDomains(prompt) >= 2;
+    }
+
+    private int countFeatureDomains(String prompt) {
+        int domains = 0;
+        if (containsAny(prompt, List.of("справочник", "номенклатур", "контрагент", "классификатор"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            domains++;
+        }
+        if (containsAny(prompt, List.of("документ", "поступление", "реализац", "продаж", "закуп"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            domains++;
+        }
+        if (containsAny(prompt, List.of("регистр", "движен", "ресурс"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            domains++;
+        }
+        if (containsAny(prompt, List.of("форма", "форму", "формы", "управляемая форма"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            domains++;
+        }
+        if (containsAny(prompt, List.of("отчет", "отчёт", "скд", "компоновк", "dcs"))) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            domains++;
+        }
+        return domains;
     }
 
     private boolean containsAny(String text, List<String> keywords) {

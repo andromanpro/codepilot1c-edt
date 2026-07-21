@@ -36,14 +36,19 @@ public class DCSBuildProfile implements AgentProfile {
             "list_files",
             // DCS composite tool
             "dcs_manage",
+            "edt_validate_request",
             // Context
             "scan_metadata_index",
             "edt_metadata_details",
             "get_diagnostics",
+            "get_bookmarks",
+            "get_tasks",
             // Meta
             "edt_diagnostics",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -76,12 +81,17 @@ public class DCSBuildProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(),
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("dcs_manage").forAllResources(),
+                PermissionRule.allow("edt_validate_request").forAllResources(),
                 PermissionRule.allow("scan_metadata_index").forAllResources(),
                 PermissionRule.allow("edt_metadata_details").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
+                PermissionRule.allow("get_bookmarks").forAllResources(),
+                PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.eclipse.core.resources.IProject;
@@ -18,6 +19,9 @@ import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
 import com.codepilot1c.core.edt.BmObjectHelper;
+import com.codepilot1c.core.edt.metadata.MetadataConfigurationCollections;
+import com.codepilot1c.core.edt.metadata.MetadataKind;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
  * Metadata inspection service using EDT configuration model and EMF reflection.
@@ -153,33 +157,128 @@ public class EdtMetadataInspectorService {
         return object.eClass().getName();
     }
 
+    private static final String[] CHILD_CLASS_SUFFIXES = {
+            "Attribute", "TabularSection", "Command", "Form", "Template", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            "Dimension", "Resource", "Requisite", "EnumValue", "URLTemplate", "Method", "Operation" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$
+    };
+
     private MdObject findMdObjectByFqn(Configuration config, String fqn) {
         String[] parts = fqn.split("\\."); //$NON-NLS-1$
         if (parts.length < 2) {
             return null;
         }
-        String type = parts[0].toLowerCase();
-        String name = parts[1];
+        MdObject current = findTopLevelObject(config, parts[0], parts[1]);
+        if (current == null) {
+            return null;
+        }
+        // Walk nested marker/name pairs, e.g. Document.Foo.Attribute.Bar or Catalog.X.Form.ListForm.
+        for (int i = 2; i + 1 < parts.length; i += 2) {
+            current = findChildObject(current, parts[i], parts[i + 1]);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
+    }
 
-        List<? extends MdObject> objects = switch (type) {
-            case "catalog", "catalogs" -> config.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "documents" -> config.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonmodule", "commonmodules" -> config.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "informationregisters" -> config.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "accumulationregisters" -> config.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "reports" -> config.getReports(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "dataprocessor", "dataprocessors" -> config.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "enums" -> config.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "constants" -> config.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            default -> List.of();
-        };
-
-        for (MdObject obj : objects) {
-            if (name.equalsIgnoreCase(obj.getName())) {
-                return obj;
+    /**
+     * Resolves a top-level metadata object by its {@code <Type>.<Name>} prefix.
+     *
+     * <p>Uses the typed {@code Configuration} accessors via {@link MetadataConfigurationCollections}
+     * rather than a reflective {@code eGet} walk: the top-level mdclass collections are derived
+     * features, so reflection that skips derived references sees nothing for them (that regression
+     * made Task/Document/... report {@code exists=false}). Covers every metadata kind, not just the
+     * previous ~9.</p>
+     */
+    private MdObject findTopLevelObject(Configuration config, String type, String name) {
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(type);
+        } catch (MetadataOperationException e) {
+            return null;
+        }
+        for (MdObject candidate : MetadataConfigurationCollections.topLevelForKind(config, kind)) {
+            if (candidate != null && name.equalsIgnoreCase(candidate.getName())) {
+                return candidate;
             }
         }
         return null;
+    }
+
+    /**
+     * Resolves a nested child object (attribute, tabular section, form, command, template, ...) of
+     * the given parent by a {@code <Marker>.<Name>} pair, so FQNs like
+     * {@code Document.Задача.Attribute.Описание} return the child requisite rather than the owner.
+     */
+    private MdObject findChildObject(MdObject parent, String marker, String childName) {
+        String normalizedMarker = normalizeToken(marker);
+        for (EReference reference : parent.eClass().getEAllReferences()) {
+            if (!reference.isContainment() || !reference.isMany()) {
+                continue;
+            }
+            Object raw = parent.eGet(reference);
+            if (!(raw instanceof Collection<?> collection)) {
+                continue;
+            }
+            for (Object element : collection) {
+                if (!(element instanceof MdObject child) || !childName.equalsIgnoreCase(child.getName())) {
+                    continue;
+                }
+                if (markerMatchesChild(normalizedMarker, reference, child)) {
+                    return child;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean markerMatchesChild(String marker, EReference reference, MdObject child) {
+        if (marker.isEmpty()) {
+            return true;
+        }
+        String refName = normalizeToken(reference.getName());
+        if (marker.equals(refName) || marker.equals(singularizeToken(refName))) {
+            return true;
+        }
+        String className = child.eClass().getName();
+        if (marker.equals(normalizeToken(className))) {
+            return true;
+        }
+        for (String suffix : CHILD_CLASS_SUFFIXES) {
+            if (className.endsWith(suffix) && marker.equals(normalizeToken(suffix))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String normalizeToken(String value) {
+        if (value == null) {
+            return ""; //$NON-NLS-1$
+        }
+        String lowered = value.trim().toLowerCase(Locale.ROOT).replace('ё', 'е');
+        StringBuilder sb = new StringBuilder(lowered.length());
+        for (int i = 0; i < lowered.length(); i++) {
+            char ch = lowered.charAt(i);
+            if (ch == '_' || ch == '-' || ch == '.' || Character.isWhitespace(ch)) {
+                continue;
+            }
+            sb.append(ch);
+        }
+        return sb.toString();
+    }
+
+    private String singularizeToken(String value) {
+        if (value == null || value.isBlank()) {
+            return ""; //$NON-NLS-1$
+        }
+        if (value.endsWith("ies")) { //$NON-NLS-1$
+            return value.substring(0, value.length() - 3) + "y"; //$NON-NLS-1$
+        }
+        if (value.endsWith("s") && !value.endsWith("ss")) { //$NON-NLS-1$ //$NON-NLS-2$
+            return value.substring(0, value.length() - 1);
+        }
+        return value;
     }
 
     private Object formatCollectionValue(Collection<?> collection) {

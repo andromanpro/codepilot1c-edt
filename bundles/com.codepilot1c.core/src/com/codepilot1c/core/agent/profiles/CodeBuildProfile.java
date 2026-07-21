@@ -51,13 +51,23 @@ public class CodeBuildProfile implements AgentProfile {
             // EDT code tools
             "edt_content_assist",
             "edt_find_references",
+            "edt_list_modules",
+            "edt_get_module_structure",
+            "edt_search_in_code",
+            "edt_get_method_call_hierarchy",
+            "edt_go_to_definition",
+            "edt_get_symbol_info",
             "get_diagnostics",
+            "get_bookmarks",
+            "get_tasks",
             "inspect_platform_reference",
             "ensure_module_artifact",
             // Meta
             "edt_diagnostics",
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -100,11 +110,21 @@ public class CodeBuildProfile implements AgentProfile {
                 PermissionRule.allow("bsl_module_exports").forAllResources(),
                 PermissionRule.allow("edt_content_assist").forAllResources(),
                 PermissionRule.allow("edt_find_references").forAllResources(),
+                PermissionRule.allow("edt_list_modules").forAllResources(),
+                PermissionRule.allow("edt_get_module_structure").forAllResources(),
+                PermissionRule.allow("edt_search_in_code").forAllResources(),
+                PermissionRule.allow("edt_get_method_call_hierarchy").forAllResources(),
+                PermissionRule.allow("edt_go_to_definition").forAllResources(),
+                PermissionRule.allow("edt_get_symbol_info").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
+                PermissionRule.allow("get_bookmarks").forAllResources(),
+                PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("inspect_platform_reference").forAllResources(),
                 PermissionRule.allow("edt_diagnostics").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")

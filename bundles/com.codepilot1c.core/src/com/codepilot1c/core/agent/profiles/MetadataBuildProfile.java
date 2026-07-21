@@ -33,6 +33,8 @@ public class MetadataBuildProfile implements AgentProfile {
             "read_file",
             "edit_file",
             "write_file",
+            "workspace_copy_transform",
+            "workspace_copy_transform_batch",
             "glob",
             "grep",
             "list_files",
@@ -43,6 +45,16 @@ public class MetadataBuildProfile implements AgentProfile {
             "add_metadata_child",
             "edt_metadata_details",
             "scan_metadata_index",
+            "edt_get_configuration_properties",
+            "edt_get_problem_summary",
+            "edt_get_tags",
+            "edt_get_objects_by_tags",
+            "edt_list_modules",
+            "edt_get_module_structure",
+            "edt_search_in_code",
+            "edt_get_method_call_hierarchy",
+            "edt_go_to_definition",
+            "edt_get_symbol_info",
             "edt_diagnostics",
             // Forms
             "create_form",
@@ -57,9 +69,13 @@ public class MetadataBuildProfile implements AgentProfile {
             // Validation
             "edt_validate_request",
             "get_diagnostics",
+            "get_bookmarks",
+            "get_tasks",
             // Meta
             "skill",
-            "task"
+            "task",
+            "discover_tools",
+            "remember_fact"
     ));
 
     @Override
@@ -93,18 +109,38 @@ public class MetadataBuildProfile implements AgentProfile {
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("edt_metadata_details").forAllResources(),
                 PermissionRule.allow("scan_metadata_index").forAllResources(),
+                PermissionRule.allow("edt_get_configuration_properties").forAllResources(),
+                PermissionRule.allow("edt_get_problem_summary").forAllResources(),
+                PermissionRule.allow("edt_get_tags").forAllResources(),
+                PermissionRule.allow("edt_get_objects_by_tags").forAllResources(),
+                PermissionRule.allow("edt_list_modules").forAllResources(),
+                PermissionRule.allow("edt_get_module_structure").forAllResources(),
+                PermissionRule.allow("edt_search_in_code").forAllResources(),
+                PermissionRule.allow("edt_get_method_call_hierarchy").forAllResources(),
+                PermissionRule.allow("edt_go_to_definition").forAllResources(),
+                PermissionRule.allow("edt_get_symbol_info").forAllResources(),
                 PermissionRule.allow("inspect_form_layout").forAllResources(),
                 PermissionRule.allow("edt_field_type_candidates").forAllResources(),
                 PermissionRule.allow("edt_validate_request").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
+                PermissionRule.allow("get_bookmarks").forAllResources(),
+                PermissionRule.allow("get_tasks").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
+                PermissionRule.allow("discover_tools").forAllResources(),
+                PermissionRule.allow("remember_fact").forAllResources(),
                 // Write tools - ask
                 PermissionRule.ask("edit_file")
                         .withDescription("Редактирование файлов")
                         .forAllResources(),
                 PermissionRule.ask("write_file")
                         .withDescription("Создание файлов")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform")
+                        .withDescription("Копирование workspace файла с заменами")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform_batch")
+                        .withDescription("Пакетное копирование workspace файлов с заменами")
                         .forAllResources(),
                 PermissionRule.ask("create_metadata")
                         .withDescription("Создание объектов метаданных EDT")

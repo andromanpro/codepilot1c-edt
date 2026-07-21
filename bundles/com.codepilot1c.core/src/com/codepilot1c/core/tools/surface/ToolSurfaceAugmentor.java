@@ -33,8 +33,8 @@ public class ToolSurfaceAugmentor {
 
     public static ToolSurfaceAugmentor defaultAugmentor() {
         return new ToolSurfaceAugmentor(List.of(
-                new QwenToolSurfaceRewriteContributor(),
-                new QwenToolSurfaceContributor(),
+                new ProviderNeutralToolSurfaceRewriteContributor(),
+                new ToolRoutingSurfaceContributor(),
                 new DynamicToolSurfaceContributor()));
     }
 

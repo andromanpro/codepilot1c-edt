@@ -15,12 +15,9 @@ import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
-import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
-import org.eclipse.core.runtime.IStatus;
-import org.eclipse.core.runtime.Platform;
-import org.eclipse.core.runtime.Status;
 
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.session.ISessionStore.SessionStoreException;
 import com.codepilot1c.core.session.ISessionStore.SessionSummary;
 
@@ -37,8 +34,7 @@ import com.codepilot1c.core.session.ISessionStore.SessionSummary;
  */
 public class SessionManager {
 
-    private static final String PLUGIN_ID = "com.codepilot1c.core";
-    private static final ILog LOG = Platform.getLog(SessionManager.class);
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(SessionManager.class);
 
     private static SessionManager instance;
 
@@ -291,6 +287,24 @@ public class SessionManager {
     }
 
     /**
+     * Завершает конкретную сессию: status COMPLETED + сохранение + уведомление слушателей
+     * (что запускает извлечение памяти). Для мульти-вью, где каждое окно владеет своей сессией и
+     * не полагается на единственный {@code currentSession}.
+     */
+    public void completeSession(Session session) {
+        if (session == null || session.isEmpty()) {
+            return;
+        }
+        session.setStatus(Session.SessionStatus.COMPLETED);
+        if (saveSession(session)) {
+            notifySessionCompleted(session);
+        }
+        if (session == currentSession) {
+            currentSession = null;
+        }
+    }
+
+    /**
      * Архивирует сессию.
      */
     public void archiveSession(String sessionId) {
@@ -490,11 +504,11 @@ public class SessionManager {
     // --- Logging ---
 
     private void logError(String message, Throwable error) {
-        LOG.log(new Status(IStatus.ERROR, PLUGIN_ID, message, error));
+        LOG.error(message, error);
     }
 
     private void logWarning(String message, Throwable error) {
-        LOG.log(new Status(IStatus.WARNING, PLUGIN_ID, message, error));
+        LOG.warn(message, error);
     }
 
     /**

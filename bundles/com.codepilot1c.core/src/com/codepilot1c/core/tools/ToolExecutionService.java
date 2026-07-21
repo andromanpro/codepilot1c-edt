@@ -10,6 +10,7 @@ package com.codepilot1c.core.tools;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
@@ -87,6 +88,17 @@ public class ToolExecutionService {
             return CompletableFuture.completedFuture(failResult);
         }
 
+        Optional<ToolResult> repairedRejection = rejectRepairedMutatingCall(tool, toolCall);
+        if (repairedRejection.isPresent()) {
+            ToolResult failResult = repairedRejection.get();
+            LOG.warn("Blocking mutating tool %s: arguments were repaired from a truncated payload", //$NON-NLS-1$
+                    toolCall.getName());
+            toolLogger.logToolCallResult(-1, toolCall.getName(), failResult, 0);
+            String traceToolCallEventId = writeToolCallTrace(traceSession, parentEventId, toolCall, parameters, tool);
+            writeToolResultTrace(traceSession, traceToolCallEventId, toolCall, failResult, 0, null);
+            return CompletableFuture.completedFuture(failResult);
+        }
+
         try {
             parameters = argumentParser.parseArguments(toolCall.getArguments());
             LOG.debug("Parsed parameters: %s", parameters); //$NON-NLS-1$
@@ -141,6 +153,27 @@ public class ToolExecutionService {
      */
     public Map<String, Object> parseArguments(String json) {
         return argumentParser.parseArguments(json);
+    }
+
+    /**
+     * Blocks mutating tools when the tool-call arguments were repaired from a
+     * truncated or malformed payload: executing such a call risks writing
+     * incomplete content (e.g. wiping a file with a truncated 'content').
+     *
+     * @param tool the resolved tool (may be null)
+     * @param toolCall the incoming tool call
+     * @return failure result if the call must be rejected, empty otherwise
+     */
+    static Optional<ToolResult> rejectRepairedMutatingCall(ITool tool, ToolCall toolCall) {
+        if (tool == null || !tool.isMutating() || !toolCall.isArgumentsRepaired()) {
+            return Optional.empty();
+        }
+        return Optional.of(ToolResult.failure(
+                "Tool call arguments for '" + toolCall.getName() //$NON-NLS-1$
+                + "' were repaired after a truncated or malformed stream and may be incomplete. " //$NON-NLS-1$
+                + "Mutating execution was blocked to prevent data loss. " //$NON-NLS-1$
+                + "Re-issue the tool call; prefer smaller targeted edits " //$NON-NLS-1$
+                + "(old_text/new_text or SEARCH/REPLACE blocks) over full-content payloads.")); //$NON-NLS-1$
     }
 
     private String writeToolCallTrace(AgentTraceSession traceSession, String parentEventId, ToolCall toolCall,

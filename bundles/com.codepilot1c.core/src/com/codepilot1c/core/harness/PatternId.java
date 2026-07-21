@@ -1,0 +1,13 @@
+package com.codepilot1c.core.harness;
+
+public enum PatternId {
+    CATALOG,
+    DOCUMENT_EVENT,
+    ACCUMULATION_BALANCE,
+    INFORMATION_REGISTER,
+    POSTING_MOVEMENT,
+    AVAILABILITY_CHECK,
+    REPORT_ON_DATE,
+    MANAGED_FORM,
+    DCS_REPORT
+}

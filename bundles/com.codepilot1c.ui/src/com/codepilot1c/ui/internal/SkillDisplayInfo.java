@@ -30,6 +30,7 @@ public final class SkillDisplayInfo {
     /** Agent profile -> icon emoji. */
     private static final Map<String, String> PROFILE_ICONS = Map.ofEntries(
             Map.entry("build", "\uD83D\uDD28"),         // 🔨
+            Map.entry("init", "\uD83D\uDCC4"),          // 📄
             Map.entry("code", "\uD83D\uDCBB"),          // 💻
             Map.entry("metadata", "\uD83D\uDDC2\uFE0F"), // 🗂️
             Map.entry("qa", "\uD83E\uDDEA"),            // 🧪
@@ -54,6 +55,7 @@ public final class SkillDisplayInfo {
     /** Agent profile -> NLS label field from Messages. */
     private static final Map<String, String> PROFILE_LABELS = Map.ofEntries(
             Map.entry("build", Messages.SkillDisplayInfo_ProfileLabel_build),
+            Map.entry("init", Messages.SkillDisplayInfo_ProfileLabel_init),
             Map.entry("code", Messages.SkillDisplayInfo_ProfileLabel_code),
             Map.entry("metadata", Messages.SkillDisplayInfo_ProfileLabel_metadata),
             Map.entry("qa", Messages.SkillDisplayInfo_ProfileLabel_qa),

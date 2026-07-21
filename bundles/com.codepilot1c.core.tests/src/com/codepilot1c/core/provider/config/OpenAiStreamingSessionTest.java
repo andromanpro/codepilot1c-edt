@@ -31,9 +31,9 @@ public class OpenAiStreamingSessionTest {
     }
 
     @Test
-    public void qwenFixtureProducesCleanToolCallWithoutFallbackSignals() throws Exception {
-        OpenAiStreamingSession session = new OpenAiStreamingSession("fixture-qwen", true, new OpenAiStreamingToolCallParser()); //$NON-NLS-1$
-        List<LlmStreamChunk> chunks = replayFixture("qwen_clean_toolcall.sse", session); //$NON-NLS-1$
+    public void structuredToolCallFixtureProducesCleanToolCallWithoutFallbackSignals() throws Exception {
+        OpenAiStreamingSession session = new OpenAiStreamingSession("fixture-structured", true, new OpenAiStreamingToolCallParser()); //$NON-NLS-1$
+        List<LlmStreamChunk> chunks = replayFixture("structured_toolcall_clean.sse", session); //$NON-NLS-1$
 
         assertFalse(session.getSummary().shouldFallbackToNonStreaming());
         assertEquals(0, session.getSummary().getParseFailures().get());
@@ -107,12 +107,27 @@ public class OpenAiStreamingSessionTest {
         List<LlmStreamChunk> chunks = new ArrayList<>();
 
         session.processLine(
-                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bad\",\"type\":\"function\",\"function\":{\"name\":\"git_inspect\",\"arguments\":\"{\\\"operation\\\":\"}}]},\"finish_reason\":\"tool_calls\"}]}", //$NON-NLS-1$
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bad\",\"type\":\"function\",\"function\":{\"name\":\"git_inspect\",\"arguments\":\"{bad\"}}]},\"finish_reason\":\"tool_calls\"}]}", //$NON-NLS-1$
                 chunks::add);
 
         assertEquals(1, session.getSummary().getTruncatedToolCalls().get());
         assertTrue(session.getSummary().shouldFallbackToNonStreaming());
         assertNotNull(chunks);
+    }
+
+    @Test
+    public void nonObjectArgumentsDoNotEmitToolCall() {
+        OpenAiStreamingSession session = new OpenAiStreamingSession("non-object", true, //$NON-NLS-1$
+                new OpenAiStreamingToolCallParser());
+        List<LlmStreamChunk> chunks = new ArrayList<>();
+
+        session.processLine(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_array\",\"type\":\"function\",\"function\":{\"name\":\"git_inspect\",\"arguments\":\"[1,2]\"}}]},\"finish_reason\":\"tool_calls\"}]}", //$NON-NLS-1$
+                chunks::add);
+
+        assertEquals(1, session.getSummary().getTruncatedToolCalls().get());
+        assertTrue(session.getSummary().shouldFallbackToNonStreaming());
+        assertFalse(chunks.stream().anyMatch(LlmStreamChunk::hasToolCalls));
     }
 
     @Test

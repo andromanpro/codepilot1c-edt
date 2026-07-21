@@ -8,7 +8,9 @@
 package com.codepilot1c.core.tools;
 
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -27,7 +29,6 @@ import com.codepilot1c.core.agent.profiles.ProfileRouter;
 import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
-import com.codepilot1c.core.provider.ProviderUtils;
 
 import com.google.gson.JsonObject;
 
@@ -40,7 +41,7 @@ import com.google.gson.JsonObject;
  * <p>Особенности:</p>
  * <ul>
  *   <li>Ограничение глубины вложенности (макс. 3)</li>
- *   <li>Выбор профиля подагента (auto, explore, plan, code, metadata, qa, dcs, extension, recovery)</li>
+ *   <li>Выбор профиля подагента (auto, init, explore, plan, code, metadata, qa, dcs, extension, recovery)</li>
  *   <li>Автоматическое суммирование результата</li>
  *   <li>Таймаут выполнения</li>
  * </ul>
@@ -69,7 +70,7 @@ public class TaskTool extends AbstractTool {
                     },
                     "profile": {
                         "type": "string",
-                        "enum": ["auto", "explore", "plan", "build", "code", "metadata", "qa", "dcs", "extension", "recovery", "orchestrator"],
+                        "enum": ["auto", "explore", "plan", "init", "build", "code", "metadata", "qa", "dcs", "extension", "recovery", "orchestrator"],
                         "description": "Sub-agent profile or auto routing based on prompt keywords."
                     },
                     "description": {
@@ -82,7 +83,6 @@ public class TaskTool extends AbstractTool {
             """;
 
     private static final int MAX_DEPTH = 3;
-    private static final int DEFAULT_TIMEOUT_SECONDS = 180; // 3 minutes
 
     // Thread-local depth counter to prevent infinite recursion
     private static final ThreadLocal<AtomicInteger> currentDepth =
@@ -156,9 +156,8 @@ public class TaskTool extends AbstractTool {
         if (provider == null || !provider.isConfigured()) {
             return ToolResult.failure("LLM провайдер не настроен");
         }
-        if (!ProviderUtils.isCodePilotBackend(provider)) {
-            return ToolResult.failure("Tool task доступен только при активном CodePilot Account backend"); //$NON-NLS-1$
-        }
+        // Sub-agents run through the active provider, so task/delegate_to_agent work on any
+        // configured provider (not just the CodePilot Account backend).
 
         // Get profile
         AgentProfile profile = AgentProfileRegistry.getInstance()
@@ -168,8 +167,6 @@ public class TaskTool extends AbstractTool {
         // Create config from profile (applies user overrides via ProfileConfigStore)
         AgentConfig baseConfig = AgentProfileRegistry.getInstance().createConfig(profile);
         AgentConfig.Builder configBuilder = AgentConfig.builder().from(baseConfig)
-                .maxSteps(Math.min(baseConfig.getMaxSteps(), 15)) // Limit subagent steps
-                .timeoutMs(DEFAULT_TIMEOUT_SECONDS * 1000L)
                 .systemPromptAddition(buildSubagentSystemPrompt(profile, description))
                 .profileName(profileId);
 
@@ -184,9 +181,31 @@ public class TaskTool extends AbstractTool {
             AgentResult result = subagentExecutor.run(provider, toolRegistry, profile, prompt, config);
             return formatResult(result, description, profileId);
         } catch (Exception e) {
-            logError("Ошибка выполнения подагента", e);
-            return ToolResult.failure("Ошибка подагента: " + e.getMessage());
+            Throwable root = unwrap(e);
+            logError("Ошибка выполнения подагента", root);
+            JsonObject structured = new JsonObject();
+            structured.addProperty("profile", profileId); //$NON-NLS-1$
+            structured.addProperty("error_type", root.getClass().getSimpleName()); //$NON-NLS-1$
+            structured.addProperty("error_message", describe(root)); //$NON-NLS-1$
+            return ToolResult.failure("Ошибка подагента: " + describe(root), structured); //$NON-NLS-1$
         }
+    }
+
+    private Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        while ((current instanceof CompletionException || current instanceof ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private String describe(Throwable error) {
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return error.getClass().getSimpleName();
+        }
+        return message;
     }
 
     /**
@@ -313,7 +332,8 @@ public class TaskTool extends AbstractTool {
                     profile.getSystemPromptAddition());
             try {
                 CompletableFuture<AgentResult> future = subagent.run(prompt, config);
-                return future.get(DEFAULT_TIMEOUT_SECONDS + 10L, TimeUnit.SECONDS);
+                long timeoutSeconds = Math.max(1L, TimeUnit.MILLISECONDS.toSeconds(config.getTimeoutMs()) + 10L);
+                return future.get(timeoutSeconds, TimeUnit.SECONDS);
             } finally {
                 subagent.dispose();
             }

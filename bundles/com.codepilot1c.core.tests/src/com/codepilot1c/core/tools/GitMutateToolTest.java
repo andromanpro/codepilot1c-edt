@@ -180,6 +180,11 @@ public class GitMutateToolTest {
         assertTrue(schema.has("additionalProperties")); //$NON-NLS-1$
         assertFalse(schema.get("additionalProperties").getAsBoolean()); //$NON-NLS-1$
         assertEquals("operation", schema.getAsJsonArray("required").get(0).getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        JsonObject paths = schema.getAsJsonObject("properties").getAsJsonObject("paths"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("array-capable paths schema must define items for OpenAI/Azure validators", //$NON-NLS-1$
+                paths.has("items")); //$NON-NLS-1$
+        assertEquals("string", paths.getAsJsonObject("items").get("type").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     private static void assumeGitAvailable() throws Exception {

@@ -9,6 +9,8 @@ import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
 
+import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -21,6 +23,7 @@ import com.codepilot1c.core.edt.dcs.DcsUpsertCalculatedFieldRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertParameterRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertQueryDatasetRequest;
 import com.codepilot1c.core.edt.metadata.AddMetadataChildRequest;
+import com.codepilot1c.core.edt.metadata.CommandGroupResolver;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
@@ -43,24 +46,43 @@ import com.codepilot1c.core.logging.VibeLogger;
 public class MetadataRequestValidationService {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(MetadataRequestValidationService.class);
+    private static final String EXTENSION_BASE_PROJECT_MISMATCH =
+            "For extension mutations, project is the base EDT project and must equal base_project; " //$NON-NLS-1$
+                    + "extension_project is the extension project."; //$NON-NLS-1$
     private static final Set<String> FORBIDDEN_FORM_ATTRIBUTE_TYPE_PREFIXES = Set.of(
             "array", "map", "массив", "соответствие"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
     private static final Set<String> TYPE_KEY_CANDIDATES = Set.of(
             "type", "types", "value", "name", "nameRu", "code", "codeRu",
             "catalog", "document", "enumeration", "enum", "fqn"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$ //$NON-NLS-10$ //$NON-NLS-11$
+    private static final Set<String> SIMPLE_TYPE_TOKENS = Set.of(
+            "string", "строка", //$NON-NLS-1$ //$NON-NLS-2$
+            "number", "число", //$NON-NLS-1$ //$NON-NLS-2$
+            "date", "дата", //$NON-NLS-1$ //$NON-NLS-2$
+            "boolean", "булево", "bool", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "valuestorage", "хранилищезначения", //$NON-NLS-1$ //$NON-NLS-2$
+            "uniqueidentifier", "уникальныйидентификатор", "uuid", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "binarydata", "двоичныеданные" //$NON-NLS-1$ //$NON-NLS-2$
+    );
 
     private final EdtMetadataGateway gateway;
     private final MetadataProjectReadinessChecker readinessChecker;
     private final ValidationTokenStore tokenStore;
+    private final CommandGroupResolver commandGroupResolver;
 
     public MetadataRequestValidationService() {
-        this(new EdtMetadataGateway(), ValidationTokenStore.getInstance());
+        this(new EdtMetadataGateway(), ValidationTokenStore.getInstance(), new CommandGroupResolver());
     }
 
     MetadataRequestValidationService(EdtMetadataGateway gateway, ValidationTokenStore tokenStore) {
-        this.gateway = gateway;
-        this.tokenStore = tokenStore;
-        this.readinessChecker = new MetadataProjectReadinessChecker(gateway);
+        this(gateway, tokenStore, new CommandGroupResolver());
+    }
+
+    MetadataRequestValidationService(EdtMetadataGateway gateway, ValidationTokenStore tokenStore,
+            CommandGroupResolver commandGroupResolver) {
+        this.gateway = gateway == null ? new EdtMetadataGateway() : gateway;
+        this.tokenStore = tokenStore == null ? ValidationTokenStore.getInstance() : tokenStore;
+        this.readinessChecker = new MetadataProjectReadinessChecker(this.gateway);
+        this.commandGroupResolver = commandGroupResolver == null ? new CommandGroupResolver() : commandGroupResolver;
     }
 
     public boolean isEdtAvailable() {
@@ -123,6 +145,18 @@ public class MetadataRequestValidationService {
             String comment,
             Map<String, Object> properties
     ) {
+        return normalizeCreatePayload(projectName, kindValue, name, synonym, comment, properties, null);
+    }
+
+    public Map<String, Object> normalizeCreatePayload(
+            String projectName,
+            String kindValue,
+            String name,
+            String synonym,
+            String comment,
+            Map<String, Object> properties,
+            Boolean allowAutoPrefix
+    ) {
         MetadataKind kind = MetadataKind.fromString(kindValue);
         CreateMetadataRequest request = new CreateMetadataRequest(projectName, kind, name, synonym, comment, properties);
         request.validate();
@@ -131,6 +165,22 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("kind", kind.name()); //$NON-NLS-1$
         payload.put("name", name); //$NON-NLS-1$
+        payload.put("requestedName", name); //$NON-NLS-1$
+        payload.put("requestedFqn", kind.getFqnPrefix() + "." + name); //$NON-NLS-1$ //$NON-NLS-2$
+        EffectiveName effective = resolveEffectiveName(projectName, name);
+        boolean autoPrefixed = !safeEquals(name, effective.name());
+        Boolean propertyFlag = asOptionalBoolean(getMapValueIgnoreCase(properties, "allow_auto_prefix")); //$NON-NLS-1$
+        Boolean effectiveAllowAutoPrefix = allowAutoPrefix != null ? allowAutoPrefix : propertyFlag;
+        if (autoPrefixed && Boolean.FALSE.equals(effectiveAllowAutoPrefix)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "Extension project would auto-prefix name '" + name + "' to '" + effective.name() //$NON-NLS-1$ //$NON-NLS-2$
+                            + "'; pass allow_auto_prefix=true or use the effective name explicitly", //$NON-NLS-1$
+                    false);
+        }
+        payload.put("effectiveName", effective.name()); //$NON-NLS-1$
+        payload.put("effectiveFqn", kind.getFqnPrefix() + "." + effective.name()); //$NON-NLS-1$ //$NON-NLS-2$
+        payload.put("autoPrefixed", Boolean.valueOf(autoPrefixed)); //$NON-NLS-1$
         if (synonym != null && !synonym.isBlank()) {
             payload.put("synonym", synonym); //$NON-NLS-1$
         }
@@ -138,6 +188,7 @@ public class MetadataRequestValidationService {
             payload.put("comment", comment); //$NON-NLS-1$
         }
         if (properties != null && !properties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
             payload.put("properties", properties); //$NON-NLS-1$
         }
         return payload;
@@ -169,6 +220,7 @@ public class MetadataRequestValidationService {
             payload.put("comment", comment); //$NON-NLS-1$
         }
         if (properties != null && !properties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
             payload.put("properties", properties); //$NON-NLS-1$
         }
         return payload;
@@ -242,7 +294,7 @@ public class MetadataRequestValidationService {
         if (!projectName.equals(effectiveBaseProject)) {
             throw new MetadataOperationException(
                     MetadataOperationCode.KNOWLEDGE_REQUIRED,
-                    "payload.base_project must match project", false); //$NON-NLS-1$
+                    EXTENSION_BASE_PROJECT_MISMATCH, false);
         }
 
         com.codepilot1c.core.edt.extension.ExtensionCreateProjectRequest request =
@@ -368,7 +420,7 @@ public class MetadataRequestValidationService {
         if (!projectName.equals(effectiveBaseProject)) {
             throw new MetadataOperationException(
                     MetadataOperationCode.KNOWLEDGE_REQUIRED,
-                    "payload.base_project must match project", false); //$NON-NLS-1$
+                    EXTENSION_BASE_PROJECT_MISMATCH, false);
         }
         com.codepilot1c.core.edt.extension.ExtensionAdoptObjectRequest request =
                 new com.codepilot1c.core.edt.extension.ExtensionAdoptObjectRequest(
@@ -404,7 +456,7 @@ public class MetadataRequestValidationService {
         if (!projectName.equals(effectiveBaseProject)) {
             throw new MetadataOperationException(
                     MetadataOperationCode.KNOWLEDGE_REQUIRED,
-                    "payload.base_project must match project", false); //$NON-NLS-1$
+                    EXTENSION_BASE_PROJECT_MISMATCH, false);
         }
 
         com.codepilot1c.core.edt.extension.ExtensionSetPropertyStateRequest request =
@@ -568,9 +620,210 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("target_fqn", targetFqn); //$NON-NLS-1$
         if (changes != null && !changes.isEmpty()) {
-            payload.put("changes", new LinkedHashMap<>(changes)); //$NON-NLS-1$
+            Map<String, Object> normalizedChanges = normalizeEventSubscriptionSourceChildOps(changes, targetFqn);
+            validateUpdateTypeDescriptionValues(normalizedChanges);
+            payload.put("changes", normalizeStandardCommandGroupChanges(normalizedChanges)); //$NON-NLS-1$
         }
         return payload;
+    }
+
+    private Map<String, Object> normalizeEventSubscriptionSourceChildOps(
+            Map<String, Object> changes,
+            String targetFqn
+    ) {
+        Map<String, Object> normalized = new LinkedHashMap<>(changes);
+        List<Map<String, Object>> childOps = asListOfMaps(normalized.get("children_ops")); //$NON-NLS-1$
+        if (childOps.isEmpty()) {
+            return normalized;
+        }
+
+        List<Map<String, Object>> remaining = new ArrayList<>();
+        Object sourceValue = null;
+        for (Map<String, Object> op : childOps) {
+            if (isEventSubscriptionSourceTypeDescriptionOp(targetFqn, op)) {
+                if (sourceValue != null) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_CHANGE,
+                            "EventSubscription source is specified more than once in children_ops", false); //$NON-NLS-1$
+                }
+                sourceValue = extractEventSubscriptionSourceValue(op);
+                continue;
+            }
+
+            String childFqn = asOptionalString(getMapValueIgnoreCase(op, "child_fqn", "childFqn")); //$NON-NLS-1$ //$NON-NLS-2$
+            if (childFqn == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "children_ops item must contain child_fqn", false); //$NON-NLS-1$
+            }
+            remaining.add(new LinkedHashMap<>(op));
+        }
+
+        if (sourceValue != null) {
+            Map<String, Object> set = new LinkedHashMap<>(asMap(normalized.get("set"))); //$NON-NLS-1$
+            if (hasMapKeyIgnoreCase(set, "source")) { //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "EventSubscription source is specified both in set.source and children_ops", false); //$NON-NLS-1$
+            }
+            set.put("source", sourceValue); //$NON-NLS-1$
+            normalized.put("set", set); //$NON-NLS-1$
+        }
+        if (remaining.isEmpty()) {
+            normalized.remove("children_ops"); //$NON-NLS-1$
+        } else {
+            normalized.put("children_ops", remaining); //$NON-NLS-1$
+        }
+        return normalized;
+    }
+
+    private boolean isEventSubscriptionSourceTypeDescriptionOp(String targetFqn, Map<String, Object> op) {
+        if (!isEventSubscriptionFqn(targetFqn) || op == null || op.isEmpty()) {
+            return false;
+        }
+        String rawOp = asOptionalString(getMapValueIgnoreCase(op, "op")); //$NON-NLS-1$
+        if (rawOp != null) {
+            String normalizedOp = normalizeActionToken(rawOp);
+            if (!normalizedOp.equals("upsert") && !normalizedOp.equals("set") //$NON-NLS-1$ //$NON-NLS-2$
+                    && !normalizedOp.equals("update") && !normalizedOp.equals("replace")) { //$NON-NLS-1$ //$NON-NLS-2$
+                return false;
+            }
+        }
+        String kind = asOptionalString(getMapValueIgnoreCase(op, "kind", "child_kind", "childKind")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (kind != null && !kind.equalsIgnoreCase("TypeDescription")) { //$NON-NLS-1$
+            return false;
+        }
+        String name = asOptionalString(getMapValueIgnoreCase(op, "name")); //$NON-NLS-1$
+        if ("source".equalsIgnoreCase(name)) { //$NON-NLS-1$
+            return true;
+        }
+        String childFqn = asOptionalString(getMapValueIgnoreCase(op, "child_fqn", "childFqn")); //$NON-NLS-1$ //$NON-NLS-2$
+        return isEventSubscriptionSourceChildFqn(targetFqn, childFqn);
+    }
+
+    private boolean isEventSubscriptionFqn(String targetFqn) {
+        return targetFqn != null && targetFqn.regionMatches(true, 0,
+                "EventSubscription.", 0, "EventSubscription.".length()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private boolean isEventSubscriptionSourceChildFqn(String targetFqn, String childFqn) {
+        return targetFqn != null && childFqn != null
+                && childFqn.equalsIgnoreCase(targetFqn + ".source"); //$NON-NLS-1$
+    }
+
+    private Object extractEventSubscriptionSourceValue(Map<String, Object> op) {
+        Object setObj = getMapValueIgnoreCase(op, "set"); //$NON-NLS-1$
+        if (setObj instanceof Map<?, ?> setMap) {
+            return new LinkedHashMap<>(asMap(setMap));
+        }
+
+        Object types = getMapValueIgnoreCase(op, "types"); //$NON-NLS-1$
+        if (types != null) {
+            Map<String, Object> source = new LinkedHashMap<>();
+            source.put("types", types); //$NON-NLS-1$
+            return source;
+        }
+
+        Object type = getMapValueIgnoreCase(op, "type"); //$NON-NLS-1$
+        if (type != null) {
+            return type;
+        }
+
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                "Invalid TypeDescription for children_ops.source: map must include set.types or type", false); //$NON-NLS-1$
+    }
+
+    private Map<String, Object> normalizeStandardCommandGroupChanges(Map<String, Object> changes) {
+        Map<String, Object> normalized = new LinkedHashMap<>(changes);
+        Object rawSet = normalized.get("set"); //$NON-NLS-1$
+        if (rawSet instanceof Map<?, ?> setMap) {
+            Map<String, Object> set = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : setMap.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                Object value = entry.getValue();
+                if ("group".equalsIgnoreCase(key) && value instanceof String group) { //$NON-NLS-1$
+                    value = normalizeStandardCommandGroup(group);
+                }
+                set.put(key, value);
+            }
+            normalized.put("set", set); //$NON-NLS-1$
+        }
+        return normalized;
+    }
+
+    private void validateUpdateTypeDescriptionValues(Map<String, Object> changes) {
+        Object rawSet = changes.get("set"); //$NON-NLS-1$
+        if (!(rawSet instanceof Map<?, ?> setMap)) {
+            return;
+        }
+        Map<String, Object> set = asMap(setMap);
+        validateTypeDescriptionValue(getMapValueIgnoreCase(set, "type"), "changes.set.type"); //$NON-NLS-1$ //$NON-NLS-2$
+        validateTypeDescriptionValue(getMapValueIgnoreCase(set, "commandParameterType"), //$NON-NLS-1$
+                "changes.set.commandParameterType"); //$NON-NLS-1$
+        validateTypeDescriptionValue(getMapValueIgnoreCase(set, "source"), "changes.set.source"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private String normalizeStandardCommandGroup(String rawValue) {
+        return commandGroupResolver.normalizeForValidation(rawValue);
+    }
+
+    private void validateTypeDescriptionValue(Object typeValue, String fieldName) {
+        if (typeValue == null) {
+            return;
+        }
+        if (typeValue instanceof List<?> list) {
+            if (list.isEmpty()) {
+                throw invalidType(fieldName, typeValue, "must contain at least one type"); //$NON-NLS-1$
+            }
+            for (Object item : list) {
+                validateTypeDescriptionValue(item, fieldName);
+            }
+            return;
+        }
+        if (typeValue instanceof Map<?, ?> map) {
+            Map<String, Object> typed = asMap(map);
+            Object nested = getMapValueIgnoreCase(typed, "types"); //$NON-NLS-1$
+            if (nested == null) {
+                nested = getMapValueIgnoreCase(typed, "type"); //$NON-NLS-1$
+            }
+            if (nested == null) {
+                nested = pickFirstTypeToken(typed);
+            }
+            if (nested == null) {
+                throw invalidType(fieldName, typeValue, "map must include type or types"); //$NON-NLS-1$
+            }
+            validateTypeDescriptionValue(nested, fieldName);
+            return;
+        }
+        String raw = String.valueOf(typeValue).trim();
+        if (raw.isBlank()) {
+            throw invalidType(fieldName, typeValue, "must be non-empty"); //$NON-NLS-1$
+        }
+        if (!isValidTypeLookupToken(raw)) {
+            throw invalidType(fieldName, typeValue,
+                    "unknown type; use a scalar platform type or a qualified metadata type such as CatalogRef.Name"); //$NON-NLS-1$
+        }
+    }
+
+    private MetadataOperationException invalidType(String fieldName, Object value, String reason) {
+        return new MetadataOperationException(
+                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                "Invalid TypeDescription for " + fieldName + ": " + value + " (" + reason + ")", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                false);
+    }
+
+    private boolean isValidTypeLookupToken(String raw) {
+        String value = raw.trim();
+        int open = value.indexOf('(');
+        if (open > 0) {
+            value = value.substring(0, open).trim();
+        }
+        if (value.contains(".")) { //$NON-NLS-1$
+            String[] parts = value.split("\\."); //$NON-NLS-1$
+            return parts.length >= 2 && !parts[0].isBlank() && !parts[1].isBlank();
+        }
+        return SIMPLE_TYPE_TOKENS.contains(normalizeTypeToken(value));
     }
 
     public Map<String, Object> normalizeEnsureModuleArtifactPayload(
@@ -649,6 +902,30 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("form_fqn", formFqn); //$NON-NLS-1$
         payload.put("operations", operations == null ? List.of() : new ArrayList<>(operations)); //$NON-NLS-1$
+        return payload;
+    }
+
+    public Map<String, Object> normalizeMutateRoleRightsPayload(
+            String projectName,
+            String role,
+            List<Map<String, Object>> operations
+    ) {
+        if (projectName == null || projectName.isBlank()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "project is required", false); //$NON-NLS-1$
+        }
+        if (role == null || role.isBlank()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "role is required", false); //$NON-NLS-1$
+        }
+        if (operations == null || operations.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "operations must contain at least one operation", false); //$NON-NLS-1$
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("role", role); //$NON-NLS-1$
+        payload.put("operations", new ArrayList<>(operations)); //$NON-NLS-1$
         return payload;
     }
 
@@ -912,7 +1189,8 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("name")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("synonym")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("comment")), //$NON-NLS-1$
-                        asMap(request.payload().get("properties"))); //$NON-NLS-1$
+                        asMap(request.payload().get("properties")), //$NON-NLS-1$
+                        asOptionalBoolean(request.payload().get("allow_auto_prefix"))); //$NON-NLS-1$
                 checks.add("Операция create_metadata валидирована по обязательным полям и имени."); //$NON-NLS-1$
                 yield payload;
             }
@@ -1104,6 +1382,14 @@ public class MetadataRequestValidationService {
                 checks.add("Операция mutate_form_model валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
+            case MUTATE_ROLE_RIGHTS -> {
+                Map<String, Object> payload = normalizeMutateRoleRightsPayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("role")), //$NON-NLS-1$
+                        asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
+                checks.add("Операция mutate_role_rights валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
             case RENDER_TEMPLATE -> {
                 Map<String, Object> payload = normalizeRenderTemplatePayload(
                         coalesceProject(request.projectName(), request.payload()),
@@ -1162,6 +1448,10 @@ public class MetadataRequestValidationService {
                     effectiveModuleKind = suffixMatch.moduleKindValue;
                 }
             }
+            if ((effectiveModuleKind == null || effectiveModuleKind.isBlank())
+                    && normalizedObjectFqn.startsWith("CommonCommand.")) { //$NON-NLS-1$
+                effectiveModuleKind = "command"; //$NON-NLS-1$
+            }
         }
         return new ModuleArtifactTarget(
                 normalizedObjectFqn,
@@ -1174,6 +1464,7 @@ public class MetadataRequestValidationService {
     private enum ModuleSuffixMatch {
         OBJECT(".ObjectModule", "object"), //$NON-NLS-1$ //$NON-NLS-2$
         MANAGER(".ManagerModule", "manager"), //$NON-NLS-1$ //$NON-NLS-2$
+        COMMAND(".CommandModule", "command"), //$NON-NLS-1$ //$NON-NLS-2$
         MODULE(".FormModule", "module"), //$NON-NLS-1$ //$NON-NLS-2$
         GENERIC_MODULE(".Module", "module"); //$NON-NLS-1$ //$NON-NLS-2$
 
@@ -1316,5 +1607,57 @@ public class MetadataRequestValidationService {
             }
         }
         return null;
+    }
+
+    private boolean hasMapKeyIgnoreCase(Map<?, ?> map, String key) {
+        if (map == null || key == null || key.isBlank()) {
+            return false;
+        }
+        if (map.containsKey(key)) {
+            return true;
+        }
+        for (Object candidate : map.keySet()) {
+            if (candidate instanceof String text && text.equalsIgnoreCase(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private EffectiveName resolveEffectiveName(String projectName, String name) {
+        if (name == null || name.isBlank()) {
+            return new EffectiveName(name);
+        }
+        String prefix = resolveExtensionNamePrefix(projectName);
+        if (prefix == null || prefix.isBlank() || name.startsWith(prefix)) {
+            return new EffectiveName(name);
+        }
+        return new EffectiveName(prefix + name);
+    }
+
+    private String resolveExtensionNamePrefix(String projectName) {
+        if (projectName == null || projectName.isBlank()) {
+            return null;
+        }
+        try {
+            IProject project = gateway.resolveProject(projectName);
+            if (project != null && project.exists()) {
+                Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+                if (configuration != null && configuration.getNamePrefix() != null
+                        && !configuration.getNamePrefix().isBlank()) {
+                    return configuration.getNamePrefix();
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("Cannot resolve extension name prefix for %s: %s", projectName, e.getMessage()); //$NON-NLS-1$
+        }
+        return projectName.contains(".") ? "ар_" : null; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private boolean safeEquals(String left, String right) {
+        return left == null ? right == null : left.equals(right);
+    }
+
+    private record EffectiveName(String name) {
     }
 }

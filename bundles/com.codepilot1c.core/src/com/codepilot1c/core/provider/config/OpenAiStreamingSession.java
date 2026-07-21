@@ -3,6 +3,7 @@ package com.codepilot1c.core.provider.config;
 import java.util.function.Consumer;
 
 import com.codepilot1c.core.logging.VibeLogger;
+import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -13,12 +14,22 @@ import com.google.gson.JsonParser;
  */
 final class OpenAiStreamingSession {
 
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(OpenAiStreamingSession.class);
+
     private final OpenAiChunkAdapter chunkAdapter;
     private final OpenAiStreamingToolCallParser toolCallParser;
     private final ProviderStreamProcessingSummary summary;
-    private final boolean qwenContentFallbackEnabled;
+    private final boolean contentToolCallFallbackEnabled;
     private final boolean delayContentStreaming;
     private final StringBuilder bufferedContent = new StringBuilder();
+    /**
+     * Real usage captured from the terminal usage chunk emitted by providers that
+     * honour {@code stream_options: {include_usage: true}}. Emitted downstream
+     * exactly once as {@link LlmStreamChunk#usage(LlmResponse.Usage)}; subsequent
+     * usage objects in the same stream are ignored to prevent double-emission.
+     */
+    private volatile LlmResponse.Usage lastUsage;
+    private boolean usageChunkEmitted;
 
     OpenAiStreamingSession(String correlationId, boolean requestHasTools,
             OpenAiStreamingToolCallParser toolCallParser) {
@@ -27,16 +38,25 @@ final class OpenAiStreamingSession {
 
     OpenAiStreamingSession(String correlationId, boolean requestHasTools,
             OpenAiStreamingToolCallParser toolCallParser,
-            boolean qwenContentFallbackEnabled) {
+            boolean contentToolCallFallbackEnabled) {
         this.toolCallParser = toolCallParser;
         this.summary = new ProviderStreamProcessingSummary(correlationId, requestHasTools);
         this.chunkAdapter = new OpenAiChunkAdapter(toolCallParser);
-        this.qwenContentFallbackEnabled = qwenContentFallbackEnabled;
-        this.delayContentStreaming = qwenContentFallbackEnabled && requestHasTools;
+        this.contentToolCallFallbackEnabled = contentToolCallFallbackEnabled;
+        this.delayContentStreaming = contentToolCallFallbackEnabled && requestHasTools;
     }
 
     ProviderStreamProcessingSummary getSummary() {
         return summary;
+    }
+
+    /**
+     * Returns the real token usage captured from the terminal stream usage chunk,
+     * or {@code null} when the provider did not emit one (capability off or stream
+     * ended without a usage payload).
+     */
+    LlmResponse.Usage getLastUsage() {
+        return lastUsage;
     }
 
     String processLine(String line, Consumer<LlmStreamChunk> consumer) {
@@ -104,6 +124,18 @@ final class OpenAiStreamingSession {
                 summary.getOpaqueChunks().incrementAndGet();
             }
 
+            if (chunkData.hasUsage()) {
+                lastUsage = chunkData.getUsage();
+                summary.setUsage(chunkData.getUsage());
+                if (!usageChunkEmitted) {
+                    LlmStreamChunk usageChunk = LlmStreamChunk.usage(chunkData.getUsage());
+                    if (usageChunk != null) {
+                        consumer.accept(usageChunk);
+                        usageChunkEmitted = true;
+                    }
+                }
+            }
+
             return chunkData.getFinishReason();
         } catch (Exception e) {
             summary.getParseFailures().incrementAndGet();
@@ -118,9 +150,13 @@ final class OpenAiStreamingSession {
             OpenAiStreamingToolCallParser.DrainResult drainResult = toolCallParser.drainCompletedToolCalls();
             if (drainResult.repairedCount() > 0) {
                 summary.getRepairedToolCalls().addAndGet(drainResult.repairedCount());
+                LOG.warn("[%s] %d tool call(s) had truncated arguments repaired; mutating tools will reject them", //$NON-NLS-1$
+                        summary.getCorrelationId(), drainResult.repairedCount());
             }
             if (drainResult.truncatedCount() > 0) {
                 summary.getTruncatedToolCalls().addAndGet(drainResult.truncatedCount());
+                LOG.warn("[%s] %d tool call(s) dropped: arguments unrecoverably truncated", //$NON-NLS-1$
+                        summary.getCorrelationId(), drainResult.truncatedCount());
             }
             if (!drainResult.toolCalls().isEmpty()) {
                 summary.getCompletedToolCalls().addAndGet(drainResult.toolCalls().size());
@@ -130,13 +166,13 @@ final class OpenAiStreamingSession {
         }
 
         String delayedContent = flushBufferedContent(consumer, emittedToolUse);
-        if (!emittedToolUse && qwenContentFallbackEnabled
-                && QwenContentToolCallParser.hasToolCallMarkers(delayedContent)) {
+        if (!emittedToolUse && contentToolCallFallbackEnabled
+                && ContentToolCallFallbackParser.hasToolCallMarkers(delayedContent)) {
             java.util.List<com.codepilot1c.core.model.ToolCall> fallbackCalls =
-                    QwenContentToolCallParser.extractFromContent(delayedContent);
+                    ContentToolCallFallbackParser.extractFromContent(delayedContent);
             if (!fallbackCalls.isEmpty()) {
                 summary.getCompletedToolCalls().addAndGet(fallbackCalls.size());
-                String stripped = QwenContentToolCallParser.stripToolCallBlocks(delayedContent);
+                String stripped = ContentToolCallFallbackParser.stripToolCallBlocks(delayedContent);
                 if (stripped != null && !stripped.isBlank()) {
                     consumer.accept(LlmStreamChunk.content(stripped));
                 }
@@ -147,8 +183,8 @@ final class OpenAiStreamingSession {
 
         if (delayedContent != null && !delayedContent.isBlank()) {
             String flushedContent = delayedContent;
-            if (qwenContentFallbackEnabled && QwenContentToolCallParser.hasToolCallMarkers(flushedContent)) {
-                flushedContent = QwenContentToolCallParser.stripToolCallBlocks(flushedContent);
+            if (contentToolCallFallbackEnabled && ContentToolCallFallbackParser.hasToolCallMarkers(flushedContent)) {
+                flushedContent = ContentToolCallFallbackParser.stripToolCallBlocks(flushedContent);
             }
             if (flushedContent != null && !flushedContent.isBlank()) {
                 consumer.accept(LlmStreamChunk.content(flushedContent));
@@ -165,8 +201,8 @@ final class OpenAiStreamingSession {
         bufferedContent.setLength(0);
         if (emittedToolUse && delayedContent != null && !delayedContent.isBlank()) {
             String stripped = delayedContent;
-            if (qwenContentFallbackEnabled && QwenContentToolCallParser.hasToolCallMarkers(stripped)) {
-                stripped = QwenContentToolCallParser.stripToolCallBlocks(stripped);
+            if (contentToolCallFallbackEnabled && ContentToolCallFallbackParser.hasToolCallMarkers(stripped)) {
+                stripped = ContentToolCallFallbackParser.stripToolCallBlocks(stripped);
             }
             if (stripped != null && !stripped.isBlank()) {
                 consumer.accept(LlmStreamChunk.content(stripped));

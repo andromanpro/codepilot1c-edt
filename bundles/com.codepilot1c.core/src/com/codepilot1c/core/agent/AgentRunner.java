@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -43,7 +44,9 @@ import com.codepilot1c.core.agent.graph.ToolGraphRouter;
 import com.codepilot1c.core.agent.graph.ToolGraphToolFilter;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
+import com.codepilot1c.core.agent.prompts.ToolPromptRenderer;
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.evaluation.trace.TracingLlmProvider;
@@ -121,8 +124,15 @@ public class AgentRunner implements IAgentRunner {
     private final ToolContextGate contextGate = new ToolContextGate();
     private volatile ILlmProvider executionProvider;
     private final DeferredToolSession deferredToolSession = new DeferredToolSession();
+    /**
+     * Plan 1.2: detects tool-call repetition loops (e.g., grep x 42 with the
+     * same args) and injects a synthetic USER nudge to force the model to
+     * summarise and change strategy. Reset per {@link #run(String, List, AgentConfig)}.
+     */
+    private final ToolRepetitionDetector toolRepetitionDetector = new ToolRepetitionDetector();
     private volatile AgentTraceSession traceSession;
     private volatile String agentStartedTraceEventId;
+    private volatile int maxToolResultHistoryChars = AgentConfig.DEFAULT_MAX_TOOL_OUTPUT_SIZE;
     private final Map<Integer, String> stepTraceEventIds = new ConcurrentHashMap<>();
     private final Map<String, String> toolTraceEventIds = new ConcurrentHashMap<>();
 
@@ -167,6 +177,7 @@ public class AgentRunner implements IAgentRunner {
 
         // Reset state for reuse
         resetState();
+        maxToolResultHistoryChars = config.getMaxToolOutputSize();
         AtomicReference<String> appliedSystemPrompt = new AtomicReference<>(""); //$NON-NLS-1$
 
         // Initialize conversation history
@@ -178,7 +189,7 @@ public class AgentRunner implements IAgentRunner {
 
             // Add system prompt if not already present
             if (conversationHistory.isEmpty() || !isSystemMessage(conversationHistory.get(0))) {
-                String fullSystemPrompt = buildSystemPrompt(config);
+                String fullSystemPrompt = buildSystemPrompt(prompt, config);
                 appliedSystemPrompt.set(fullSystemPrompt);
                 if (!fullSystemPrompt.isEmpty()) {
                     conversationHistory.add(0, LlmMessage.system(fullSystemPrompt));
@@ -254,6 +265,7 @@ public class AgentRunner implements IAgentRunner {
         agentStartedTraceEventId = null;
         stepTraceEventIds.clear();
         toolTraceEventIds.clear();
+        toolRepetitionDetector.resetForNewTurn();
         initializeDeferredToolSession();
     }
 
@@ -351,6 +363,7 @@ public class AgentRunner implements IAgentRunner {
 
         StringBuilder contentBuilder = new StringBuilder();
         StringBuilder reasoningBuilder = new StringBuilder();
+        boolean[] reasoningFieldSeen = new boolean[] { false };
         List<ToolCall> toolCalls = new ArrayList<>();
 
         Consumer<LlmStreamChunk> chunkHandler = chunk -> {
@@ -371,8 +384,14 @@ public class AgentRunner implements IAgentRunner {
                 toolCalls.addAll(chunk.getToolCalls());
             }
 
-            if (chunk.hasReasoning()) {
+            if (chunk.hasReasoningField()) {
+                reasoningFieldSeen[0] = true;
                 reasoningBuilder.append(chunk.getReasoningContent());
+                if (chunk.getReasoningContent() != null && !chunk.getReasoningContent().isEmpty()) {
+                    // Stream reasoning live so a UI driven by AgentRunner events can show
+                    // "thinking" as it arrives (V2: required to match ChatView's current UX).
+                    emit(StreamChunkEvent.partialReasoning(step, chunk.getReasoningContent()));
+                }
             }
 
             if (chunk.isComplete()) {
@@ -382,7 +401,7 @@ public class AgentRunner implements IAgentRunner {
                         .content(contentBuilder.toString())
                         .toolCalls(toolCalls)
                         .finishReason(chunk.getFinishReason())
-                        .reasoningContent(reasoningBuilder.length() > 0 ? reasoningBuilder.toString() : null)
+                        .reasoningContent(reasoningFieldSeen[0] ? reasoningBuilder.toString() : null)
                         .build();
                 future.complete(response);
             }
@@ -416,7 +435,7 @@ public class AgentRunner implements IAgentRunner {
                 conversationHistory.add(LlmMessage.assistantWithToolCalls(
                         response.getContent(), response.getReasoningContent(), response.getToolCalls()));
             } else {
-                conversationHistory.add(LlmMessage.assistant(response.getContent()));
+                conversationHistory.add(LlmMessage.assistant(response.getContent(), response.getReasoningContent()));
             }
         }
 
@@ -458,6 +477,13 @@ public class AgentRunner implements IAgentRunner {
         return chain.thenCompose(v -> {
             if (cancelRequested.get()) {
                 return completeCancelled();
+            }
+            // Plan 1.2: append any repetition nudge only after all tool-result
+            // messages for the assistant tool_calls batch have been appended.
+            // A USER message between assistant tool_calls and tool results breaks
+            // the OpenAI-compatible message protocol.
+            for (ToolCall call : toolCalls) {
+                observeAndInjectRepetitionNudge(call);
             }
             // Continue the loop
             return executeLoop(config);
@@ -592,9 +618,7 @@ public class AgentRunner implements IAgentRunner {
      * Добавляет результат инструмента в историю.
      */
     private void addToolResult(String callId, ToolResult result) {
-        String content = result.isSuccess()
-                ? result.getContent()
-                : "Ошибка: " + result.getErrorMessage();
+        String content = result.getContentForLlm(maxToolResultHistoryChars);
         synchronized (historyLock) {
             conversationHistory.add(LlmMessage.toolResult(callId, content));
         }
@@ -614,6 +638,8 @@ public class AgentRunner implements IAgentRunner {
         Set<String> contextExcluded = contextGate.computeExcludedTools();
         int totalCount = 0;
         int deferredCount = 0;
+        int baseBuiltinCount = 0;
+        int baseDynamicCount = 0;
 
         for (ITool tool : toolRegistry.getAllTools()) {
             totalCount++;
@@ -641,6 +667,11 @@ public class AgentRunner implements IAgentRunner {
                     deferredCount++;
                     continue;
                 }
+                if (category == ToolCategory.DYNAMIC) {
+                    baseDynamicCount++;
+                } else {
+                    baseBuiltinCount++;
+                }
             }
             tools.add(toolRegistry.getToolDefinition(tool, surfaceContext));
         }
@@ -652,11 +683,25 @@ public class AgentRunner implements IAgentRunner {
                             totalCount, tools.size(), profile.getId());
             log(new Status(IStatus.INFO, PLUGIN_ID, msg));
         }
+        if (deferredToolSession.isDeferredLoadingActive()) {
+            String path = provider != null && provider.getId() != null
+                    ? provider.getId()
+                    : "AgentRunner"; //$NON-NLS-1$
+            String surfaceMsg = String.format(
+                    "[tool-surface] deferred=%d/%d builtin=%d dynamic=%d path=%s", //$NON-NLS-1$
+                    Integer.valueOf(tools.size()),
+                    Integer.valueOf(totalCount),
+                    Integer.valueOf(baseBuiltinCount),
+                    Integer.valueOf(baseDynamicCount),
+                    path);
+            log(new Status(IStatus.INFO, PLUGIN_ID, surfaceMsg));
+        }
 
         List<LlmMessage> messagesCopy;
         synchronized (historyLock) {
             messagesCopy = new ArrayList<>(conversationHistory);
         }
+        messagesCopy = ToolPromptRenderer.applyToMessages(messagesCopy, tools);
 
         return LlmRequest.builder()
                 .messages(messagesCopy)
@@ -682,12 +727,58 @@ public class AgentRunner implements IAgentRunner {
     /**
      * Строит системный промпт.
      */
-    private String buildSystemPrompt(AgentConfig config) {
-        return SystemPromptAssembler.getInstance().assemble(
+    private String buildSystemPrompt(String prompt, AgentConfig config) {
+        String addition = config.getSystemPromptAddition();
+        return SystemPromptAssembler.getInstance().assembleDetailedForCurrentSession(
                 systemPrompt,
-                config.getSystemPromptAddition(),
+                addition,
                 config.getProfileName(),
-                config.getRequestedSkills());
+                List.copyOf(config.getRequestedSkills()),
+                prompt).prompt();
+    }
+
+    /**
+     * Plan 1.2: runs the tool call through {@link #toolRepetitionDetector}
+     * and, on trip, appends a synthetic user message to the conversation
+     * history so the next LLM turn sees the nudge. The tool call itself is
+     * still dispatched — this is a soft correction, not a block.
+     */
+    private void observeAndInjectRepetitionNudge(ToolCall call) {
+        try {
+            String canonical = canonicalizeCallArguments(call.getArguments());
+            Optional<ToolRepetitionDetector.Trip> maybeTrip =
+                    toolRepetitionDetector.observe(call.getName(), canonical);
+            if (maybeTrip.isEmpty()) {
+                return;
+            }
+            ToolRepetitionDetector.Trip trip = maybeTrip.get();
+            LlmMessage nudge = LlmMessage.user(trip.localizedMessage());
+            synchronized (historyLock) {
+                conversationHistory.add(nudge);
+            }
+            log(new Status(IStatus.INFO, PLUGIN_ID,
+                    String.format("Tool repetition detected: %s x%d — nudge injected", //$NON-NLS-1$
+                            trip.toolName, Integer.valueOf(trip.identicalCount))));
+        } catch (RuntimeException e) {
+            logWarning("Tool repetition detector failed", e); //$NON-NLS-1$
+        }
+    }
+
+    private static String canonicalizeCallArguments(String rawArgs) {
+        if (rawArgs == null || rawArgs.isEmpty() || "{}".equals(rawArgs)) { //$NON-NLS-1$
+            return ToolRepetitionDetector.canonicalizeArgs(new com.google.gson.JsonObject());
+        }
+        try {
+            com.google.gson.JsonElement parsed = com.google.gson.JsonParser.parseString(rawArgs);
+            if (parsed != null && parsed.isJsonObject()) {
+                return ToolRepetitionDetector.canonicalizeArgs(parsed.getAsJsonObject());
+            }
+            // Non-object payloads (rare): fall back to the raw text — identical
+            // strings still hash identically.
+            return rawArgs;
+        } catch (RuntimeException e) {
+            return rawArgs;
+        }
     }
 
     /**
@@ -793,14 +884,14 @@ public class AgentRunner implements IAgentRunner {
             historyCopy = new ArrayList<>(conversationHistory);
         }
         AgentResult result = AgentResult.builder()
-                .finalState(AgentState.COMPLETED)
+                .finalState(AgentState.ERROR)
                 .errorMessage("Достигнут лимит шагов: " + config.getMaxSteps())
                 .conversationHistory(historyCopy)
                 .stepsExecuted(currentStep.get())
                 .toolCallsExecuted(toolCallsCount.get())
                 .executionTimeMs(executionTime)
                 .build();
-        state.set(AgentState.COMPLETED);
+        state.set(AgentState.ERROR);
         return CompletableFuture.completedFuture(result);
     }
 

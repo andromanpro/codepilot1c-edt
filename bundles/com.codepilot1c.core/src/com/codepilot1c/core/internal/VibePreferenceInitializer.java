@@ -9,6 +9,7 @@ package com.codepilot1c.core.internal;
 
 import org.eclipse.core.runtime.preferences.AbstractPreferenceInitializer;
 import org.eclipse.core.runtime.preferences.DefaultScope;
+import org.eclipse.core.runtime.preferences.InstanceScope;
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 
 import com.codepilot1c.core.mcp.host.McpHostConfig;
@@ -89,5 +90,25 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, "*"); //$NON-NLS-1$
 
         // Completion/review are not part of OSS edition; their preferences are not initialized here.
+        
+        // Cleanup: clear invalid persisted provider ID that no longer exists in registry
+        // This handles cases like stale "ssh" provider references from old configurations
+        try {
+            IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
+            String persistedId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, null);
+            if (persistedId != null && !persistedId.isEmpty() && !"claude".equals(persistedId) 
+                    && !"openai".equals(persistedId) && !"ollama".equals(persistedId) 
+                    && !"backend".equals(persistedId)) {
+                System.err.println("[VibePreferenceInitializer] Clearing stale provider ID: " + persistedId); //$NON-NLS-1$
+                prefs.remove(VibePreferenceConstants.PREF_PROVIDER_ID);
+                try {
+                    prefs.flush();
+                } catch (Exception e) {
+                    // Ignore flush errors
+                }
+            }
+        } catch (Exception e) {
+            // Ignore cleanup errors
+        }
     }
 }

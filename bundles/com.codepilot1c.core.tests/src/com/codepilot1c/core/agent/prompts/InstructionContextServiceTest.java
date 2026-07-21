@@ -22,10 +22,7 @@ public class InstructionContextServiceTest {
         Files.createDirectories(userHome.resolve(".codepilot1c")); //$NON-NLS-1$
         Files.writeString(userHome.resolve(".codepilot1c/AGENTS.md"), "user-agents-v2"); //$NON-NLS-1$ //$NON-NLS-2$
         Files.writeString(projectRoot.resolve("AGENTS.md"), "root-agents"); //$NON-NLS-1$ //$NON-NLS-2$
-        Files.createDirectories(projectRoot.resolve(".codepilot")); //$NON-NLS-1$
-        Files.writeString(projectRoot.resolve(".codepilot/Code.md"), "root-code"); //$NON-NLS-1$ //$NON-NLS-2$
-        Files.createDirectories(projectRoot.resolve(".codepilot1c")); //$NON-NLS-1$
-        Files.writeString(projectRoot.resolve(".codepilot1c/Code.md"), "root-code-v2"); //$NON-NLS-1$ //$NON-NLS-2$
+        Files.writeString(projectRoot.resolve("Code.md"), "root-code"); //$NON-NLS-1$ //$NON-NLS-2$
         Files.writeString(nestedProject.resolve("Code.md"), "nested-code"); //$NON-NLS-1$ //$NON-NLS-2$
 
         InstructionContextService service = new InstructionContextService(nestedProject, userHome);
@@ -36,12 +33,76 @@ public class InstructionContextServiceTest {
         assertEquals("user-agents-v2", agentsLayers.get(1).content()); //$NON-NLS-1$
         assertEquals("root-agents", agentsLayers.get(2).content()); //$NON-NLS-1$
 
-        assertTrue(service.loadCodeLayers(false).isEmpty());
+        List<InstructionContextService.InstructionLayer> codeLayers =
+                service.loadCodeLayers(false, nestedProject.toString());
+        assertEquals(1, codeLayers.size());
+        assertEquals("nested-code", codeLayers.get(0).content()); //$NON-NLS-1$
+        assertEquals(InstructionContextService.LayerKind.CODE, codeLayers.get(0).kind());
+        assertEquals("FOUND", codeLayers.get(0).status()); //$NON-NLS-1$
+    }
 
-        List<InstructionContextService.InstructionLayer> codeLayers = service.loadCodeLayers(true);
-        assertEquals(3, codeLayers.size());
-        assertEquals("root-code", codeLayers.get(0).content()); //$NON-NLS-1$
-        assertEquals("root-code-v2", codeLayers.get(1).content()); //$NON-NLS-1$
-        assertEquals("nested-code", codeLayers.get(2).content()); //$NON-NLS-1$
+    @Test
+    public void loadCodeLayersSupportsCaseAliases() throws Exception {
+        Path userHome = Files.createTempDirectory("instruction-home"); //$NON-NLS-1$
+        Path projectRoot = Files.createTempDirectory("instruction-project"); //$NON-NLS-1$
+        Files.writeString(projectRoot.resolve("CODE.md"), "upper-code"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        InstructionContextService service = new InstructionContextService(projectRoot, userHome);
+
+        List<InstructionContextService.InstructionLayer> codeLayers =
+                service.loadCodeLayers(false, projectRoot.toString());
+        assertEquals(1, codeLayers.size());
+        assertEquals("upper-code", codeLayers.get(0).content()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void missingCodeMdDoesNotReturnLayer() throws Exception {
+        Path userHome = Files.createTempDirectory("instruction-home"); //$NON-NLS-1$
+        Path projectRoot = Files.createTempDirectory("instruction-project"); //$NON-NLS-1$
+
+        InstructionContextService service = new InstructionContextService(projectRoot, userHome);
+
+        List<InstructionContextService.InstructionLayer> codeLayers =
+                service.loadCodeLayers(false, projectRoot.toString());
+        assertTrue(codeLayers.isEmpty());
+    }
+
+    @Test
+    public void nullOrBlankProjectPathDoesNotFallbackToResolverStartForCodeLayers() throws Exception {
+        Path userHome = Files.createTempDirectory("instruction-home"); //$NON-NLS-1$
+        Path projectRoot = Files.createTempDirectory("instruction-project"); //$NON-NLS-1$
+        Files.writeString(projectRoot.resolve("Code.md"), "resolver-code"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        InstructionContextService service = new InstructionContextService(projectRoot, userHome);
+
+        assertTrue(service.loadCodeLayers(false).isEmpty());
+        assertTrue(service.loadCodeLayers(false, null).isEmpty());
+        assertTrue(service.loadCodeLayers(false, "   ").isEmpty()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void invalidProjectPathDoesNotFallbackToResolverStartForCodeLayers() throws Exception {
+        Path userHome = Files.createTempDirectory("instruction-home"); //$NON-NLS-1$
+        Path projectRoot = Files.createTempDirectory("instruction-project"); //$NON-NLS-1$
+        Files.writeString(projectRoot.resolve("Code.md"), "resolver-code"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        InstructionContextService service = new InstructionContextService(projectRoot, userHome);
+
+        assertTrue(service.loadCodeLayers(false, "\u0000").isEmpty()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void ancestorWalkDoesNotLoadParentInstructionsWhenStartIsProjectRoot() throws Exception {
+        Path userHome = Files.createTempDirectory("instruction-home"); //$NON-NLS-1$
+        Path parent = Files.createTempDirectory("instruction-parent"); //$NON-NLS-1$
+        Path projectRoot = Files.createDirectories(parent.resolve("repo")); //$NON-NLS-1$
+        Files.writeString(parent.resolve("AGENTS.md"), "parent-agents"); //$NON-NLS-1$ //$NON-NLS-2$
+        Files.writeString(projectRoot.resolve("AGENTS.md"), "project-agents"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        InstructionContextService service = new InstructionContextService(projectRoot, userHome);
+
+        List<InstructionContextService.InstructionLayer> agentsLayers = service.loadAgentsLayers();
+        assertEquals(1, agentsLayers.size());
+        assertEquals("project-agents", agentsLayers.get(0).content()); //$NON-NLS-1$
     }
 }

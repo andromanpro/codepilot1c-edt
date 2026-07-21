@@ -12,11 +12,15 @@ import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IFolder;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -26,15 +30,21 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Status;
 
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
+
 /**
- * Инструмент записи в существующие файлы.
+ * Инструмент записи файлов workspace.
  *
- * <p>Используется только для изменения существующих файлов в workspace.
- * Создание новых файлов через этот инструмент запрещено.</p>
+ * <p>Используется для изменения существующих файлов в workspace.
+ * Дополнительно разрешает создать Code.md в корне текущего проекта и новые
+ * документационные файлы (*.md, *.txt) внутри проекта.</p>
  *
  * <p>Особенности:</p>
  * <ul>
- *   <li>Не создает новые файлы и директории</li>
+ *   <li>Из новых файлов создает только Code.md в корне проекта и документацию (*.md, *.txt),
+ *       при необходимости создавая промежуточные папки</li>
+ *   <li>Структурные EDT-артефакты (.mdo/.form/.mxl/DCS) запрещены — для них есть семантические инструменты</li>
  *   <li>Поддерживает UTF-8 кодировку</li>
  *   <li>Работает только в пределах workspace (безопасность)</li>
  *   <li>Перезаписывает существующие файлы (с overwrite=true)</li>
@@ -51,7 +61,7 @@ public class WriteTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to an existing workspace file that should be overwritten"
+                        "description": "Path to a workspace file. Existing files are overwritten; new files may be created only for project-root Code.md or documentation (*.md, *.txt)."
                     },
                     "content": {
                         "type": "string",
@@ -59,16 +69,20 @@ public class WriteTool extends AbstractTool {
                     },
                     "overwrite": {
                         "type": "boolean",
-                        "description": "Must be true; this tool only overwrites existing files"
+                        "description": "Must be true; existing files are overwritten, and new Code.md/documentation (*.md, *.txt) may be created"
+                    },
+                    "allow_empty": {
+                        "type": "boolean",
+                        "description": "Must be true to write empty content over an existing non-empty file"
                     }
                 },
-                "required": ["path", "content"]
+                "required": ["path", "content", "overwrite"]
             }
             """;
 
     @Override
     public String getDescription() {
-        return "Перезаписывает содержимое существующего файла целиком. Используй, когда нужен осознанный full overwrite без patch-логики. Предпочитай edit_file для точечных правок и не используй этот tool как основной путь изменения EDT metadata или .mdo файлов."; //$NON-NLS-1$
+        return "Перезаписывает файл workspace целиком; может создать Code.md в корне проекта и новые документационные файлы (*.md, *.txt). Используй для осознанного full overwrite или сохранения заметок/документации. Предпочитай edit_file для точечных правок; не используй для EDT metadata или .mdo/.form/.mxl файлов."; //$NON-NLS-1$
     }
 
     @Override
@@ -101,6 +115,7 @@ public class WriteTool extends AbstractTool {
             }
 
             boolean overwrite = Boolean.TRUE.equals(parameters.get("overwrite"));
+            boolean allowEmpty = Boolean.TRUE.equals(parameters.get("allow_empty"));
 
             if (!overwrite) {
                 return ToolResult.failure(
@@ -109,7 +124,7 @@ public class WriteTool extends AbstractTool {
             }
 
             try {
-                return writeFile(pathStr, content);
+                return writeFile(pathStr, content, allowEmpty);
             } catch (CoreException e) {
                 logError("Ошибка создания файла", e);
                 return ToolResult.failure("Ошибка записи файла: " + e.getMessage());
@@ -118,9 +133,9 @@ public class WriteTool extends AbstractTool {
     }
 
     /**
-     * Записывает содержимое в существующий файл.
+     * Записывает содержимое в файл workspace.
      */
-    private ToolResult writeFile(String pathStr, String content)
+    private ToolResult writeFile(String pathStr, String content, boolean allowEmpty)
             throws CoreException {
 
         // Normalize path
@@ -143,18 +158,19 @@ public class WriteTool extends AbstractTool {
                     "Пример: create_metadata(kind=\"Catalog\", name=\"Контрагенты\", synonym=\"Контрагенты\")");
         }
 
-        // QWEN-308: Прямая запись .form/.form.xml файлов запрещена — ломает XML-структуру формы.
-        if (isFormFilePath(normalizedPath)) {
+        // FORM/DCS/TEMPLATE artifacts are structured EDT files and must be changed through semantic tools.
+        if (isStructuredEdtArtifactPath(normalizedPath)) {
             logWarning("═══════════════════════════════════════════════════════════════");
-            logWarning("[WRITE_FILE] ✗ ЗАБЛОКИРОВАНО: Попытка записать .form файл напрямую!");
+            logWarning("[WRITE_FILE] ✗ ЗАБЛОКИРОВАНО: Попытка записать структурный EDT artifact напрямую!");
             logWarning("[WRITE_FILE] Путь: " + normalizedPath);
             logWarning("[WRITE_FILE] Размер контента: " + (content != null ? content.length() : 0) + " символов");
-            logWarning("[WRITE_FILE] РЕШЕНИЕ: Используйте create_form/apply_form_recipe/mutate_form_model");
+            logWarning("[WRITE_FILE] РЕШЕНИЕ: Используйте create_form/mutate_form_model, dcs_manage или render_template");
             logWarning("═══════════════════════════════════════════════════════════════");
             return ToolResult.failure(
-                    "Writing .form files is blocked. Use create_form/apply_form_recipe/mutate_form_model to manage forms.\n\n" +
-                    "Прямая запись .form/.form.xml ломает XML-структуру формы EDT.\n" +
-                    "Используйте штатные инструменты управления формами.");
+                    "Writing structured EDT artifacts is blocked. Use semantic EDT tools instead.\n\n" +
+                    "Для форм используйте create_form/apply_form_recipe/mutate_form_model.\n" +
+                    "Для СКД используйте dcs_manage.\n" +
+                    "Для .mxl макетов используйте add_metadata_child(child_kind=Template) и render_template.");
         }
 
         // Get workspace
@@ -166,18 +182,34 @@ public class WriteTool extends AbstractTool {
             return ToolResult.failure("Не удалось получить файл: " + pathStr);
         }
 
-        if (!file.exists()) {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        boolean created = false;
+
+        boolean allowedNewDoc = isAllowedNewDocFile(normalizedPath);
+        if (!file.exists() && !isProjectRootCodeMd(file) && !allowedNewDoc) {
             return ToolResult.failure(
                     "Создание новых файлов через write_file запрещено: " + file.getFullPath() + ". " +
-                    "Используйте ensure_module_artifact для подготовки Module.bsl/ObjectModule.bsl/ManagerModule.bsl, " +
+                    "Разрешено создавать только Code.md в корне проекта и новые документационные файлы (*.md, *.txt) внутри проекта. " +
+                    "Для модулей используйте ensure_module_artifact (Module.bsl/ObjectModule.bsl/ManagerModule.bsl), " +
                     "после чего применяйте edit_file/write_file только к существующему файлу.");
         }
 
-        // Write content
-        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
-        ByteArrayInputStream source = new ByteArrayInputStream(bytes);
+        if (file.exists() && content.isBlank() && !allowEmpty && existingFileHasContent(file)) {
+            logWarning("[WRITE_FILE] ЗАБЛОКИРОВАНО: пустая запись поверх непустого файла: " + file.getFullPath());
+            return ToolResult.failure(
+                    "write_file rejected: the new content is empty while the existing file '" + file.getFullPath() +
+                    "' is not. The write was aborted to prevent data loss. " +
+                    "Pass allow_empty=true to intentionally empty the file.");
+        }
 
-        file.setContents(source, IResource.FORCE, new NullProgressMonitor());
+        if (file.exists()) {
+            file.setContents(new ByteArrayInputStream(bytes), IResource.FORCE | IResource.KEEP_HISTORY,
+                    new NullProgressMonitor());
+        } else {
+            ensureParentFolderExists(file);
+            file.create(new ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+            created = true;
+        }
 
         // Refresh
         file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
@@ -187,11 +219,29 @@ public class WriteTool extends AbstractTool {
         result.append("**Файл обновлен:** `").append(file.getFullPath()).append("`\n");
         result.append("**Размер:** ").append(bytes.length).append(" байт\n");
         result.append("**Строк:** ").append(countLines(content)).append("\n");
-        result.append("**Статус:** перезаписан");
+        result.append("**Статус:** ").append(created ? "создан" : "перезаписан");
 
-        logInfo("Файл обновлен: " + file.getFullPath());
+        logInfo((created ? "Файл создан: " : "Файл обновлен: ") + file.getFullPath());
 
         return ToolResult.success(result.toString(), ToolResult.ToolResultType.TEXT);
+    }
+
+    /**
+     * Проверяет, содержит ли существующий файл значимые (не-whitespace) байты.
+     * При ошибке чтения считает файл непустым (консервативно блокирует запись).
+     */
+    private boolean existingFileHasContent(IFile file) {
+        try (InputStream stream = file.getContents(true)) {
+            int value;
+            while ((value = stream.read()) != -1) {
+                if (!Character.isWhitespace(value)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     /**
@@ -211,20 +261,95 @@ public class WriteTool extends AbstractTool {
         // Convert separators
         normalized = normalized.replace('\\', '/');
 
-        return normalized;
+        return ProjectMemoryFilePolicy.canonicalizeBarePath(normalized);
     }
 
     /**
      * Находит или создает файл по пути.
      */
     private IFile findOrCreateFile(IWorkspaceRoot root, String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+
         try {
-            // Try to get file handle
             IPath ipath = org.eclipse.core.runtime.Path.fromPortableString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                return project != null ? project.getFile(ipath) : null;
+            }
             return root.getFile(ipath);
         } catch (Exception e) {
             logError("Ошибка получения файла: " + path, e);
             return null;
+        }
+    }
+
+    private IProject resolveCurrentProject(IWorkspaceRoot root) {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
+                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+                if (project != null && project.exists() && project.isOpen()) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            logWarning("Не удалось определить текущий проект из сессии: " + e.getMessage());
+        }
+
+        for (IProject project : root.getProjects()) {
+            if (project.exists() && project.isOpen()) {
+                return project;
+            }
+        }
+        return null;
+    }
+
+    private boolean isProjectRootCodeMd(IFile file) {
+        if (file == null || file.getProjectRelativePath() == null) {
+            return false;
+        }
+        if (file.getProjectRelativePath().segmentCount() != 1) {
+            return false;
+        }
+        return ProjectMemoryFilePolicy.isCanonicalFileName(file.getName());
+    }
+
+    /**
+     * Allows creating new plain documentation files (*.md, *.txt) inside the workspace, e.g. when
+     * the user explicitly asks to save notes or a report to a file. Structured EDT artifacts
+     * (.mdo/.form/.mxl/DCS) are rejected earlier and never reach this check.
+     */
+    private boolean isAllowedNewDocFile(String normalizedPath) {
+        if (normalizedPath == null || normalizedPath.isBlank()) {
+            return false;
+        }
+        String lower = normalizedPath.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".md") || lower.endsWith(".txt"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Ensures the parent folder chain of a to-be-created file exists, so new docs can be placed in
+     * nested directories (e.g. {@code docs/report/summary.md}).
+     */
+    private void ensureParentFolderExists(IFile file) throws CoreException {
+        if (file == null) {
+            return;
+        }
+        IContainer parent = file.getParent();
+        if (parent instanceof IFolder folder && !folder.exists()) {
+            createFolderChain(folder);
+        }
+    }
+
+    private void createFolderChain(IFolder folder) throws CoreException {
+        IContainer parent = folder.getParent();
+        if (parent instanceof IFolder parentFolder && !parentFolder.exists()) {
+            createFolderChain(parentFolder);
+        }
+        if (!folder.exists()) {
+            folder.create(true, true, new NullProgressMonitor());
         }
     }
 
@@ -246,12 +371,17 @@ public class WriteTool extends AbstractTool {
         return lower.endsWith(".mdo"); //$NON-NLS-1$
     }
 
-    private boolean isFormFilePath(String normalizedPath) {
+    static boolean isStructuredEdtArtifactPath(String normalizedPath) {
         if (normalizedPath == null) {
             return false;
         }
         String lower = normalizedPath.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".form") || lower.endsWith(".form.xml"); //$NON-NLS-1$ //$NON-NLS-2$
+        return lower.endsWith(".form") //$NON-NLS-1$
+                || lower.endsWith(".form.xml") //$NON-NLS-1$
+                || lower.endsWith(".mxl") //$NON-NLS-1$
+                || lower.endsWith("/main@datacompositionschema.xml") //$NON-NLS-1$
+                || lower.endsWith("/maindatacompositionschema.xml") //$NON-NLS-1$
+                || lower.contains("/ext/maindatacompositionschema."); //$NON-NLS-1$
     }
 
     private void logInfo(String message) {

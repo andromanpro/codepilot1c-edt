@@ -1,0 +1,11 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: 1C Copilot UI Tests
+Bundle-SymbolicName: com.codepilot1c.ui.tests
+Bundle-Version: 1.0.0.qualifier
+Bundle-Vendor: CodePilot1C
+Bundle-RequiredExecutionEnvironment: JavaSE-17
+Require-Bundle: org.junit;bundle-version="[4.13.0,5.0.0)",
+ org.eclipse.swt;bundle-version="[3.124.0,4.0.0)",
+ org.eclipse.ui;bundle-version="[3.201.0,4.0.0)",
+ com.codepilot1c.ui;bundle-version="[1.0.0,2.0.0)"

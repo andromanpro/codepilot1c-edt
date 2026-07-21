@@ -69,6 +69,9 @@ public class GitMutateTool extends AbstractTool {
                 },
                 "paths": {
                   "type": ["array", "string"],
+                  "items": {
+                    "type": "string"
+                  },
                   "description": "Пути для add"
                 },
                 "message": {

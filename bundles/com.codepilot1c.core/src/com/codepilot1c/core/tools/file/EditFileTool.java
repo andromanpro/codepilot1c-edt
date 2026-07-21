@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -29,6 +30,8 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 
+import com.codepilot1c.core.session.Session;
+import com.codepilot1c.core.session.SessionManager;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
@@ -40,7 +43,8 @@ import com.codepilot1c.core.logging.VibeLogger;
 /**
  * Tool for editing file contents.
  *
- * <p>Supports modifying existing files only.</p>
+ * <p>Supports modifying existing files. The only create-mode exception is Code.md
+ * in the current project root.</p>
  */
 @ToolMeta(
     name = "edit_file",
@@ -58,11 +62,11 @@ public class EditFileTool extends AbstractTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to an existing workspace file that should be edited"
+                        "description": "Path to an existing workspace file; project-root Code.md may be created with create=true and content"
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full replacement content for the file; prefer write_file if you intentionally overwrite the whole file"
+                        "description": "Full replacement content for the file; must be non-empty and is ignored when old_text/new_text or edits are provided. Prefer write_file for intentional whole-file overwrite"
                     },
                     "old_text": {
                         "type": "string",
@@ -78,7 +82,7 @@ public class EditFileTool extends AbstractTool {
                     },
                     "create": {
                         "type": "boolean",
-                        "description": "Deprecated. Creating new files is not allowed."
+                        "description": "Deprecated except for creating project-root Code.md with full content."
                     },
                     "allow_metadata_descriptor_edit": {
                         "type": "boolean",
@@ -95,7 +99,7 @@ public class EditFileTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Редактирует существующий файл workspace через replace, SEARCH/REPLACE или fuzzy-патч."; //$NON-NLS-1$
+        return "Редактирует существующий файл workspace через replace, SEARCH/REPLACE или fuzzy-патч; с create=true может создать Code.md в корне текущего проекта."; //$NON-NLS-1$
     }
 
     @Override
@@ -144,23 +148,32 @@ public class EditFileTool extends AbstractTool {
                     LOG.warn("edit_file: аварийный override .mdo включен для %s", normalizedPath); //$NON-NLS-1$
                 }
 
-                // QWEN-308: Прямое редактирование .form/.form.xml файлов запрещено — ломает XML-структуру формы.
-                if (isFormFilePath(normalizedPath)) {
-                    LOG.warn("edit_file: заблокирована попытка редактирования .form файла: %s", normalizedPath); //$NON-NLS-1$
+                // FORM/DCS/TEMPLATE artifacts are structured EDT files and must be changed through semantic tools.
+                if (isStructuredEdtArtifactPath(normalizedPath)) {
+                    LOG.warn("edit_file: заблокирована попытка редактирования структурного EDT artifact: %s", normalizedPath); //$NON-NLS-1$
                     return ToolResult.failure(
-                            "Writing .form files is blocked. Use create_form/apply_form_recipe/mutate_form_model to manage forms.\n" + //$NON-NLS-1$
-                            "Прямое редактирование .form/.form.xml ломает XML-структуру формы EDT.\n" + //$NON-NLS-1$
-                            "Используйте штатные инструменты управления формами."); //$NON-NLS-1$
+                            "Writing structured EDT artifacts is blocked. Use semantic EDT tools instead.\n" + //$NON-NLS-1$
+                            "Для форм используйте create_form/apply_form_recipe/mutate_form_model.\n" + //$NON-NLS-1$
+                            "Для СКД используйте dcs_manage.\n" + //$NON-NLS-1$
+                            "Для .mxl макетов используйте add_metadata_child(child_kind=Template) и render_template."); //$NON-NLS-1$
                 }
 
                 // Find or create file in workspace
                 IFile file = findWorkspaceFile(normalizedPath);
 
                 if (file == null || !file.exists()) {
+                    IFile newFile = create ? findWorkspaceFileHandle(normalizedPath) : null;
+                    if (content != null && isProjectRootCodeMd(newFile)) {
+                        LOG.info("edit_file: создание Code.md в корне проекта %s", //$NON-NLS-1$
+                                newFile.getProject().getName());
+                        return createContent(newFile, content);
+                    }
+
                     LOG.warn("edit_file: файл не найден: %s", pathStr); //$NON-NLS-1$
                     return ToolResult.failure(
                             "File not found: " + pathStr + ". " + //$NON-NLS-1$ //$NON-NLS-2$
                             "Creating new files via edit_file is not allowed. " + //$NON-NLS-1$
+                            "Exception: create=true with full content may create project-root Code.md. " + //$NON-NLS-1$
                             "Use ensure_module_artifact to prepare Module.bsl/ObjectModule.bsl/ManagerModule.bsl first, " + //$NON-NLS-1$
                             "then edit existing module files only."); //$NON-NLS-1$
                 }
@@ -170,21 +183,36 @@ public class EditFileTool extends AbstractTool {
                 }
 
                 ToolResult result;
-                if (content != null) {
-                    // Replace entire file content
-                    LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
-                            file.getFullPath(), content.length());
-                    result = replaceContent(file, content);
-                } else if (edits != null && !edits.isEmpty()) {
+                EditMode mode = resolveEditMode(content, edits, oldText, newText);
+                if (content != null && (mode == EditMode.SEARCH_REPLACE_BLOCKS || mode == EditMode.FUZZY_REPLACE)) {
+                    // A stray (often empty) 'content' next to targeted-edit params must not
+                    // turn a partial edit into a full-file overwrite.
+                    LOG.warn("edit_file: параметр content проигнорирован — частичные правки имеют приоритет (%s)", //$NON-NLS-1$
+                            mode);
+                }
+                if (mode == EditMode.SEARCH_REPLACE_BLOCKS) {
                     // SEARCH/REPLACE blocks format
                     LOG.info("edit_file: SEARCH/REPLACE редактирование %s", //$NON-NLS-1$
                             file.getFullPath());
                     result = applySearchReplaceEdits(file, edits);
-                } else if (oldText != null && newText != null) {
+                } else if (mode == EditMode.FUZZY_REPLACE) {
                     // Search and replace with fuzzy matching
                     LOG.info("edit_file: fuzzy search-replace в %s (oldText=%d символов)", //$NON-NLS-1$
                             file.getFullPath(), oldText.length());
                     result = fuzzySearchAndReplace(file, oldText, newText);
+                } else if (mode == EditMode.REPLACE_CONTENT) {
+                    // Replace entire file content
+                    LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
+                            file.getFullPath(), content.length());
+                    result = replaceContent(file, content);
+                } else if (mode == EditMode.EMPTY_CONTENT_ONLY) {
+                    LOG.warn("edit_file: пустой content без частичных параметров — запись отклонена: %s", //$NON-NLS-1$
+                            file.getFullPath());
+                    return ToolResult.failure(
+                            "edit_file received an empty 'content' and no 'old_text'/'new_text' or 'edits'. " + //$NON-NLS-1$
+                            "The write was aborted to prevent wiping the file. " + //$NON-NLS-1$
+                            "Provide targeted edits, or use write_file with overwrite=true and allow_empty=true " + //$NON-NLS-1$
+                            "to intentionally empty the file."); //$NON-NLS-1$
                 } else {
                     LOG.warn("edit_file: недостаточно параметров для редактирования"); //$NON-NLS-1$
                     return ToolResult.failure(
@@ -204,6 +232,44 @@ public class EditFileTool extends AbstractTool {
     }
 
     /**
+     * Edit mode resolved from the tool parameters.
+     */
+    enum EditMode {
+        /** Full-file replacement with non-blank content. */
+        REPLACE_CONTENT,
+        /** SEARCH/REPLACE blocks from the 'edits' parameter. */
+        SEARCH_REPLACE_BLOCKS,
+        /** Fuzzy old_text/new_text replacement. */
+        FUZZY_REPLACE,
+        /** Only a blank 'content' was provided — must be rejected. */
+        EMPTY_CONTENT_ONLY,
+        /** No actionable parameters. */
+        NONE
+    }
+
+    /**
+     * Resolves the edit mode with targeted edits taking precedence over
+     * full-content replacement: models often emit a stray (frequently empty)
+     * 'content' field alongside old_text/new_text, and full replacement with
+     * it would wipe the file. Blank 'content' never counts as a replacement.
+     */
+    static EditMode resolveEditMode(String content, String edits, String oldText, String newText) {
+        if (edits != null && !edits.isEmpty()) {
+            return EditMode.SEARCH_REPLACE_BLOCKS;
+        }
+        if (oldText != null && newText != null) {
+            return EditMode.FUZZY_REPLACE;
+        }
+        if (content != null && !content.isBlank()) {
+            return EditMode.REPLACE_CONTENT;
+        }
+        if (content != null) {
+            return EditMode.EMPTY_CONTENT_ONLY;
+        }
+        return EditMode.NONE;
+    }
+
+    /**
      * Normalizes path separators for cross-platform compatibility.
      */
     private String normalizePath(String path) {
@@ -216,7 +282,8 @@ public class EditFileTool extends AbstractTool {
             normalized = normalized.substring(1);
         }
         // Convert to platform-specific separators
-        return normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        normalized = normalized.replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        return ProjectMemoryFilePolicy.canonicalizeBarePath(normalized);
     }
 
     /**
@@ -226,6 +293,24 @@ public class EditFileTool extends AbstractTool {
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
         LOG.debug("findWorkspaceFile: ищем файл по пути '%s'", path); //$NON-NLS-1$
         LOG.debug("findWorkspaceFile: workspace root = %s", root.getLocation()); //$NON-NLS-1$
+
+        // Bare Code.md belongs to the current project root, not the workspace root.
+        try {
+            org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                if (project != null) {
+                    IFile file = project.getFile(ipath);
+                    if (file.exists()) {
+                        LOG.debug("findWorkspaceFile: найден в корне текущего проекта: %s -> %s", //$NON-NLS-1$
+                                file.getFullPath(), file.getLocation());
+                        return file;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("findWorkspaceFile: current project lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
 
         // Strategy 1: Try as workspace-relative path
         try {
@@ -268,6 +353,56 @@ public class EditFileTool extends AbstractTool {
         return null;
     }
 
+    private IFile findWorkspaceFileHandle(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+
+        IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+        try {
+            org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
+            if (ipath.segmentCount() == 1) {
+                IProject project = resolveCurrentProject(root);
+                return project != null ? project.getFile(ipath) : null;
+            }
+            return root.getFile(ipath);
+        } catch (Exception e) {
+            LOG.debug("findWorkspaceFileHandle: failed for %s: %s", path, e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
+    }
+
+    private IProject resolveCurrentProject(IWorkspaceRoot root) {
+        try {
+            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
+            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
+                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+                if (project != null && project.exists() && project.isOpen()) {
+                    return project;
+                }
+            }
+        } catch (Exception e) {
+            LOG.debug("resolveCurrentProject: session lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+
+        for (IProject project : root.getProjects()) {
+            if (project.exists() && project.isOpen()) {
+                return project;
+            }
+        }
+        return null;
+    }
+
+    private boolean isProjectRootCodeMd(IFile file) {
+        if (file == null || file.getProjectRelativePath() == null) {
+            return false;
+        }
+        if (file.getProjectRelativePath().segmentCount() != 1) {
+            return false;
+        }
+        return ProjectMemoryFilePolicy.isCanonicalFileName(file.getName());
+    }
+
     private boolean isMetadataDescriptorPath(String normalizedPath) {
         if (normalizedPath == null) {
             return false;
@@ -276,18 +411,28 @@ public class EditFileTool extends AbstractTool {
         return lower.endsWith(".mdo"); //$NON-NLS-1$
     }
 
-    private boolean isFormFilePath(String normalizedPath) {
+    static boolean isStructuredEdtArtifactPath(String normalizedPath) {
         if (normalizedPath == null) {
             return false;
         }
         String lower = normalizedPath.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".form") || lower.endsWith(".form.xml"); //$NON-NLS-1$ //$NON-NLS-2$
+        return lower.endsWith(".form") //$NON-NLS-1$
+                || lower.endsWith(".form.xml") //$NON-NLS-1$
+                || lower.endsWith(".mxl") //$NON-NLS-1$
+                || lower.endsWith("/main@datacompositionschema.xml") //$NON-NLS-1$
+                || lower.endsWith("/maindatacompositionschema.xml") //$NON-NLS-1$
+                || lower.contains("/ext/maindatacompositionschema."); //$NON-NLS-1$
     }
 
     private ToolResult replaceContent(IFile file, String content) throws CoreException {
         String currentContent = readFileContent(file);
         String lineSeparator = detectLineSeparator(currentContent);
         String normalizedContent = normalizeLineEndings(content, lineSeparator);
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, normalizedContent)) {
+            LOG.warn("edit_file: запись пустого результата поверх непустого файла отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
@@ -301,6 +446,22 @@ public class EditFileTool extends AbstractTool {
 
         return ToolResult.success(
                 "Updated file: " + file.getFullPath().toString() + //$NON-NLS-1$
+                " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
+                ToolResult.ToolResultType.CONFIRMATION);
+    }
+
+    private ToolResult createContent(IFile file, String content) throws CoreException {
+        String normalizedContent = normalizeLineEndings(content, System.lineSeparator());
+        ByteArrayInputStream stream = new ByteArrayInputStream(
+                normalizedContent.getBytes(StandardCharsets.UTF_8));
+        file.create(stream, IResource.FORCE, new NullProgressMonitor());
+        file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
+
+        LOG.info("edit_file: Code.md создан в %s (%d байт)", //$NON-NLS-1$
+                file.getFullPath(), normalizedContent.length());
+
+        return ToolResult.success(
+                "Created file: " + file.getFullPath().toString() + //$NON-NLS-1$
                 " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
                 ToolResult.ToolResultType.CONFIRMATION);
     }
@@ -341,6 +502,11 @@ public class EditFileTool extends AbstractTool {
 
         // Write the modified content preserving line endings
         String normalizedContent = normalizeLineEndings(applyResult.afterContent(), lineSeparator);
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, normalizedContent)) {
+            LOG.warn("edit_file: SEARCH/REPLACE результат пуст при непустом исходнике, запись отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
@@ -380,6 +546,11 @@ public class EditFileTool extends AbstractTool {
         String after = currentContent.substring(location.getEndOffset());
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
         String newContent = before + normalizedNewText + after;
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, newContent)) {
+            LOG.warn("edit_file: fuzzy результат пуст при непустом исходнике, запись отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
 
         // Write with same charset
         Charset charset = getFileCharset(file);

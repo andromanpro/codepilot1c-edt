@@ -4,7 +4,7 @@
 
 ## Актуальные артефакты
 
-- Последний релиз: `v0.1.7.20260329-0855` — <https://github.com/ondysss/codepilot1c-edt/releases/tag/v0.1.7.20260329-0855>
+- Последний релиз: `v0.1.7.20260714-1024` — <https://github.com/ondysss/codepilot1c-edt/releases/tag/v0.1.7.20260714-1024>
 - Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/>
 - GitHub Packages (Maven, ZIP): <https://github.com/ondysss/codepilot1c-edt/packages/2846572>
 - Telegram-канал: <https://t.me/codepilot1c>
@@ -221,16 +221,16 @@ Versioned prompt для automation лежит в:
 Если source of truth лежит в planning bundle, например:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 ```
 
 используйте:
 
 ```bash
 bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
 ```
 
 Этот runner:

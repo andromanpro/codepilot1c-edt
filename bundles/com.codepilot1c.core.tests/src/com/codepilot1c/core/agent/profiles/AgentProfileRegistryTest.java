@@ -9,6 +9,8 @@ import java.util.Set;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.permissions.PermissionDecision;
+
 /**
  * Tests for {@link AgentProfileRegistry} and profile gate enforcement.
  */
@@ -41,7 +43,7 @@ public class AgentProfileRegistryTest {
         AgentProfile explore = new ExploreAgentProfile();
         int toolCount = explore.getAllowedTools().size();
         assertTrue("Explore profile should have <= 30 tools for optimal LLM accuracy, has " + toolCount, //$NON-NLS-1$
-                toolCount <= 30);
+                toolCount <= 35);
     }
 
     @Test
@@ -56,6 +58,21 @@ public class AgentProfileRegistryTest {
         assertTrue("Build must include write_file", tools.contains("write_file")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Build must include create_metadata", tools.contains("create_metadata")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Build must include git_mutate", tools.contains("git_mutate")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include start_profiling", tools.contains("start_profiling")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include get_profiling_results", tools.contains("get_profiling_results")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include discover_tools", tools.contains("discover_tools")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include connect_infobase", tools.contains("connect_infobase")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include update_infobase_status", tools.contains("update_infobase_status")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Build must include remember_fact", tools.contains("remember_fact")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void qaProfileCanInspectProfilingResults() {
+        AgentProfile qa = new QABuildProfile();
+        Set<String> tools = qa.getAllowedTools();
+
+        assertTrue("QA must include start_profiling", tools.contains("start_profiling")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("QA must include get_profiling_results", tools.contains("get_profiling_results")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -83,12 +100,57 @@ public class AgentProfileRegistryTest {
     @Test
     public void domainProfilesWithinOptimalToolRange() {
         assertToolCount(new OrchestratorProfile(), 10);
-        assertToolCount(new CodeBuildProfile(), 25);
-        assertToolCount(new MetadataBuildProfile(), 35);
-        assertToolCount(new QABuildProfile(), 25);
-        assertToolCount(new DCSBuildProfile(), 20);
-        assertToolCount(new ExtensionBuildProfile(), 25);
-        assertToolCount(new RecoveryProfile(), 15);
+        assertToolCount(new InitAgentProfile(), 8);
+        assertToolCount(new CodeBuildProfile(), 35);
+        assertToolCount(new MetadataBuildProfile(), 40);
+        // QA intentionally includes EDT debug/profiling tools for YAxUnit workflows.
+        assertToolCount(new QABuildProfile(), 35);
+        assertToolCount(new DCSBuildProfile(), 22);
+        assertToolCount(new ExtensionBuildProfile(), 27);
+        assertToolCount(new RecoveryProfile(), 18);
+    }
+
+    @Test
+    public void discoverToolsIsAvailableInEveryProfile() {
+        for (AgentProfile profile : java.util.List.of(
+                new BuildAgentProfile(),
+                new InitAgentProfile(),
+                new CodeBuildProfile(),
+                new MetadataBuildProfile(),
+                new QABuildProfile(),
+                new DCSBuildProfile(),
+                new ExtensionBuildProfile(),
+                new RecoveryProfile(),
+                new PlanAgentProfile(),
+                new ExploreAgentProfile(),
+                new OrchestratorProfile())) {
+            assertTrue(profile.getId() + " must include discover_tools", //$NON-NLS-1$
+                    profile.getAllowedTools().contains("discover_tools")); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void memoryToolIsAvailableOnlyInMutatingProfiles() {
+        assertTrue(new BuildAgentProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new CodeBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new MetadataBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new QABuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new DCSBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new ExtensionBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new RecoveryProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+
+        assertFalse(new PlanAgentProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertFalse(new ExploreAgentProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertFalse(new OrchestratorProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void dcsProfileCanPerformRequiredValidationFlow() {
+        Set<String> tools = new DCSBuildProfile().getAllowedTools();
+
+        assertTrue("DCS profile must expose edt_validate_request before mutating dcs_manage", //$NON-NLS-1$
+                tools.contains("edt_validate_request")); //$NON-NLS-1$
+        assertTrue("DCS profile must expose dcs_manage", tools.contains("dcs_manage")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -97,6 +159,7 @@ public class AgentProfileRegistryTest {
 
         assertNotNull("build profile", registry.getProfile("build").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("orchestrator profile", registry.getProfile("orchestrator").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("init profile", registry.getProfile("init").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("code profile", registry.getProfile("code").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("metadata profile", registry.getProfile("metadata").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("qa profile", registry.getProfile("qa").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
@@ -106,7 +169,26 @@ public class AgentProfileRegistryTest {
         assertNotNull("plan profile", registry.getProfile("plan").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("explore profile", registry.getProfile("explore").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertEquals("Registry should have 10 profiles", 10, registry.getAllProfiles().size()); //$NON-NLS-1$
+        assertEquals("Registry should have 11 profiles", 11, registry.getAllProfiles().size()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void initProfileCanOnlyRefreshCodeMd() {
+        InitAgentProfile init = new InitAgentProfile();
+        Set<String> tools = init.getAllowedTools();
+
+        assertFalse("Init profile is mutating because it writes Code.md", init.isReadOnly()); //$NON-NLS-1$
+        assertTrue("Init must include write_file", tools.contains("write_file")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Init must include scan_metadata_index", tools.contains("scan_metadata_index")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Init must include discover_tools", tools.contains("discover_tools")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("Init must not include edit_file", tools.contains("edit_file")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("Init must not include create_metadata", tools.contains("create_metadata")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("Init must not include remember_fact", tools.contains("remember_fact")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Init should have enough budget to write Code.md after representative scan", 40, init.getMaxSteps()); //$NON-NLS-1$
+        assertTrue("Init write_file should be allowed after explicit user action", //$NON-NLS-1$
+                init.getDefaultPermissions().stream()
+                        .anyMatch(rule -> "write_file".equals(rule.getToolName()) //$NON-NLS-1$
+                                && rule.getDecision() == PermissionDecision.ALLOW));
     }
 
     @Test

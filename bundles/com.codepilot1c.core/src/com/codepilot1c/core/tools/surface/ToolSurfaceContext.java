@@ -7,7 +7,6 @@
  */
 package com.codepilot1c.core.tools.surface;
 
-import java.util.Objects;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -15,7 +14,6 @@ import java.util.Set;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.permissions.PermissionRule;
-import com.codepilot1c.core.provider.config.LlmProviderConfig;
 
 /**
  * Immutable per-tool surface context passed to contributors.
@@ -35,20 +33,14 @@ public final class ToolSurfaceContext {
         @Override public boolean canExecuteShell() { return true; }
     };
 
-    private final LlmProviderConfig providerSnapshot;
-    private final String activeProviderId;
     private final AgentProfile profile;
     private final ToolCategory category;
     private final boolean builtIn;
-    private final boolean backendSelectedInUi;
 
     private ToolSurfaceContext(Builder builder) {
-        this.providerSnapshot = (builder.providerConfig != null ? builder.providerConfig : new LlmProviderConfig()).copy();
-        this.activeProviderId = builder.activeProviderId;
         this.profile = builder.profile != null ? builder.profile : defaultProfile();
         this.category = builder.category != null ? builder.category : ToolCategory.DYNAMIC;
         this.builtIn = builder.builtIn;
-        this.backendSelectedInUi = builder.backendSelectedInUi;
     }
 
     public static ToolSurfaceContext passthrough() {
@@ -69,20 +61,9 @@ public final class ToolSurfaceContext {
 
     public Builder toBuilder() {
         return builder()
-                .providerConfig(providerSnapshot)
-                .activeProviderId(activeProviderId)
                 .profile(profile)
                 .category(category)
-                .builtIn(builtIn)
-                .backendSelectedInUi(backendSelectedInUi);
-    }
-
-    public LlmProviderConfig getProviderConfig() {
-        return providerSnapshot.copy();
-    }
-
-    public String getActiveProviderId() {
-        return activeProviderId;
+                .builtIn(builtIn);
     }
 
     public AgentProfile getProfile() {
@@ -97,27 +78,10 @@ public final class ToolSurfaceContext {
         return builtIn;
     }
 
-    public boolean isBackendSelectedInUi() {
-        return backendSelectedInUi;
-    }
-
     public static final class Builder {
-        private LlmProviderConfig providerConfig;
-        private String activeProviderId;
         private AgentProfile profile;
         private ToolCategory category;
         private boolean builtIn;
-        private boolean backendSelectedInUi;
-
-        public Builder providerConfig(LlmProviderConfig providerConfig) {
-            this.providerConfig = providerConfig;
-            return this;
-        }
-
-        public Builder activeProviderId(String activeProviderId) {
-            this.activeProviderId = activeProviderId;
-            return this;
-        }
 
         public Builder profile(AgentProfile profile) {
             this.profile = profile;
@@ -131,11 +95,6 @@ public final class ToolSurfaceContext {
 
         public Builder builtIn(boolean builtIn) {
             this.builtIn = builtIn;
-            return this;
-        }
-
-        public Builder backendSelectedInUi(boolean backendSelectedInUi) {
-            this.backendSelectedInUi = backendSelectedInUi;
             return this;
         }
 

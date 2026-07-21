@@ -346,7 +346,7 @@ public class BslSemanticService {
         return new BslModuleContextResult(
                 request.getProjectName(),
                 request.getFilePath(),
-                normalizeModuleType(context.module().getModuleType()),
+                effectiveModuleType(request.getFilePath(), context.module().getModuleType()),
                 owner != null ? owner.eClass().getName() : null,
                 owner != null ? extractName(owner) : null,
                 owner != null ? EcoreUtil.getURI(owner).toString() : null,
@@ -404,8 +404,33 @@ public class BslSemanticService {
         } catch (RuntimeException e) {
             throw new EdtAstException(
                     EdtAstErrorCode.EDT_SERVICE_UNAVAILABLE,
-                    "Failed to execute BSL read transaction: " + e.getMessage(), true, e); //$NON-NLS-1$
+                    "Failed to execute BSL read transaction: " + describeCause(e), true, e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Human-readable description of a failure for diagnostics. Surfaces the exception class and the
+     * cause chain even when {@code getMessage()} is null (e.g. a bare {@link NullPointerException} from
+     * the headless content-assist engine), so the tool error tells us the real reason, not just
+     * "Failed to execute BSL read transaction".
+     */
+    private static String describeCause(Throwable error) {
+        StringBuilder sb = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < 5) {
+            if (depth > 0) {
+                sb.append(" <- "); //$NON-NLS-1$
+            }
+            sb.append(current.getClass().getSimpleName());
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                sb.append(": ").append(message); //$NON-NLS-1$
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return sb.length() == 0 ? "unknown error" : sb.toString(); //$NON-NLS-1$
     }
 
     private PositionContext resolveContext(BslPositionRequest request) {
@@ -982,6 +1007,14 @@ public class BslSemanticService {
             return symbol;
         }
         return symbol + "=" + value; //$NON-NLS-1$
+    }
+
+    private String effectiveModuleType(String filePath, ModuleType moduleType) {
+        String normalized = normalizeModuleType(moduleType);
+        if (filePath != null && filePath.replace('\\', '/').endsWith("/CommandModule.bsl")) { //$NON-NLS-1$
+            return "COMMAND_MODULE"; //$NON-NLS-1$
+        }
+        return normalized;
     }
 
     private String normalizeModuleType(ModuleType moduleType) {
