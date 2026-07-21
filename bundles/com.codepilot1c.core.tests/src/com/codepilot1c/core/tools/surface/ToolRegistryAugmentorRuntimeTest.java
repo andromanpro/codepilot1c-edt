@@ -1,18 +1,17 @@
 package com.codepilot1c.core.tools.surface;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.HashMap;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
-import org.junit.After;
 import org.junit.Test;
 
 import com.codepilot1c.core.mcp.host.McpHostConfig;
@@ -22,9 +21,6 @@ import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
 import com.codepilot1c.core.mcp.model.McpPrompt;
 import com.codepilot1c.core.mcp.model.McpPromptResult;
 import com.codepilot1c.core.model.ToolDefinition;
-import com.codepilot1c.core.provider.config.LlmProviderConfig;
-import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
-import com.codepilot1c.core.provider.config.ProviderType;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.google.gson.Gson;
 
@@ -32,15 +28,8 @@ import sun.misc.Unsafe;
 
 public class ToolRegistryAugmentorRuntimeTest {
 
-    private final LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
-
-    @After
-    public void cleanup() throws Exception {
-        setStoreState(null, null);
-    }
-
     @Test
-    public void activeProviderSelectionReachesToolRegistryAndMcpHost() throws Exception {
+    public void effectiveProfileSurfaceReachesToolRegistryAndMcpHost() throws Exception {
         ToolRegistry toolRegistry = createIsolatedRegistry();
         toolRegistry.setAugmentor(new ToolSurfaceAugmentor(List.of(new ToolSurfaceContributor() {
             @Override
@@ -50,20 +39,14 @@ public class ToolRegistryAugmentorRuntimeTest {
 
             @Override
             public void contribute(ToolSurfaceContext context, ToolDefinition.Builder builder) {
-                if (context.getActiveProviderId() != null) {
-                    builder.description(builder.getDescription() + " [provider=" //$NON-NLS-1$
-                            + context.getActiveProviderId() + "]"); //$NON-NLS-1$
-                }
+                builder.description(builder.getDescription() + " [profile=" //$NON-NLS-1$
+                        + context.getProfile().getId() + "]"); //$NON-NLS-1$
             }
         })));
         toolRegistry.registerDynamicTool(new RuntimeTestTool());
-        setStoreState(
-                List.of(configured("provider-1", ProviderType.OPENAI_COMPATIBLE)), //$NON-NLS-1$
-                "provider-1"); //$NON-NLS-1$
 
-        List<ToolDefinition> definitions = toolRegistry.getToolDefinitions(toolRegistry.createRuntimeSurfaceContext(null));
-        assertFalse(definitions.isEmpty());
-        assertTrue(definitions.get(0).getDescription().contains("[provider=provider-1]")); //$NON-NLS-1$
+        ToolDefinition expected = toolRegistry.getToolDefinitions(
+                toolRegistry.createRuntimeSurfaceContext(null)).get(0);
 
         ToolRegistry previous = installSingleton(toolRegistry);
         List<Map<String, Object>> tools;
@@ -83,28 +66,13 @@ public class ToolRegistryAugmentorRuntimeTest {
         }
 
         assertFalse(tools.isEmpty());
-        assertTrue(String.valueOf(tools.get(0).get("description")).contains("[provider=provider-1]")); //$NON-NLS-1$ //$NON-NLS-2$
-    }
-
-    private void setStoreState(List<LlmProviderConfig> configs, String activeProviderId) throws Exception {
-        Field configsField = LlmProviderConfigStore.class.getDeclaredField("cachedConfigs"); //$NON-NLS-1$
-        configsField.setAccessible(true);
-        configsField.set(store, configs);
-
-        Field activeField = LlmProviderConfigStore.class.getDeclaredField("cachedActiveProviderId"); //$NON-NLS-1$
-        activeField.setAccessible(true);
-        activeField.set(store, activeProviderId);
-    }
-
-    private static LlmProviderConfig configured(String id, ProviderType type) {
-        LlmProviderConfig config = new LlmProviderConfig();
-        config.setId(id);
-        config.setName(id);
-        config.setType(type);
-        config.setBaseUrl("https://example.com/v1"); //$NON-NLS-1$
-        config.setApiKey("key"); //$NON-NLS-1$
-        config.setModel("model"); //$NON-NLS-1$
-        return config;
+        Map<String, Object> published = tools.stream()
+                .filter(item -> expected.getName().equals(item.get("name"))) //$NON-NLS-1$
+                .findFirst()
+                .orElseThrow();
+        assertEquals(expected.getDescription(), published.get("description")); //$NON-NLS-1$
+        Map<?, ?> expectedSchema = new Gson().fromJson(expected.getParametersSchema(), Map.class);
+        assertEquals(expectedSchema, published.get("inputSchema")); //$NON-NLS-1$
     }
 
     private static final class RuntimeTestTool implements com.codepilot1c.core.tools.ITool {

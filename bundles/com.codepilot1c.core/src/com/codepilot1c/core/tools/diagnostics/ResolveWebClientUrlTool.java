@@ -5,11 +5,11 @@ import java.util.concurrent.CompletableFuture;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService.WebClientInfo;
 import com.codepilot1c.core.logging.LogSanitizer;
+import com.codepilot1c.core.provider.ActiveProviderConfigResolver;
 import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.tools.AbstractTool;
 import com.codepilot1c.core.tools.ActiveProjectSupport;
-import com.codepilot1c.core.tools.ProviderContextResolver;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
@@ -41,16 +41,17 @@ public class ResolveWebClientUrlTool extends AbstractTool {
             """; //$NON-NLS-1$
 
     private final EdtRuntimeService runtimeService;
-    private final ProviderContextResolver providerContextResolver;
+    private final ActiveProviderConfigResolver activeProviderConfigResolver;
 
     public ResolveWebClientUrlTool() {
-        this(new EdtRuntimeService(), new ProviderContextResolver());
+        this(new EdtRuntimeService(), new ActiveProviderConfigResolver());
     }
 
-    ResolveWebClientUrlTool(EdtRuntimeService runtimeService, ProviderContextResolver providerContextResolver) {
+    ResolveWebClientUrlTool(EdtRuntimeService runtimeService,
+            ActiveProviderConfigResolver activeProviderConfigResolver) {
         this.runtimeService = runtimeService == null ? new EdtRuntimeService() : runtimeService;
-        this.providerContextResolver =
-                providerContextResolver == null ? new ProviderContextResolver() : providerContextResolver;
+        this.activeProviderConfigResolver = activeProviderConfigResolver == null
+                ? new ActiveProviderConfigResolver() : activeProviderConfigResolver;
     }
 
     @Override
@@ -121,7 +122,7 @@ public class ResolveWebClientUrlTool extends AbstractTool {
     private void applyMultimodalGuard(JsonObject data) {
         String model = null;
         try {
-            LlmProviderConfig config = providerContextResolver.resolveActiveProviderConfig();
+            LlmProviderConfig config = activeProviderConfigResolver.resolve();
             model = config == null ? null : config.getModel();
         } catch (Exception e) {
             model = null;
