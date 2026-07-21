@@ -15,7 +15,6 @@ public final class ProviderCapabilities {
     private static final ProviderCapabilities NONE = builder().build();
 
     private final boolean codePilotBackend;
-    private final boolean backendOptimizations;
     private final boolean promptCacheHeaders;
     private final boolean resolvedModel;
     private final boolean textToolCallFallback;
@@ -29,7 +28,6 @@ public final class ProviderCapabilities {
 
     private ProviderCapabilities(Builder builder) {
         this.codePilotBackend = builder.codePilotBackend;
-        this.backendOptimizations = builder.backendOptimizations;
         this.promptCacheHeaders = builder.promptCacheHeaders;
         this.resolvedModel = builder.resolvedModel;
         this.textToolCallFallback = builder.textToolCallFallback;
@@ -62,10 +60,6 @@ public final class ProviderCapabilities {
      */
     public boolean supportsTextToolCallFallback() {
         return textToolCallFallback;
-    }
-
-    public boolean supportsBackendOptimizations() {
-        return backendOptimizations;
     }
 
     public boolean supportsPromptCacheHeaders() {
@@ -177,7 +171,6 @@ public final class ProviderCapabilities {
 
     public static final class Builder {
         private boolean codePilotBackend;
-        private boolean backendOptimizations;
         private boolean promptCacheHeaders;
         private boolean resolvedModel;
         private boolean textToolCallFallback;
@@ -191,11 +184,6 @@ public final class ProviderCapabilities {
 
         public Builder codePilotBackend(boolean codePilotBackend) {
             this.codePilotBackend = codePilotBackend;
-            return this;
-        }
-
-        public Builder backendOptimizations(boolean backendOptimizations) {
-            this.backendOptimizations = backendOptimizations;
             return this;
         }
 

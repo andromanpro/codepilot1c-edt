@@ -180,7 +180,6 @@ public class DelegateToAgentToolTest {
         public ProviderCapabilities getCapabilities() {
             return ProviderCapabilities.builder()
                     .codePilotBackend(true)
-                    .backendOptimizations(true)
                     .build();
         }
     }

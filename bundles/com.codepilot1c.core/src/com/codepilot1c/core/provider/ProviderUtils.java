@@ -48,7 +48,6 @@ public final class ProviderUtils {
         if (config.getType() == ProviderType.CODEPILOT_BACKEND) {
             return base
                     .codePilotBackend(true)
-                    .backendOptimizations(true)
                     .promptCacheHeaders(true)
                     .resolvedModel(true)
                     .textToolCallFallback(true)
@@ -67,14 +66,6 @@ public final class ProviderUtils {
 
     public static boolean isCodePilotBackend(LlmProviderConfig config) {
         return capabilitiesFor(config).isCodePilotBackend();
-    }
-
-    public static boolean supportsBackendOptimizations(ILlmProvider provider) {
-        return capabilitiesOf(provider).supportsBackendOptimizations();
-    }
-
-    public static boolean supportsBackendOptimizations(LlmProviderConfig config) {
-        return capabilitiesFor(config).supportsBackendOptimizations();
     }
 
     public static boolean supportsPromptCacheHeaders(ILlmProvider provider) {

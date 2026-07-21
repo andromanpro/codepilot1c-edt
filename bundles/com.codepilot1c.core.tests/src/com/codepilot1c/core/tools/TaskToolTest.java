@@ -202,7 +202,6 @@ public class TaskToolTest {
         public ProviderCapabilities getCapabilities() {
             return ProviderCapabilities.builder()
                     .codePilotBackend(true)
-                    .backendOptimizations(true)
                     .build();
         }
     }
