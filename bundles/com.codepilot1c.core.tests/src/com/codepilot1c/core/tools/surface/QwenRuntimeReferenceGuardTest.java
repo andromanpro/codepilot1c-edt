@@ -8,7 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 import java.util.stream.Stream;
 
 import org.junit.Test;
@@ -29,6 +31,20 @@ public class QwenRuntimeReferenceGuardTest {
             "supportsBackend" + "Optimizations", //$NON-NLS-1$ //$NON-NLS-2$
             "raw tool " + "surface", //$NON-NLS-1$ //$NON-NLS-2$
             "provider-" + "aware augmentation"); //$NON-NLS-1$ //$NON-NLS-2$
+
+    @Test
+    public void coreBundleExcludesBackupSourceFiles() throws Exception {
+        Path buildProperties = repositoryRoot().resolve("bundles/com.codepilot1c.core/build.properties"); //$NON-NLS-1$
+        Properties properties = new Properties();
+        try (var reader = Files.newBufferedReader(buildProperties, StandardCharsets.UTF_8)) {
+            properties.load(reader);
+        }
+
+        assertTrue("core build.properties must exclude **/*.bak from the bundle", //$NON-NLS-1$
+                Arrays.stream(properties.getProperty("bin.excludes", "").split(",")) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        .map(String::trim)
+                        .anyMatch("**/*.bak"::equals)); //$NON-NLS-1$
+    }
 
     @Test
     public void liveRuntimeAndInstructionsDoNotReferenceRemovedApis() throws Exception {
