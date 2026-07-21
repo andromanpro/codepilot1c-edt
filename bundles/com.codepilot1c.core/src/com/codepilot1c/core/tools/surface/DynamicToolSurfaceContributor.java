@@ -8,17 +8,17 @@
 package com.codepilot1c.core.tools.surface;
 
 /**
- * Minimal backend-aware augmentation for dynamic/MCP-contributed tools.
+ * Provider-neutral augmentation for dynamic/MCP-contributed tools.
  */
 public final class DynamicToolSurfaceContributor implements ToolSurfaceContributor {
 
     private static final String MCP_GUIDANCE =
-            "Backend note: this tool is provided by an MCP/dynamic source. Follow its schema exactly, " //$NON-NLS-1$
+            "External tool note: this tool is provided by an MCP/dynamic source. Follow its schema exactly, " //$NON-NLS-1$
             + "do not assume EDT/file semantics, and rely on returned machine-readable errors."; //$NON-NLS-1$
 
     @Override
     public boolean supports(ToolSurfaceContext context) {
-        return context != null && context.isBackendSelectedInUi() && !context.isBuiltIn();
+        return context != null && !context.isBuiltIn();
     }
 
     @Override

@@ -10,13 +10,13 @@ package com.codepilot1c.core.tools.surface;
 import com.codepilot1c.core.model.ToolDefinition;
 
 /**
- * Rewrites the model-facing backend tool surface with compact, provider-neutral descriptions.
+ * Rewrites the model-facing tool surface with compact, provider-neutral descriptions.
  */
-public final class BackendToolSurfaceRewriteContributor implements ToolSurfaceContributor {
+public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolSurfaceContributor {
 
     @Override
     public boolean supports(ToolSurfaceContext context) {
-        return context != null && context.isBuiltIn() && context.isBackendSelectedInUi();
+        return context != null && context.isBuiltIn();
     }
 
     @Override

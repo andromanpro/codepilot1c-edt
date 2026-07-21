@@ -33,7 +33,7 @@ public class ToolSurfaceAugmentor {
 
     public static ToolSurfaceAugmentor defaultAugmentor() {
         return new ToolSurfaceAugmentor(List.of(
-                new BackendToolSurfaceRewriteContributor(),
+                new ProviderNeutralToolSurfaceRewriteContributor(),
                 new ToolRoutingSurfaceContributor(),
                 new DynamicToolSurfaceContributor()));
     }
