@@ -7222,11 +7222,11 @@ public class EdtMetadataService {
             // они падали, хотя пре-резолв типов для "source" в set уже был на месте
             // (см. addTypeStringIfPresent). Подключаем обработчик здесь: до этой точки
             // "type" не доходит, регрессии рабочего пути смены типа нет.
-            if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction,
-                    preResolvedTypes)) {
+            if (applyCommandGroupValue(target, reference, value, platformVersion)) {
                 return;
             }
-            if (applyCommandGroupValue(target, reference, value, platformVersion)) {
+            if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction,
+                    preResolvedTypes)) {
                 return;
             }
             applyReferenceValue(configuration, target, reference, value);
