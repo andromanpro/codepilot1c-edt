@@ -7210,6 +7210,22 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
+            // TypeDescription-поля — containment-ссылки, applyReferenceValue их отбивает
+            // ("Containment reference updates are not supported in set").
+            //
+            // applyTypeDescriptionProperty пришёл авто-мержем 881b11b (forward-port 2026-07-10)
+            // и намеренно НЕ был подключён: для "type" выше уже стоят две выделенные ветки
+            // (BasicFeature -> setAttributeType, Constant -> applyResolvedTypeDescription),
+            // обе с return, так что общий обработчик там не нужен.
+            //
+            // Но у "source" (EventSubscription) и "commandParameterType" своей ветки нет —
+            // они падали, хотя пре-резолв типов для "source" в set уже был на месте
+            // (см. addTypeStringIfPresent). Подключаем обработчик здесь: до этой точки
+            // "type" не доходит, регрессии рабочего пути смены типа нет.
+            if (applyTypeDescriptionProperty(configuration, target, reference, value, transaction,
+                    preResolvedTypes)) {
+                return;
+            }
             if (applyCommandGroupValue(target, reference, value, platformVersion)) {
                 return;
             }
