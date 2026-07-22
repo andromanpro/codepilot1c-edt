@@ -345,7 +345,7 @@ public class EdtMetadataService {
                     txConfiguration,
                     txObject,
                     request.kind(),
-                    request.properties(),
+                    withKindDefaults(request.kind(), request.properties()),
                     transaction,
                     capturedTopLevelPropertyTypes,
                     platformVersion,
@@ -9891,6 +9891,47 @@ public class EdtMetadataService {
             }
         }
         return Collections.unmodifiableSet(result);
+    }
+
+    /**
+     * Подставляет дефолты вида, как их ставит EDT UI, под явно заданные свойства.
+     * <p>
+     * Голый EMF-экземпляр справочника получает {@code codeLength=0},
+     * {@code descriptionLength=0}, {@code codeType=Number}, {@code checkUnique=false} —
+     * то есть объект, в котором наименование писать некуда и {@code НайтиПоНаименованию}
+     * работать не будет. Мышкой в EDT такой справочник создать нельзя: интерфейс даёт
+     * код 9 строкой переменной длины, наименование 25, контроль уникальности и
+     * автонумерацию (сверено на справочнике, созданном через EDT UI).
+     * <p>
+     * Тот же принцип уже применён для {@code usePurposes} новой формы и геометрии
+     * HTML-поля: инструмент должен давать то же, что разработчик получает в IDE.
+     * <p>
+     * Явно переданные свойства всегда побеждают — сравнение имён регистронезависимое.
+     */
+    private Map<String, Object> withKindDefaults(MetadataKind kind, Map<String, Object> properties) {
+        Map<String, Object> defaults = switch (kind) {
+            case CATALOG -> Map.of(
+                    "codeLength", 9, //$NON-NLS-1$
+                    "codeType", "String", //$NON-NLS-1$ //$NON-NLS-2$
+                    "codeAllowedLength", "Variable", //$NON-NLS-1$ //$NON-NLS-2$
+                    "descriptionLength", 25, //$NON-NLS-1$
+                    "checkUnique", Boolean.TRUE, //$NON-NLS-1$
+                    "autonumbering", Boolean.TRUE); //$NON-NLS-1$
+            default -> Map.of();
+        };
+        if (defaults.isEmpty()) {
+            return properties;
+        }
+        Map<String, Object> merged = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : defaults.entrySet()) {
+            if (properties == null || !hasMapKeyIgnoreCase(properties, entry.getKey())) {
+                merged.put(entry.getKey(), entry.getValue());
+            }
+        }
+        if (properties != null) {
+            merged.putAll(properties);
+        }
+        return merged;
     }
 
     private MdObject createTopLevelObject(MetadataKind kind) {
