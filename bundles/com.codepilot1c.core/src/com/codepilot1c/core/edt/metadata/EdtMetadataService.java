@@ -7508,9 +7508,39 @@ public class EdtMetadataService {
         if (typeStrings == null || map == null || key == null || !hasMapKeyIgnoreCase(map, key)) {
             return;
         }
-        String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(map, key));
-        if (typeStr != null && !typeStr.isBlank()) {
-            typeStrings.add(typeStr);
+        collectTypeLookupQueries(getMapValueIgnoreCase(map, key), typeStrings);
+    }
+
+    /**
+     * Collects every type string from a value instead of only the first one.
+     * <p>
+     * {@code normalizeTypeLookupQuery} returns the first non-blank element of a list and drops the
+     * rest. That is correct for single-valued fields such as {@code type}, but multi-valued ones
+     * (notably {@code EventSubscription.source}, which holds a list of object types) then reach the
+     * pre-resolution map with only their first type. Every following type fails later with
+     * "Type not found for field 'source'", because an {@code EventSubscription} is not a
+     * {@code BasicFeature} and therefore has no {@code resolveTypeItemForFeature} fallback.
+     */
+    private void collectTypeLookupQueries(Object value, Set<String> out) {
+        if (value == null || out == null) {
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                collectTypeLookupQueries(item, out);
+            }
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Object types = getMapValueIgnoreCase(map, "types"); //$NON-NLS-1$
+            if (types != null && types != value) {
+                collectTypeLookupQueries(types, out);
+                return;
+            }
+        }
+        String single = normalizeTypeLookupQuery(value);
+        if (single != null && !single.isBlank()) {
+            out.add(single);
         }
     }
 
