@@ -131,6 +131,11 @@ import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassPackage;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
+import com._1c.g5.v8.dt.metadata.mdclass.Predefined;
+import com._1c.g5.v8.dt.metadata.mdclass.PredefinedItem;
+import com._1c.g5.v8.dt.md.refactoring.core.IMdRefactoringService;
+import com._1c.g5.v8.dt.refactoring.core.IRefactoring;
+import com._1c.g5.v8.dt.refactoring.core.IRefactoringProblem;
 import com._1c.g5.v8.dt.metadata.mdclass.ObjectBelonging;
 import com._1c.g5.v8.dt.md.extension.adopt.IModelObjectAdopter;
 import com._1c.g5.v8.dt.moxel.Cell;
@@ -3944,6 +3949,168 @@ public class EdtMetadataService {
                 "Metadata object deleted successfully"); //$NON-NLS-1$
     }
 
+    /**
+     * Renames a metadata object (or a predefined item) with full reference updates,
+     * exactly as the EDT UI refactoring does: BSL code, forms, DCS, rights and other
+     * referencing artifacts are updated by the platform {@link IMdRefactoringService}.
+     */
+    public MetadataOperationResult renameMetadata(RenameMetadataRequest request) {
+        String opId = LogSanitizer.newId("edt-rename"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] renameMetadata START project=%s target=%s newName=%s predefined=%s", //$NON-NLS-1$
+                opId, request.projectName(), request.targetFqn(), request.newName(), request.predefinedItem());
+        request.validate();
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        MdObject target = resolveByFqn(configuration, request.targetFqn());
+        if (target == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
+        }
+
+        IMdRefactoringService refactoringService = resolveMdRefactoringService();
+        java.util.Collection<IRefactoring> refactorings;
+        String renamedSubject;
+        if (request.predefinedItem() != null && !request.predefinedItem().isBlank()) {
+            PredefinedItem item = resolvePredefinedItem(target, request.predefinedItem());
+            refactorings = java.util.List.of(
+                    refactoringService.createPredefinedItemRenameRefactoring(item, request.newName()));
+            renamedSubject = request.targetFqn() + ":" + request.predefinedItem(); //$NON-NLS-1$
+        } else {
+            refactorings = refactoringService.createMdObjectRenameRefactoring(target, request.newName());
+            renamedSubject = request.targetFqn();
+        }
+        if (refactorings == null || refactorings.isEmpty()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Refactoring service produced no rename refactoring for " + renamedSubject, false); //$NON-NLS-1$
+        }
+
+        java.util.List<String> problems = new java.util.ArrayList<>();
+        for (IRefactoring refactoring : refactorings) {
+            if (refactoring.getStatus() != null) {
+                for (IRefactoringProblem problem : refactoring.getStatus().getProblems()) {
+                    String objectInfo = problem.getObject() == null
+                            ? "" : " object=" + problem.getObject().toString(); //$NON-NLS-1$ //$NON-NLS-2$
+                    problems.add(problem.getClass().getSimpleName() + objectInfo);
+                }
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Rename refactoring reported problems: " + String.join("; ", problems), //$NON-NLS-1$ //$NON-NLS-2$
+                    false);
+        }
+
+        int changedItems = 0;
+        for (IRefactoring refactoring : refactorings) {
+            changedItems += refactoring.getItems() == null ? 0 : refactoring.getItems().size();
+            refactoring.perform();
+        }
+        refreshProjectSafely(project);
+
+        LOG.info("[%s] renameMetadata SUCCESS in %s target=%s -> %s (changed items: %d)", //$NON-NLS-1$
+                opId, LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                renamedSubject, request.newName(), changedItems);
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                "RENAME", //$NON-NLS-1$
+                request.newName(),
+                renamedSubject,
+                "Renamed to '" + request.newName() + "' with reference updates (changed items: " //$NON-NLS-1$ //$NON-NLS-2$
+                        + changedItems + ")"); //$NON-NLS-1$
+    }
+
+    private IMdRefactoringService resolveMdRefactoringService() {
+        try {
+            Bundle bundle = Platform.getBundle("com._1c.g5.v8.dt.md.refactoring"); //$NON-NLS-1$
+            if (bundle != null) {
+                Class<?> pluginClass = bundle.loadClass(
+                        "com._1c.g5.v8.dt.md.refactoring.core.MdRefactoringPlugin"); //$NON-NLS-1$
+                Object plugin = pluginClass.getMethod("getDefault").invoke(null); //$NON-NLS-1$
+                if (plugin == null) {
+                    bundle.start(Bundle.START_TRANSIENT);
+                    plugin = pluginClass.getMethod("getDefault").invoke(null); //$NON-NLS-1$
+                }
+                if (plugin != null) {
+                    Object injector = pluginClass.getMethod("getInjector").invoke(plugin); //$NON-NLS-1$
+                    if (injector != null) {
+                        Class<?> injectorApi = pluginClass.getClassLoader()
+                                .loadClass("com.google.inject.Injector"); //$NON-NLS-1$
+                        Object service = injectorApi.getMethod("getInstance", Class.class) //$NON-NLS-1$
+                                .invoke(injector, IMdRefactoringService.class);
+                        if (service instanceof IMdRefactoringService typed) {
+                            return typed;
+                        }
+                    }
+                }
+            }
+        } catch (Exception | LinkageError e) {
+            LOG.warn("IMdRefactoringService injector resolution failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                "IMdRefactoringService is unavailable (md.refactoring bundle not resolved)", true); //$NON-NLS-1$
+    }
+
+    private PredefinedItem resolvePredefinedItem(MdObject owner, String itemName) {
+        Object predefined;
+        try {
+            predefined = owner.getClass().getMethod("getPredefined").invoke(owner); //$NON-NLS-1$
+        } catch (Exception e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Object has no predefined items: " + owner.getName(), false); //$NON-NLS-1$
+        }
+        if (predefined instanceof Predefined typed) {
+            PredefinedItem found = findPredefinedItemByName(typed.predefinedItems(), itemName);
+            if (found != null) {
+                return found;
+            }
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Predefined item not found: " + itemName + " in " + owner.getName(), false); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private PredefinedItem findPredefinedItemByName(Iterable<? extends PredefinedItem> items, String itemName) {
+        if (items == null) {
+            return null;
+        }
+        for (PredefinedItem item : items) {
+            if (itemName.equals(item.getName())) {
+                return item;
+            }
+            try {
+                Object content = item.getClass().getMethod("getContent").invoke(item); //$NON-NLS-1$
+                if (content instanceof Iterable<?> children) {
+                    @SuppressWarnings("unchecked")
+                    PredefinedItem nested = findPredefinedItemByName(
+                            (Iterable<? extends PredefinedItem>) children, itemName);
+                    if (nested != null) {
+                        return nested;
+                    }
+                }
+            } catch (Exception e) {
+                // predefined item kind without hierarchy - nothing to descend into
+            }
+        }
+        return null;
+    }
+
     public ModuleArtifactResult ensureModuleArtifact(EnsureModuleArtifactRequest request) {
         String opId = LogSanitizer.newId("edt-module"); //$NON-NLS-1$
         long startedAt = System.currentTimeMillis();
@@ -6080,7 +6247,20 @@ public class EdtMetadataService {
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
         String normalizedMarker = normalizeToken(marker);
         for (EStructuralFeature feature : parent.eClass().getEAllStructuralFeatures()) {
-            if (!(feature instanceof EReference reference) || !reference.isContainment() || !reference.isMany()) {
+            if (!(feature instanceof EReference reference) || !reference.isMany()) {
+                continue;
+            }
+            // Nested metadata hierarchy is not always plain EMF containment. In the EDT
+            // metadata model, nested subsystems (Subsystem.subsystems) are a NON-containment,
+            // resolve-proxies EReference (verified via bytecode: initEReference isContainment=false,
+            // isResolveProxies=true) — physically the subsystems are contained by Configuration,
+            // and the tree is expressed through cross-references. A containment-only walker drops
+            // that feature and never finds nested children. Allow a non-containment reference only
+            // when the FQN marker explicitly matches the feature/type, so we don't start traversing
+            // arbitrary back-references (e.g. parentSubsystem) and produce false matches.
+            boolean markerMatchesFeature = matchesMarker(
+                    normalizedMarker, feature.getName(), reference.getEReferenceType().getName());
+            if (!reference.isContainment() && !markerMatchesFeature) {
                 continue;
             }
             @SuppressWarnings("unchecked")
@@ -6092,10 +6272,19 @@ public class EdtMetadataService {
                 if (!(value instanceof MdObject child)) {
                     continue;
                 }
+                // Non-containment references return proxies outside a BM transaction — resolve
+                // them before reading the name (resolveProxies=true for these references).
+                if (child.eIsProxy() || child.getName() == null) {
+                    Object resolved = EcoreUtil.resolve(child, parent);
+                    if (resolved instanceof MdObject resolvedChild) {
+                        child = resolvedChild;
+                    }
+                }
                 if (!childName.equalsIgnoreCase(child.getName())) {
                     continue;
                 }
-                if (matchesMarker(normalizedMarker, feature.getName(), child.eClass().getName())) {
+                if (markerMatchesFeature
+                        || matchesMarker(normalizedMarker, feature.getName(), child.eClass().getName())) {
                     return child;
                 }
             }

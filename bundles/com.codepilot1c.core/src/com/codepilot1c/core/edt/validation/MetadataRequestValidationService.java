@@ -25,6 +25,7 @@ import com.codepilot1c.core.edt.metadata.AddMetadataChildRequest;
 import com.codepilot1c.core.edt.metadata.CommandGroupResolver;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
+import com.codepilot1c.core.edt.metadata.RenameMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.EnsureModuleArtifactRequest;
 import com.codepilot1c.core.edt.metadata.MetadataChildKind;
@@ -873,6 +874,25 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    public Map<String, Object> normalizeRenamePayload(
+            String projectName,
+            String targetFqn,
+            String newName,
+            String predefinedItem
+    ) {
+        RenameMetadataRequest request = new RenameMetadataRequest(projectName, targetFqn, newName, predefinedItem);
+        request.validate();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("target_fqn", targetFqn); //$NON-NLS-1$
+        payload.put("new_name", newName); //$NON-NLS-1$
+        if (predefinedItem != null && !predefinedItem.isBlank()) {
+            payload.put("predefined_item", predefinedItem); //$NON-NLS-1$
+        }
+        return payload;
+    }
+
     public Map<String, Object> normalizeUpdateFormModelPayload(
             String projectName,
             String formFqn,
@@ -1355,6 +1375,16 @@ public class MetadataRequestValidationService {
                         recursive,
                         force);
                 checks.add("Операция delete_metadata валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case RENAME_METADATA -> {
+                Object predefinedObj = request.payload().get("predefined_item"); //$NON-NLS-1$
+                Map<String, Object> payload = normalizeRenamePayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("target_fqn")), //$NON-NLS-1$
+                        asString(request.payload().get("new_name")), //$NON-NLS-1$
+                        predefinedObj == null ? null : String.valueOf(predefinedObj));
+                checks.add("Операция rename_metadata валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
             case MUTATE_FORM_MODEL -> {

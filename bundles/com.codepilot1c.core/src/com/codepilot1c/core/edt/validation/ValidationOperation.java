@@ -26,6 +26,7 @@ public enum ValidationOperation {
     ENSURE_MODULE_ARTIFACT("ensure_module_artifact"), //$NON-NLS-1$
     UPDATE_METADATA("update_metadata"), //$NON-NLS-1$
     DELETE_METADATA("delete_metadata"), //$NON-NLS-1$
+    RENAME_METADATA("rename_metadata"), //$NON-NLS-1$
     MUTATE_FORM_MODEL("mutate_form_model"), //$NON-NLS-1$
     MUTATE_ROLE_RIGHTS("mutate_role_rights"), //$NON-NLS-1$
     RENDER_TEMPLATE("render_template"); //$NON-NLS-1$
