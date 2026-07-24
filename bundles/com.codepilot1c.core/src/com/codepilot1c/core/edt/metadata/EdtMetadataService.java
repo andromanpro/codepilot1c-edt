@@ -1299,11 +1299,14 @@ public class EdtMetadataService {
                     EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
                     String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
                     Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
-                    EventHandler existing = findExistingHandler(container, event);
+                    HandlerLocation existing = findHandlerLocation(target, event);
                     if (existing != null) {
-                        container.getHandlers().remove(existing);
+                        existing.container().getHandlers().remove(existing.handler());
                     }
-                    summaries.add("remove_event_handler[" + operationIndex + "]: event=" + event.getName()); //$NON-NLS-1$ //$NON-NLS-2$
+                    // Report what actually happened: an unconditional success line made a
+                    // no-op indistinguishable from a real removal and masked the extInfo gap.
+                    summaries.add("remove_event_handler[" + operationIndex + "]: event=" + event.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                            + (existing != null ? " removed" : " — not bound, nothing removed")); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -1375,13 +1378,19 @@ public class EdtMetadataService {
         boolean adopted = isAdoptedTarget(formModel);
         ExtendedMethodCallType requestedCallType = extendedMethodCallTypeResolver.resolve(
                 asString(getMapValueIgnoreCase(operation, "call_type"))); //$NON-NLS-1$
-        EventHandler handler = findExistingHandler(container, event);
-        if (handler == null) {
+        // Upsert must look into extInfo too: an event already bound there (e.g. StartChoice
+        // on an input field) would otherwise be missed and a duplicate handler created.
+        HandlerLocation existing = findHandlerLocation(target, event);
+        EventHandler handler;
+        if (existing == null) {
             handler = createHandlerForTarget(adopted, requestedCallType);
             handler.setEvent(event);
             container.getHandlers().add(handler);
-        } else if (adopted && handler instanceof EventHandlerExtension extensionHandler) {
-            extensionHandler.setCallType(requestedCallType);
+        } else {
+            handler = existing.handler();
+            if (adopted && handler instanceof EventHandlerExtension extensionHandler) {
+                extensionHandler.setCallType(requestedCallType);
+            }
         }
         handler.setName(handlerName);
         boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
@@ -1481,6 +1490,46 @@ public class EdtMetadataService {
             }
         }
         return null;
+    }
+
+    /**
+     * Locates an existing handler for {@code event} across every container that may own it —
+     * the item itself and its {@code extInfo}, see
+     * {@link EventHandlerTargetResolver#handlerContainers}.
+     *
+     * <p>Searching only the item misses handlers EDT stores in the type-specific
+     * {@code extInfo} (an input field keeps {@code StartChoice}/{@code ChoiceProcessing}
+     * there), which previously made {@code remove_event_handler} a silent no-op and let
+     * an upsert create a second handler for an event that was already bound.</p>
+     *
+     * @return where the handler lives, or {@code null} when the event is not bound at all
+     */
+    private HandlerLocation findHandlerLocation(FormVisualEntity target, Event event) {
+        for (EventHandlerContainer container : eventHandlerTargetResolver.handlerContainers(target)) {
+            for (EventHandler handler : container.getHandlers()) {
+                if (handler != null && sameEvent(handler.getEvent(), event)) {
+                    return new HandlerLocation(container, handler);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Compares events by identity first, then by name: an {@link Event} resolved from the
+     * platform catalog is not guaranteed to be the very instance a handler loaded from the
+     * {@code .form} file references.
+     */
+    private static boolean sameEvent(Event candidate, Event event) {
+        if (candidate == event) {
+            return true;
+        }
+        return candidate != null && event != null
+                && candidate.getName() != null && candidate.getName().equals(event.getName());
+    }
+
+    /** An existing {@link EventHandler} together with the container that actually owns it. */
+    private record HandlerLocation(EventHandlerContainer container, EventHandler handler) {
     }
 
     /**

@@ -21,6 +21,7 @@ import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
@@ -211,6 +212,71 @@ public class EventHandlerWiringTest {
         assertEquals(0, form.getHandlers().size());
     }
 
+    /**
+     * EDT keeps a field's type-specific events (StartChoice/ChoiceProcessing) in its
+     * {@code InputFieldExtInfo}, not on the field itself. Removing such a handler used to
+     * be a silent no-op: the lookup only scanned the item, found nothing, and still
+     * reported success — the handler stayed in the {@code .form}.
+     */
+    @Test
+    public void removeEventHandlerRemovesHandlerStoredInFieldExtInfo() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("Заказ"); //$NON-NLS-1$
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(onChangeEvent);
+        existing.setName("ЗаказОбработкаВыбора"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        field.setExtInfo(extInfo);
+        form.getItems().add(field);
+
+        List<String> summaries = applyFormModelOperations(form, List.of(
+                opRemoveEventHandlerByItemId(1, EVENT_ON_CHANGE_EN)));
+
+        assertEquals(0, extInfo.getHandlers().size());
+        assertTrue(summaries.get(0).contains("removed")); //$NON-NLS-1$
+    }
+
+    /**
+     * An upsert must find the handler wherever it already lives, otherwise it creates a
+     * second handler on the item for an event that is already bound in {@code extInfo}.
+     */
+    @Test
+    public void addEventHandlerUpsertsHandlerAlreadyStoredInFieldExtInfo() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("Заказ"); //$NON-NLS-1$
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(onChangeEvent);
+        existing.setName("OldName"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        field.setExtInfo(extInfo);
+        form.getItems().add(field);
+
+        applyFormModelOperations(form, List.of(
+                opAddEventHandlerByItemId(1, EVENT_ON_CHANGE_EN, "NewName"))); //$NON-NLS-1$
+
+        assertEquals(1, extInfo.getHandlers().size());
+        assertEquals("NewName", extInfo.getHandlers().get(0).getName()); //$NON-NLS-1$
+        assertEquals(0, field.getHandlers().size());
+    }
+
+    /** A removal that matched nothing must say so instead of reporting a bare success. */
+    @Test
+    public void removeEventHandlerReportsWhenNothingWasBound() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+
+        List<String> summaries = applyFormModelOperations(form, List.of(
+                opRemoveEventHandler("form", null, EVENT_ON_OPEN_EN))); //$NON-NLS-1$
+
+        assertEquals(0, form.getHandlers().size());
+        assertTrue(summaries.get(0).contains("nothing removed")); //$NON-NLS-1$
+    }
+
     private static Event createEvent(String nameEn, String nameRu) {
         Event event = McoreFactory.eINSTANCE.createEvent();
         event.setName(nameEn);
@@ -255,6 +321,10 @@ public class EventHandlerWiringTest {
         }
         operation.put("event", event); //$NON-NLS-1$
         return operation;
+    }
+
+    private static Map<String, Object> opRemoveEventHandlerByItemId(int itemId, String event) {
+        return opRemoveEventHandler(null, Integer.valueOf(itemId), event);
     }
 
     @SuppressWarnings("unchecked")

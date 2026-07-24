@@ -1,7 +1,10 @@
 package com.codepilot1c.core.edt.forms;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import org.eclipse.emf.ecore.EStructuralFeature;
 
 import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
@@ -18,6 +21,12 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
  * against whatever event catalog the current EDT platform version exposes.</p>
  */
 public class EventHandlerTargetResolver {
+
+    /**
+     * EMF feature name holding an item's type-specific extended info. Looked up
+     * reflectively so no concrete EDT item class is hardcoded here.
+     */
+    private static final String EXT_INFO_FEATURE = "extInfo"; //$NON-NLS-1$
 
     private final EventHandlerCatalog catalog;
 
@@ -53,6 +62,37 @@ public class EventHandlerTargetResolver {
                     false);
         }
         return container;
+    }
+
+    /**
+     * Collects every container that may physically hold event handlers for {@code target}:
+     * the entity itself and, when present, its {@code extInfo}.
+     *
+     * <p>EDT splits a field's handlers across two containers: the {@code FormField} itself
+     * keeps generic events (e.g. {@code OnChange}), while type-specific ones — such as
+     * {@code StartChoice}/{@code ChoiceProcessing} on an input field — live in its
+     * {@code InputFieldExtInfo}. Looking only at the item therefore silently misses
+     * handlers that exist in the {@code .form}, which made {@code remove_event_handler}
+     * a no-op for those events.</p>
+     *
+     * <p>The {@code extInfo} feature is resolved reflectively through EMF, so whatever the
+     * current EDT metamodel exposes is honoured without hardcoding item classes.</p>
+     *
+     * @param target the resolved form visual entity (a form item, or the form itself)
+     * @return containers to search, most specific owner first; never {@code null}
+     */
+    public List<EventHandlerContainer> handlerContainers(FormVisualEntity target) {
+        List<EventHandlerContainer> containers = new ArrayList<>(2);
+        if (target instanceof EventHandlerContainer container) {
+            containers.add(container);
+        }
+        EStructuralFeature extInfoFeature = target.eClass().getEStructuralFeature(EXT_INFO_FEATURE);
+        if (extInfoFeature != null && target.eIsSet(extInfoFeature)
+                && target.eGet(extInfoFeature) instanceof EventHandlerContainer extContainer
+                && !containers.contains(extContainer)) {
+            containers.add(extContainer);
+        }
+        return containers;
     }
 
     /**
