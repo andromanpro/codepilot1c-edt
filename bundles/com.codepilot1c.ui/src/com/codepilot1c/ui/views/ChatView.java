@@ -135,6 +135,9 @@ public class ChatView extends ViewPart {
     private static final int CHAT_COMPOSER_MARGIN = 12;
     private static final int CHAT_BUTTON_SPACING = 8;
     private static final int MAX_TOOL_RESULT_HISTORY_CHARS = 40_000;
+    private static final String OUTPUT_LIMIT_WARNING =
+            "Ответ модели достиг лимита вывода и может быть неполным. " //$NON-NLS-1$
+                    + "Попросите модель продолжить с места остановки."; //$NON-NLS-1$
     private static final ProjectMemoryContextService PROJECT_MEMORY_SERVICE = new ProjectMemoryContextService();
     private static final ProjectMemoryInitializationService PROJECT_MEMORY_INIT_SERVICE =
             new ProjectMemoryInitializationService();
@@ -1459,6 +1462,10 @@ public class ChatView extends ViewPart {
         // Skip if tool calls were already handled - they will manage completion themselves
         if (chunk.isComplete() && !streamingHandledToolCalls.get()) {
             final String finalContent = streamingContent.toString();
+            final String finishReason = chunk.getFinishReason() != null && !chunk.getFinishReason().isBlank()
+                    ? chunk.getFinishReason()
+                    : LlmResponse.FINISH_REASON_STOP;
+            final boolean outputLimited = LlmResponse.FINISH_REASON_LENGTH.equals(finishReason);
             LOG.debug("Stream complete, content length: %d", finalContent.length()); //$NON-NLS-1$
 
             inflight.set(false);
@@ -1476,7 +1483,7 @@ public class ChatView extends ViewPart {
                                         .content(finalContent)
                                         .usage(estimateUsageForResponse(currentStreamingRequest, finalContent,
                                                 streamingReasoning != null ? streamingReasoning.toString() : null))
-                                        .finishReason(LlmResponse.FINISH_REASON_STOP)
+                                        .finishReason(finishReason)
                                         .build();
                                 registerUsage(usageResponse);
                                 usageRegisteredForThisRoundTrip = true;
@@ -1488,6 +1495,9 @@ public class ChatView extends ViewPart {
                             // Check for code blocks
                             boolean hasCode = !CodeDiffUtils.extractCodeBlocks(finalContent).isEmpty();
                             applyCodeButton.setEnabled(hasCode);
+                        }
+                        if (outputLimited) {
+                            appendSystemMessage(OUTPUT_LIMIT_WARNING);
                         }
 
                         setProcessing(false);
@@ -1633,6 +1643,7 @@ public class ChatView extends ViewPart {
         LOG.debug("handleResponseWithTools: final response (no tool calls or max iterations)"); //$NON-NLS-1$
         // No tool calls - this is the final response
         String content = response.getContent();
+        boolean outputLimited = response.isLengthLimited();
         LOG.debug("handleResponseWithTools: content length=%d, display.isDisposed=%b", //$NON-NLS-1$
                 content != null ? content.length() : 0, display.isDisposed());
 
@@ -1651,6 +1662,9 @@ public class ChatView extends ViewPart {
                         boolean hasCode = !CodeDiffUtils.extractCodeBlocks(content).isEmpty();
                         applyCodeButton.setEnabled(hasCode);
                         LOG.debug("handleResponseWithTools: message appended successfully"); //$NON-NLS-1$
+                    }
+                    if (outputLimited) {
+                        appendSystemMessage(OUTPUT_LIMIT_WARNING);
                     }
                 }
             });
@@ -2395,6 +2409,7 @@ public class ChatView extends ViewPart {
 
             # Тон и стиль
 
+            - ВСЕГДА отвечайте пользователю на русском языке, если он явно не попросил другой язык.
             - НЕ используйте эмодзи, если пользователь явно не попросит.
             - Ответы должны быть КОРОТКИМИ и ЛАКОНИЧНЫМИ.
             - Используйте Markdown для форматирования.

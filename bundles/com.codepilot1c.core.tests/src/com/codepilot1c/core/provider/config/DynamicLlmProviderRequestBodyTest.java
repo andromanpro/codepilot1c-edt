@@ -11,6 +11,7 @@ import java.util.List;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.backend.BackendConfig;
 import com.codepilot1c.core.model.LlmAttachment;
 import com.codepilot1c.core.model.LlmContentPart;
 import com.codepilot1c.core.model.LlmMessage;
@@ -161,6 +162,27 @@ public class DynamicLlmProviderRequestBodyTest {
         assertEquals("gpt-5.4", body.get("model").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse(body.has("max_tokens")); //$NON-NLS-1$
         assertEquals(1234, body.get("max_completion_tokens").getAsInt()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void requestWithoutExplicitLimitUsesProviderConfiguredMaximum() throws Exception {
+        LlmRequest request = LlmRequest.builder()
+                .userMessage("Продолжай") //$NON-NLS-1$
+                .build();
+
+        LlmProviderConfig config = configured(ProviderType.CODEPILOT_BACKEND, "backend-coder-plus"); //$NON-NLS-1$
+        config.setMaxTokens(BackendConfig.DEFAULT_MAX_OUTPUT_TOKENS);
+        DynamicLlmProvider provider = new DynamicLlmProvider(config);
+        ProviderExecutionPlan plan = new OpenAiModelCompatibilityPolicy().plan(config, request, false);
+        Method method = DynamicLlmProvider.class.getDeclaredMethod(
+                "buildOpenAiRequestBody", LlmRequest.class, ProviderExecutionPlan.class); //$NON-NLS-1$
+        method.setAccessible(true);
+
+        String requestBody = (String) method.invoke(provider, request, plan);
+        JsonObject body = JsonParser.parseString(requestBody).getAsJsonObject();
+
+        assertEquals(0, request.getMaxTokens());
+        assertEquals(BackendConfig.DEFAULT_MAX_OUTPUT_TOKENS, body.get("max_tokens").getAsInt()); //$NON-NLS-1$
     }
 
     private static LlmProviderConfig configured(ProviderType type, String model) {

@@ -52,6 +52,16 @@ public class EdtChatResourceContractTest {
     }
 
     @Test
+    public void chatViewRequiresRussianAndReportsOutputLimitTruncation() throws Exception {
+        String source = readRepoFile("bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"); //$NON-NLS-1$
+
+        assertTrue(source.contains("ВСЕГДА отвечайте пользователю на русском языке")); //$NON-NLS-1$
+        assertTrue(source.contains("OUTPUT_LIMIT_WARNING")); //$NON-NLS-1$
+        assertTrue(source.contains("LlmResponse.FINISH_REASON_LENGTH")); //$NON-NLS-1$
+        assertTrue(source.contains(".finishReason(finishReason)")); //$NON-NLS-1$
+    }
+
+    @Test
     public void codeMdInitializationUsesDedicatedServiceInsteadOfProgrammaticChatMessage() throws Exception {
         String source = readRepoFile("bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"); //$NON-NLS-1$
         String method = extractMethod(source, "private void runCodeMdInitialization()"); //$NON-NLS-1$

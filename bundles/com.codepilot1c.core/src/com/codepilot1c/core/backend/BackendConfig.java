@@ -30,6 +30,13 @@ public final class BackendConfig {
 
     public static final String LITELLM_BASE_URL = BASE_URL + "/v1"; //$NON-NLS-1$
 
+    /**
+     * Default maximum output size for models exposed through the CodePilot backend.
+     * The request builder leaves this value unset so provider-specific limits remain
+     * authoritative.
+     */
+    public static final int DEFAULT_MAX_OUTPUT_TOKENS = 42_000;
+
     private BackendConfig() {
     }
 }
