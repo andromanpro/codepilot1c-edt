@@ -168,7 +168,11 @@ public class DebugYaxunitTestsTool extends AbstractTool {
                         false,
                         logFile,
                         context.runtimeVersion(),
-                        context.accessSettings());
+                        context.accessSettings(),
+                        // см. RunYaxunitTestsTool: платформенный строитель ДОБАВЛЯЕТ startup-опции,
+                        // поэтому ванессовскую надо подавить, иначе в команде два /C и клиент уходит
+                        // в FeaturePlayer вместо прогона тестов
+                        false);
                 commandBuilder.startupOption(buildStartupOption(paramsFile, waitForDebugger));
 
                 ProcessBuilder processBuilder = commandBuilder.toProcessBuilder();

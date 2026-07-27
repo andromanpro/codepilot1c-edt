@@ -465,6 +465,26 @@ public class EdtRuntimeService {
                                                                   boolean clearStepsCache, File logFile,
                                                                   String versionMask,
                                                                   AccessSettings explicitAccessSettings) {
+        return buildTestManagerCommand(projectName, epfPath, vaParamsPath, workspaceRoot, showMainForm,
+                quietInstall, clearStepsCache, logFile, versionMask, explicitAccessSettings, true);
+    }
+
+    /**
+     * @param applyFeaturePlayerStartupOption when {@code false}, no {@code /C StartFeaturePlayer;...}
+     *        option is added and the caller is expected to set its own startup option. The platform
+     *        builder APPENDS startup options rather than replacing them, so a caller that needs a
+     *        different {@code /C} (YAxUnit uses {@code /C RunUnitTests=<config.json>}) must suppress
+     *        the Vanessa one — otherwise the command carries two {@code /C} parameters, only the
+     *        first is honoured by the platform, and the client silently starts Vanessa FeaturePlayer
+     *        instead of running the tests.
+     */
+    public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
+                                                                  File vaParamsPath, File workspaceRoot,
+                                                                  boolean showMainForm, boolean quietInstall,
+                                                                  boolean clearStepsCache, File logFile,
+                                                                  String versionMask,
+                                                                  AccessSettings explicitAccessSettings,
+                                                                  boolean applyFeaturePlayerStartupOption) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         ThickClientInfo info = resolveThickClientInfo(infobase, versionMask);
         File clientFile = info.component().getFile();
@@ -484,8 +504,10 @@ public class EdtRuntimeService {
         if (epfPath != null) {
             builder.execute(epfPath.getAbsolutePath());
         }
-        builder.startupOption(buildStartupOption(vaParamsPath, workspaceRoot, showMainForm, quietInstall,
-                clearStepsCache));
+        if (applyFeaturePlayerStartupOption) {
+            builder.startupOption(buildStartupOption(vaParamsPath, workspaceRoot, showMainForm, quietInstall,
+                    clearStepsCache));
+        }
         builder.disableStartupDialogs();
         builder.disableStartupMessages();
         if (logFile != null) {

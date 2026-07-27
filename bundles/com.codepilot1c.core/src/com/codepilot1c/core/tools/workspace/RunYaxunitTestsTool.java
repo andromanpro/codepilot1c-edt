@@ -169,6 +169,10 @@ public class RunYaxunitTestsTool extends AbstractTool {
                 // ("Значение не является значением объектного типа"). The config file is NOT a
                 // VAParams file, so nothing is passed to the Vanessa slot of the command builder.
                 File paramsFile = writeParamsFile(runDir, filters, junitXmlFile);
+                // applyFeaturePlayerStartupOption=false: the platform builder APPENDS startup options,
+                // so leaving the Vanessa "/C StartFeaturePlayer;..." in place produced a command line
+                // with two /C parameters. The platform honours only the first, so the client started
+                // FeaturePlayer and hung instead of running the tests (empty yaxunit.log, no junit.xml).
                 RuntimeExecutionCommandBuilder commandBuilder = runtimeService.buildTestManagerCommand(
                         projectName,
                         null,
@@ -177,7 +181,10 @@ public class RunYaxunitTestsTool extends AbstractTool {
                         false,
                         true,
                         false,
-                        logFile);
+                        logFile,
+                        null,
+                        null,
+                        false);
                 commandBuilder.startupOption(buildStartupOption(paramsFile));
 
                 ProcessBuilder processBuilder = commandBuilder.toProcessBuilder();
