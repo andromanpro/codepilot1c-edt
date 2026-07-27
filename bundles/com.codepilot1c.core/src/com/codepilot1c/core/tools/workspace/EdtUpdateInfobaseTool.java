@@ -139,6 +139,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         final boolean asyncIgnored = async && dryRun;
 
         return CompletableFuture.supplyAsync(() -> {
+            long startedNanos = System.nanoTime();
             LOG.info("[%s] START edt_update_infobase", opId); //$NON-NLS-1$
             try {
                 InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
@@ -157,6 +158,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 result.add("details", details); //$NON-NLS-1$
                 if (dryRun) {
                     result.addProperty("updated", false); //$NON-NLS-1$
+                    LOG.info("[%s] DONE edt_update_infobase dry_run=true durationMs=%d", //$NON-NLS-1$
+                            opId, elapsedMs(startedNanos));
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
                 boolean updated = runtimeService.updateInfobase(projectName, keepConnected, new NullProgressMonitor());
@@ -165,10 +168,16 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     throw new EdtToolException(EdtToolErrorCode.UPDATE_FAILED,
                             "EDT update returned false for project: " + projectName); //$NON-NLS-1$
                 }
+                LOG.info("[%s] DONE edt_update_infobase updated=true durationMs=%d", //$NON-NLS-1$
+                        opId, elapsedMs(startedNanos));
                 return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
             } catch (EdtToolException e) {
+                LOG.warn("[%s] FAILED edt_update_infobase code=%s durationMs=%d: %s", //$NON-NLS-1$
+                        opId, e.getCode(), elapsedMs(startedNanos), e.getMessage());
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
             } catch (Exception e) {
+                LOG.warn("[%s] FAILED edt_update_infobase code=%s durationMs=%d: %s", //$NON-NLS-1$
+                        opId, EdtToolErrorCode.UPDATE_FAILED, elapsedMs(startedNanos), e.getMessage());
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_FAILED, e.getMessage())));
             }
@@ -182,6 +191,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
             File workspaceRoot) {
+        long startedNanos = System.nanoTime();
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
         try {
             InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
@@ -198,15 +208,35 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_FAILED,
                         "EDT update returned false for project: " + projectName); //$NON-NLS-1$
+                LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: update returned false", //$NON-NLS-1$
+                        opId, EdtToolErrorCode.UPDATE_FAILED, elapsedMs(startedNanos));
                 return pretty(error);
             }
+            LOG.info("[%s] DONE edt_update_infobase (async) updated=true durationMs=%d", //$NON-NLS-1$
+                    opId, elapsedMs(startedNanos));
             return pretty(result);
         } catch (EdtToolException e) {
+            LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: %s", //$NON-NLS-1$
+                    opId, e.getCode(), elapsedMs(startedNanos), e.getMessage());
             return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
         } catch (Exception e) {
+            LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: %s", //$NON-NLS-1$
+                    opId, EdtToolErrorCode.UPDATE_FAILED, elapsedMs(startedNanos), e.getMessage());
             return pretty(errorPayload(opId, projectName, workspaceRoot,
                     EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
         }
+    }
+
+    /**
+     * Wall-clock milliseconds since the given {@link System#nanoTime()} mark.
+     *
+     * <p>The update runs far longer than the MCP call timeout on structural
+     * changes, so the caller regularly loses the JSON payload. The log line is
+     * then the only surviving evidence that the job finished — and how long it
+     * actually took.
+     */
+    private static long elapsedMs(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000L;
     }
 
     private static JsonObject basePayload(String opId, String status, String projectName, boolean dryRun,
