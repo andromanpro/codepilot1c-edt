@@ -29,7 +29,6 @@ import com.codepilot1c.core.agent.profiles.ProfileRouter;
 import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
-import com.codepilot1c.core.provider.ProviderUtils;
 
 import com.google.gson.JsonObject;
 
@@ -157,9 +156,8 @@ public class TaskTool extends AbstractTool {
         if (provider == null || !provider.isConfigured()) {
             return ToolResult.failure("LLM провайдер не настроен");
         }
-        if (!ProviderUtils.isCodePilotBackend(provider)) {
-            return ToolResult.failure("Tool task доступен только при активном CodePilot Account backend"); //$NON-NLS-1$
-        }
+        // Sub-agents run through the active provider, so task/delegate_to_agent work on any
+        // configured provider (not just the CodePilot Account backend).
 
         // Get profile
         AgentProfile profile = AgentProfileRegistry.getInstance()

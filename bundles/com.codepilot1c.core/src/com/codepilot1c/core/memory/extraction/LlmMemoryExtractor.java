@@ -152,14 +152,17 @@ public final class LlmMemoryExtractor {
         String extractionModel = getExtractionModel();
 
         try {
-            LlmRequest request = LlmRequest.builder()
+            LlmRequest.Builder requestBuilder = LlmRequest.builder()
                     .systemMessage(EXTRACTION_SYSTEM_PROMPT)
                     .userMessage(transcript)
-                    .model(extractionModel)
                     .maxTokens(1024)
                     .temperature(0.3)
-                    .stream(false)
-                    .build();
+                    .stream(false);
+            // Empty extraction model → fall back to the active provider's own configured model.
+            if (extractionModel != null && !extractionModel.isBlank()) {
+                requestBuilder.model(extractionModel);
+            }
+            LlmRequest request = requestBuilder.build();
 
             LlmResponse response = provider.complete(request)
                     .get(EXTRACTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);

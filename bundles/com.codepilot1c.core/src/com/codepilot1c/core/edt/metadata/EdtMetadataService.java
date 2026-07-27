@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -55,8 +56,10 @@ import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IExternalObjectProject;
+import com._1c.g5.v8.dt.core.platform.IDependentProject;
 import com._1c.g5.v8.dt.core.platform.IDtProject;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
 import com._1c.g5.v8.dt.form.model.AbstractDataPath;
 import com._1c.g5.v8.dt.form.model.AbstractFormAttribute;
 import com._1c.g5.v8.dt.form.model.Button;
@@ -75,6 +78,8 @@ import com._1c.g5.v8.dt.form.model.FormVisualEntity;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.FieldExtInfo;
+import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
 import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
@@ -108,6 +113,7 @@ import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.McorePackage;
 import com._1c.g5.v8.dt.mcore.NamedElement;
 import com._1c.g5.v8.dt.mcore.NumberQualifiers;
+import com._1c.g5.v8.dt.mcore.NumberValue;
 import com._1c.g5.v8.dt.mcore.StringQualifiers;
 import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
@@ -201,6 +207,7 @@ public class EdtMetadataService {
     private static final String VERSION_CLASS = "com._1c.g5.v8.dt.platform.version.Version"; //$NON-NLS-1$
     private static final String GUICE_INJECTOR_CLASS = "com.google.inject.Injector"; //$NON-NLS-1$
     private static final String DEFAULT_BASIC_FEATURE_TYPE = "String"; //$NON-NLS-1$
+    private static final String COMMON_MODULE_PREFIX = "CommonModule."; //$NON-NLS-1$
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtMetadataService.class);
     private static final Map<String, String> ATTRIBUTE_NAME_ALIASES = createAttributeNameAliases();
     private static final Map<String, String> TOP_LEVEL_PROPERTY_ALIASES = createTopLevelPropertyAliases();
@@ -1132,6 +1139,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
+                    rejectTableAsSetItemType(operation, set, item);
                     applyFormPropertySet(item, set);
                     if (item instanceof FormField) {
                         ensureFormFieldExtInfo((FormField) item);
@@ -1922,6 +1930,34 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Pre-flight reject {@code set_item} attempting to flip an existing
+     * item's {@code type} field to {@code Table}.  The fallback path used
+     * to bubble up as {@code "Unsupported value type for field type: TABLE"}
+     * — technically correct but uninformative.  Mirror the wording used by
+     * {@code add_group} so the agent learns the same constraint from both
+     * entry points: Table is a different EMF class, you cannot flip
+     * xsi:type via set_item.
+     */
+    private void rejectTableAsSetItemType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            FormItem item
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            Object itemId = item == null ? null : Integer.valueOf(item.getId());
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotChangeableViaSetItemMessage(rawType, itemId),
+                    false);
+        }
+    }
+
     private Map<String, Object> stripMapKeysIgnoreCase(Map<String, Object> source, String... keysToRemove) {
         if (source == null || source.isEmpty()) {
             return Map.of();
@@ -2046,6 +2082,13 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Ensures the field carries a {@link FieldExtInfo} so that ext-info properties
+     * (multiLine, passwordMode, extendedEdit, wrap, …) can be resolved on it.
+     * Mirrors {@link #ensureFormGroupExtInfo}. Only creates when absent — an
+     * existing ext-info (set by the EDT item-management service per field type)
+     * is kept as-is to avoid discarding model data.
+     */
     private FieldExtInfo ensureFormFieldExtInfo(FormField field) {
         if (field == null) {
             return null;
@@ -2724,9 +2767,12 @@ public class EdtMetadataService {
             typeValue = setType != null ? setType : propsType;
         }
 
-        Object columnsValue = removeMapValueIgnoreCase(patch, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        Object setColumns = removeMapValueIgnoreCase(set, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        Object propsColumns = removeMapValueIgnoreCase(props, "columns", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        Object columnsValue = removeMapValueIgnoreCase(
+                patch, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Object setColumns = removeMapValueIgnoreCase(
+                set, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Object propsColumns = removeMapValueIgnoreCase(
+                props, "columns", "column", "value_table_columns", "table_columns"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         if (columnsValue == null) {
             columnsValue = setColumns != null ? setColumns : propsColumns;
         }
@@ -3000,7 +3046,7 @@ public class EdtMetadataService {
     }
 
     /**
-     * Creates/updates the columns of a composite form attribute (ValueTable/ValueTree). Each column
+     * Creates, updates or removes columns of a composite form attribute (ValueTable/ValueTree). Each column
      * is a {@link FormAttributeColumn} with its own name and value type, resolved through the same
      * type pipeline as a scalar attribute. Columns are matched/upserted by name.
      */
@@ -3030,22 +3076,33 @@ public class EdtMetadataService {
             if (columnName == null) {
                 columnName = asString(getMapValueIgnoreCase(descriptor, "column")); //$NON-NLS-1$
             }
-            if (!MetadataNameValidator.isValidName(columnName)) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.INVALID_METADATA_NAME,
-                        "Invalid form attribute column name: " + columnName, false); //$NON-NLS-1$
-            }
-            Object columnType = getMapValueIgnoreCase(descriptor, "type"); //$NON-NLS-1$
-            if (columnType == null) {
-                columnType = getMapValueIgnoreCase(descriptor, "field_type"); //$NON-NLS-1$
-            }
+            String action = normalizeToken(asString(getMapValueIgnoreCase(descriptor, "action"))); //$NON-NLS-1$
             FormAttributeColumn column = existingByName.get(normalizeToken(columnName));
+            if ("remove".equals(action) || "delete".equals(action) || "drop".equals(action)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                if (column != null) {
+                    attribute.getColumns().remove(column);
+                    existingByName.remove(normalizeToken(column.getName()));
+                }
+                continue;
+            }
             if (column == null) {
+                if (!MetadataNameValidator.isValidName(columnName)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_NAME,
+                            "Invalid form attribute column name: " + columnName, false); //$NON-NLS-1$
+                }
                 column = FormFactory.eINSTANCE.createFormAttributeColumn();
                 column.setId(nextId++);
                 column.setName(columnName);
                 attribute.getColumns().add(column);
                 existingByName.put(normalizeToken(columnName), column);
+            }
+            Object columnType = getMapValueIgnoreCase(descriptor, "type"); //$NON-NLS-1$
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(descriptor, "field_type"); //$NON-NLS-1$
+            }
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(descriptor, "fieldType"); //$NON-NLS-1$
             }
             if (columnType != null) {
                 applyFormAttributeType(column, columnType, transaction, preResolvedTypes, txConfiguration);
@@ -3326,6 +3383,8 @@ public class EdtMetadataService {
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
+                + "Inside a Table parent, Boolean columns must use field_type=\"INPUT_FIELD\" (the platform draws a checkmark automatically); " //$NON-NLS-1$
+                + "CHECK_BOX_FIELD/RADIO_BUTTON_FIELD/PROGRESS_BAR_FIELD/TRACK_BAR_FIELD are rejected by SU107 in Tables. " //$NON-NLS-1$
                 + "For form-level events: {op:\"add_event_handler\", target:\"form\", event:\"<eventName>\", handler_name:\"...\"}. " //$NON-NLS-1$
                 + "For a field/table event: {op:\"add_event_handler\", item_id:<id>, event:\"<eventName>\"} — omit handler_name for a deterministic default. " //$NON-NLS-1$
                 + "set_event_handler upserts the same (target,event) pair; remove_event_handler removes it. " //$NON-NLS-1$
@@ -3779,23 +3838,7 @@ public class EdtMetadataService {
 
         // Pre-resolve all TypeItems from changes (top-level set and children_ops)
         Set<String> typeStrings = collectTypeStrings(request.changes());
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
-        if (!typeStrings.isEmpty()) {
-            executeRead(project, readTx -> {
-                for (String typeString : typeStrings) {
-                    TypeItem item = resolveTypeItem(typeString, readTx);
-                    if (item == null && !isSimpleTypeQuery(typeString)) {
-                        throw new MetadataOperationException(
-                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                                "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                    }
-                    if (item != null) {
-                        cacheResolvedTypeItem(preResolvedTypes, typeString, item);
-                    }
-                }
-                return null;
-            });
-        }
+        Map<String, TypeItem> preResolvedTypes = preResolveTypeStrings(project, typeStrings);
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
         final String platformVersion = resolvePlatformVersionString(project);
 
@@ -3887,6 +3930,7 @@ public class EdtMetadataService {
                                 typeReference,
                                 null));
             }
+            collectDependentParentTypeCandidates(unique, project);
 
             List<FieldTypeCandidate> allCandidates = new ArrayList<>(unique.values());
             int total = allCandidates.size();
@@ -4923,6 +4967,12 @@ public class EdtMetadataService {
         }
         if (kind == ModuleArtifactKind.OBJECT) {
             return "ObjectModule.bsl"; //$NON-NLS-1$
+        }
+        if (kind == ModuleArtifactKind.COMMAND) {
+            return "CommandModule.bsl"; //$NON-NLS-1$
+        }
+        if ("CommonCommand".equals(className)) { //$NON-NLS-1$
+            return "CommandModule.bsl"; //$NON-NLS-1$
         }
         if ("CommonModule".equals(className) || (className != null && className.contains("Form"))) { //$NON-NLS-1$ //$NON-NLS-2$
             return "Module.bsl"; //$NON-NLS-1$
@@ -6552,22 +6602,7 @@ public class EdtMetadataService {
         if (typeStrings.isEmpty()) {
             return Map.of();
         }
-        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
-        executeRead(project, readTx -> {
-            for (String typeString : typeStrings) {
-                TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
-                if (item != null) {
-                    cacheResolvedTypeItem(preResolvedTypes, typeString, item);
-                }
-            }
-            return null;
-        });
-        return preResolvedTypes;
+        return preResolveTypeStrings(project, typeStrings);
     }
 
     private Map<String, TypeItem> preResolveTopLevelPropertyTypes(
@@ -6578,22 +6613,81 @@ public class EdtMetadataService {
         if (typeStrings.isEmpty()) {
             return Map.of();
         }
+        return preResolveTypeStrings(project, typeStrings);
+    }
+
+    private Map<String, TypeItem> preResolveTypeStrings(IProject project, Set<String> typeStrings) {
+        if (typeStrings == null || typeStrings.isEmpty()) {
+            return Map.of();
+        }
         Map<String, TypeItem> preResolvedTypes = new HashMap<>();
+        Set<String> unresolved = new LinkedHashSet<>();
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                            "Type not found in BM: " + typeString, false); //$NON-NLS-1$
-                }
                 if (item != null) {
                     cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                } else {
+                    unresolved.add(typeString);
                 }
             }
             return null;
         });
+
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject != null && !unresolved.isEmpty()) {
+            Set<String> stillUnresolved = new LinkedHashSet<>();
+            try {
+                readinessChecker.ensureReady(parentProject);
+                executeRead(parentProject, readTx -> {
+                    for (String typeString : unresolved) {
+                        TypeItem item = resolveTypeItem(typeString, readTx);
+                        if (item != null) {
+                            cacheResolvedTypeItem(preResolvedTypes, typeString, item);
+                        } else {
+                            stillUnresolved.add(typeString);
+                        }
+                    }
+                    return null;
+                });
+                unresolved.clear();
+                unresolved.addAll(stillUnresolved);
+            } catch (RuntimeException e) {
+                LOG.debug("preResolveTypeStrings: parent project type lookup failed for %s -> %s: %s", //$NON-NLS-1$
+                        project == null ? null : project.getName(),
+                        parentProject.getName(),
+                        e.getMessage());
+            }
+        }
+
+        for (String typeString : unresolved) {
+            if (!isSimpleTypeQuery(typeString)) {
+                LOG.debug("preResolveTypeStrings: deferring unresolved metadata type to contextual resolver: %s", //$NON-NLS-1$
+                        typeString);
+            }
+        }
         return preResolvedTypes;
+    }
+
+    private IProject resolveDependentParentProject(IProject project) {
+        if (project == null) {
+            return null;
+        }
+        try {
+            IV8Project v8Project = gateway.getV8ProjectManager().getProject(project);
+            if (v8Project instanceof IDependentProject dependentProject) {
+                IProject parentProject = dependentProject.getParentProject();
+                if (parentProject != null && parentProject.exists()
+                        && !parentProject.getName().equalsIgnoreCase(project.getName())) {
+                    return parentProject;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("resolveDependentParentProject failed for project=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    e.getMessage());
+        }
+        return null;
     }
 
     private Set<String> collectTopLevelPropertyTypeStrings(Map<String, Object> properties) {
@@ -7401,12 +7495,46 @@ public class EdtMetadataService {
                 && childFqn.charAt(targetFqn.length()) == '.';
     }
 
+    /**
+     * Normalize {@code ScheduledJob.methodName} to the canonical kind-qualified form
+     * {@code "CommonModule.<Module>.<Method>"}.
+     *
+     * <p>The 1C platform requires this format; without it, config load fails with
+     * "Ссылка на неизвестный метод" during {@code update_infobase}. CommonModule is the only
+     * valid kind for scheduled jobs.
+     *
+     * <p>Behavior:
+     * <ul>
+     *   <li>{@code "МойМодуль.МетодИмя"} → {@code "CommonModule.МойМодуль.МетодИмя"}</li>
+     *   <li>{@code "CommonModule.МойМодуль.МетодИмя"} → unchanged</li>
+     *   <li>{@code "commonmodule.МойМодуль.МетодИмя"} → {@code "CommonModule.МойМодуль.МетодИмя"}
+     *       (case canonicalized; the platform may treat the prefix as case-sensitive)</li>
+     * </ul>
+     */
+    private static String normalizeScheduledJobMethodName(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        String trimmed = value.trim();
+        if (trimmed.regionMatches(true, 0, COMMON_MODULE_PREFIX, 0, COMMON_MODULE_PREFIX.length())) {
+            return COMMON_MODULE_PREFIX + trimmed.substring(COMMON_MODULE_PREFIX.length());
+        }
+        return COMMON_MODULE_PREFIX + trimmed;
+    }
+
     private void setFeatureValue(Configuration configuration, MdObject target, String fieldName, Object value,
             IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes, String platformVersion) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Changing uuid is not supported", false); //$NON-NLS-1$
+        }
+        if ("methodName".equalsIgnoreCase(fieldName) //$NON-NLS-1$
+                && target != null
+                && "ScheduledJob".equals(target.eClass().getName()) //$NON-NLS-1$
+                && value instanceof String stringValue
+                && !stringValue.isBlank()) {
+            value = normalizeScheduledJobMethodName(stringValue);
         }
         // Special case: "type" on BasicFeature is a containment reference (TypeDescription),
         // which cannot be set via the generic applyReferenceValue path.
@@ -7556,6 +7684,12 @@ public class EdtMetadataService {
                 item = resolveTypeItemForFeature(feature, configuration, spec.typeQuery(), preResolvedTypes);
             }
             if (item == null) {
+                item = resolveTypeItemFromTypeProvider(target, configuration, reference, spec.typeQuery());
+                if (item != null) {
+                    cacheResolvedTypeItem(preResolvedTypes, spec.typeQuery(), item);
+                }
+            }
+            if (item == null) {
                 item = resolveSimpleTypeItemFromConfiguration(configuration, spec.typeQuery());
             }
             TypeItem txItem = toTransactionTypeItem(transaction, item, spec);
@@ -7598,6 +7732,10 @@ public class EdtMetadataService {
         } catch (RuntimeException e) {
             LOG.debug("toTransactionTypeItem failed for type=%s: %s", //$NON-NLS-1$
                     spec == null ? null : spec.typeQuery(), e.getMessage());
+        }
+        TypeItem namespaceItem = resolveTypeItemInCandidateNamespace(transaction, item, spec);
+        if (namespaceItem != null) {
+            return namespaceItem;
         }
         return resolveExternalTypeItemCandidate(transaction, item, spec);
     }
@@ -7714,6 +7852,9 @@ public class EdtMetadataService {
         }
 
         setTypeDescriptionOnEObject(typeHolder, typeDesc);
+        if (typeHolder instanceof BasicFeature basicFeature) {
+            fixNullNumberFillValue(basicFeature, typeName);
+        }
     }
 
     /**
@@ -7746,6 +7887,27 @@ public class EdtMetadataService {
             return fromConfiguration;
         }
         return lookupPreResolvedTypeItem(preResolvedTypes, typeQuery);
+    }
+
+    /**
+     * Fix NPE in ValueWriter.writeValue(): some EDT EMF adapters react to setType()
+     * by creating a NumberValue with null BigDecimal as FillValue.
+     * If found, replace with BigDecimal.ZERO so XML serialization succeeds.
+     */
+    private void fixNullNumberFillValue(BasicFeature feature, String typeName) {
+        if (!isNumberType(typeName)) {
+            return;
+        }
+        EStructuralFeature fillValueFeature = feature.eClass().getEStructuralFeature("fillValue"); //$NON-NLS-1$
+        if (fillValueFeature == null) {
+            return;
+        }
+        Object current = feature.eGet(fillValueFeature);
+        if (current instanceof NumberValue nv && nv.getValue() == null) {
+            nv.setValue(BigDecimal.ZERO);
+            LOG.debug("fixNullNumberFillValue: fixed null BigDecimal in FillValue for %s", //$NON-NLS-1$
+                    feature.eClass().getName());
+        }
     }
 
     private TypeItem resolveExternalTypeItemCandidate(
@@ -8097,40 +8259,49 @@ public class EdtMetadataService {
         if (typeReference == null) {
             return null;
         }
+        return resolveTypeItemFromTypeProvider(typeHolder, context, typeReference, typeQuery);
+    }
+
+    private TypeItem resolveTypeItemFromTypeProvider(EObject context, EObject parentContext,
+            EReference typeReference, String typeQuery) {
+        if (context == null || typeReference == null || typeQuery == null || typeQuery.isBlank()) {
+            return null;
+        }
         Set<String> queries = expandTypeQueries(typeQuery);
         try {
             TypeDescriptionInfoWithTypeInfo info = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(typeHolder, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, typeReference, null);
             TypeItem direct = findTypeItemInTypeInfo(info, queries);
             if (direct != null) {
                 return direct;
             }
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService resolve failed for type=%s holder=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService resolve failed for type=%s context=%s reference=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    typeHolder.eClass().getName(),
+                    context.eClass().getName(),
+                    typeReference.getName(),
                     e.getMessage());
         }
-        if (context == null) {
+        if (parentContext == null) {
             return null;
         }
         try {
             TypeDescriptionInfoWithTypeInfo contextualInfo = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(typeHolder, context, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(context, parentContext, typeReference, null);
             TypeItem contextual = findTypeItemInTypeInfo(contextualInfo, queries);
             if (contextual != null) {
                 return contextual;
             }
-            LOG.debug("TypeProviderService returned no matching types for type=%s holder=%s context=%s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService returned no matching types for type=%s context=%s parentContext=%s", //$NON-NLS-1$
                     typeQuery,
-                    typeHolder.eClass().getName(),
-                    context.eClass().getName());
+                    context.eClass().getName(),
+                    parentContext.eClass().getName());
             return null;
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService contextual resolve failed for type=%s holder=%s context=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService contextual resolve failed for type=%s context=%s parentContext=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    typeHolder.eClass().getName(),
                     context.eClass().getName(),
+                    parentContext.eClass().getName(),
                     e.getMessage());
             return null;
         }
@@ -8208,6 +8379,55 @@ public class EdtMetadataService {
             String code = typeInfo.getCode() != null ? String.valueOf(typeInfo.getCode()) : ""; //$NON-NLS-1$
             String codeRu = typeInfo.getCodeRu() != null ? String.valueOf(typeInfo.getCodeRu()) : ""; //$NON-NLS-1$
             String typeClass = describeTypeClass(typeInfo.getTypeClass());
+            boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
+            String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
+        }
+    }
+
+    private void collectDependentParentTypeCandidates(Map<String, FieldTypeCandidate> sink, IProject project) {
+        if (sink == null || project == null) {
+            return;
+        }
+        IProject parentProject = resolveDependentParentProject(project);
+        if (parentProject == null) {
+            return;
+        }
+        try {
+            readinessChecker.ensureReady(parentProject);
+            executeRead(parentProject, tx -> {
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getTopObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                collectTypeCandidatesFromIterator(
+                        sink,
+                        tx.getContainedObjectIterator(McorePackage.eINSTANCE.getType()),
+                        "ParentConfiguration"); //$NON-NLS-1$
+                return null;
+            });
+        } catch (RuntimeException e) {
+            LOG.debug("collectDependentParentTypeCandidates failed for project=%s parent=%s: %s", //$NON-NLS-1$
+                    project.getName(),
+                    parentProject.getName(),
+                    e.getMessage());
+        }
+    }
+
+    private void collectTypeCandidatesFromIterator(Map<String, FieldTypeCandidate> sink,
+            java.util.Iterator<IBmObject> iterator, String typeClass) {
+        if (sink == null || iterator == null) {
+            return;
+        }
+        while (iterator.hasNext()) {
+            IBmObject object = iterator.next();
+            if (!(object instanceof TypeItem type)) {
+                continue;
+            }
+            String name = firstNonBlank(type.getName(), McoreUtil.getTypeName(type), ""); //$NON-NLS-1$
+            String nameRu = firstNonBlank(type.getNameRu(), McoreUtil.getTypeNameRu(type), ""); //$NON-NLS-1$
+            String code = firstNonBlank(McoreUtil.getTypeName(type), type.getName(), ""); //$NON-NLS-1$
+            String codeRu = firstNonBlank(McoreUtil.getTypeNameRu(type), type.getNameRu(), ""); //$NON-NLS-1$
             boolean simpleType = isSimpleTypeCandidate(name, nameRu, code, codeRu);
             String key = (name + "|" + nameRu + "|" + code + "|" + codeRu).toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             sink.putIfAbsent(key, new FieldTypeCandidate(name, nameRu, code, codeRu, typeClass, simpleType));
@@ -8406,6 +8626,10 @@ public class EdtMetadataService {
             case "boolean", "булево", "bool" -> {
                 queries.add("Boolean"); //$NON-NLS-1$
                 queries.add("Булево"); //$NON-NLS-1$
+            }
+            case "valuestorage", "хранилищезначения" -> {
+                queries.add("ValueStorage"); //$NON-NLS-1$
+                queries.add("ХранилищеЗначения"); //$NON-NLS-1$
             }
             default -> {
                 // no-op
@@ -9056,6 +9280,7 @@ public class EdtMetadataService {
             case "number", "число" -> "Number"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "date", "дата" -> "Date"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             case "boolean", "bool", "булево" -> "Boolean"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            case "valuestorage", "хранилищезначения" -> "ValueStorage"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             default -> null;
         };
     }

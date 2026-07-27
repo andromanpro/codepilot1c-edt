@@ -93,4 +93,5 @@ public interface AgentProfile {
      * @return true если shell разрешен
      */
     boolean canExecuteShell();
+
 }

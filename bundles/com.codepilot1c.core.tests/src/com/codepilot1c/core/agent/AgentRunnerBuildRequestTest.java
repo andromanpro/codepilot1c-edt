@@ -1,5 +1,6 @@
 package com.codepilot1c.core.agent;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -16,18 +17,20 @@ import java.util.stream.Collectors;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
 import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.model.LlmRequest;
 import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
+import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.tools.ITool;
-import com.codepilot1c.core.tools.ProviderContextResolver;
 import com.codepilot1c.core.tools.ToolContextGate;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceAugmentor;
 import com.google.gson.Gson;
+import com.google.gson.JsonParser;
 
 import sun.misc.Unsafe;
 
@@ -92,6 +95,43 @@ public class AgentRunnerBuildRequestTest {
     }
 
     @Test
+    public void buildRequestUsesEffectiveRegistryDefinitionInToolsAndPrompt() throws Exception {
+        ToolRegistry registry = isolatedRegistry(Map.of(
+                "read_file", tool("read_file"))); //$NON-NLS-1$ //$NON-NLS-2$
+        registry.setAugmentor(ToolSurfaceAugmentor.defaultAugmentor());
+
+        AgentRunner runner = new AgentRunner(new NoopProvider(), registry, "system"); //$NON-NLS-1$
+        primeHistory(runner,
+                LlmMessage.system("BASE PROMPT"), //$NON-NLS-1$
+                LlmMessage.user("test")); //$NON-NLS-1$
+        primeContextGate(runner, Set.of());
+
+        AgentConfig config = AgentConfig.builder()
+                .profileName("explore") //$NON-NLS-1$
+                .build();
+
+        LlmRequest request = invokeBuildRequest(runner, config);
+        String systemPrompt = request.getMessages().get(0).getContent();
+        ToolDefinition expected = registry.getToolDefinition(
+                registry.getTool("read_file"), //$NON-NLS-1$
+                registry.createRuntimeSurfaceContext(new ExploreAgentProfile()));
+        ToolDefinition actual = request.getTools().stream()
+                .filter(definition -> "read_file".equals(definition.getName())) //$NON-NLS-1$
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(expected.getDescription(), actual.getDescription());
+        assertEquals(JsonParser.parseString(expected.getParametersSchema()),
+                JsonParser.parseString(actual.getParametersSchema()));
+        String compactDescription = expected.getDescription()
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ") //$NON-NLS-1$ //$NON-NLS-2$
+                .strip();
+        assertTrue(systemPrompt.contains(compactDescription.substring(
+                0, Math.min(359, compactDescription.length()))));
+    }
+
+    @Test
     public void extensionProfileKeepsBootstrapExtensionToolVisible() throws Exception {
         ToolRegistry registry = isolatedRegistry(Map.of(
                 "read_file", tool("read_file"),
@@ -151,7 +191,6 @@ public class AgentRunnerBuildRequestTest {
         setField(registry, "dynamicTools", new ConcurrentHashMap<String, ITool>()); //$NON-NLS-1$
         setField(registry, "gson", new Gson()); //$NON-NLS-1$
         setField(registry, "augmentor", ToolSurfaceAugmentor.passthrough()); //$NON-NLS-1$
-        setField(registry, "providerContextResolver", new ProviderContextResolver()); //$NON-NLS-1$
         return registry;
     }
 

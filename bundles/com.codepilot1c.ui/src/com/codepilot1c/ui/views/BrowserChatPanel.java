@@ -82,6 +82,7 @@ public class BrowserChatPanel extends Composite {
     private String typingIndicatorStage;
     private final Map<String, ToolCallDisplayData> activeToolCalls = new HashMap<>();
     private final List<ToolCallDisplayData> toolCallTimeline = new ArrayList<>();
+    private final List<ToolCallDisplayData> standaloneToolCalls = new ArrayList<>();
 
     /**
      * Callback для применения кода.
@@ -140,6 +141,7 @@ public class BrowserChatPanel extends Composite {
         private String resultKind;
         private String durationLabel;
         private boolean expanded = true;
+        private String ownerMessageId;
 
         public ToolCallDisplayData(String id, String name, String argsJson) {
             this.id = id;
@@ -164,6 +166,7 @@ public class BrowserChatPanel extends Composite {
         public String getResultKind() { return resultKind; }
         public String getDurationLabel() { return durationLabel; }
         public boolean isExpanded() { return expanded; }
+        public String getOwnerMessageId() { return ownerMessageId; }
 
         public void setStatus(ToolCallStatus status) { this.status = status; }
         public void setResultSummary(String resultSummary) { this.resultSummary = resultSummary; }
@@ -176,6 +179,7 @@ public class BrowserChatPanel extends Composite {
         public void setDurationLabel(String durationLabel) { this.durationLabel = durationLabel; }
         public void setExpanded(boolean expanded) { this.expanded = expanded; }
         void setDisplayId(String displayId) { this.displayId = displayId; }
+        void setOwnerMessageId(String ownerMessageId) { this.ownerMessageId = ownerMessageId; }
 
         /**
          * Builds a short summary of key arguments.
@@ -240,6 +244,8 @@ public class BrowserChatPanel extends Composite {
         public final String reasoning;
         public final List<LlmAttachment> attachments;
         public final String modelName;
+        public final List<ToolCallDisplayData> toolCalls;
+        public final boolean toolTurn;
 
         public ChatMessageData(String sender, String content, boolean isAssistant, boolean isSystem) {
             this(sender, content, isAssistant, isSystem, null, List.of(), null);
@@ -256,6 +262,13 @@ public class BrowserChatPanel extends Composite {
 
         public ChatMessageData(String sender, String content, boolean isAssistant, boolean isSystem, String reasoning,
                 List<LlmAttachment> attachments, String modelName) {
+            this(sender, content, isAssistant, isSystem, reasoning, attachments, modelName,
+                    "msg-" + System.currentTimeMillis() + "-" + (int)(Math.random() * 10000), List.of(), false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        private ChatMessageData(String sender, String content, boolean isAssistant, boolean isSystem, String reasoning,
+                List<LlmAttachment> attachments, String modelName, String id, List<ToolCallDisplayData> toolCalls,
+                boolean toolTurn) {
             this.sender = sender;
             this.content = content;
             this.isAssistant = isAssistant;
@@ -263,7 +276,28 @@ public class BrowserChatPanel extends Composite {
             this.reasoning = reasoning;
             this.attachments = attachments != null ? List.copyOf(attachments) : List.of();
             this.modelName = modelName;
-            this.id = "msg-" + System.currentTimeMillis() + "-" + (int)(Math.random() * 10000); //$NON-NLS-1$ //$NON-NLS-2$
+            this.id = id;
+            this.toolCalls = toolCalls != null ? List.copyOf(toolCalls) : List.of();
+            this.toolTurn = toolTurn;
+        }
+
+        public ChatMessageData withContent(String newContent, String newReasoning) {
+            boolean keepToolTurn = toolTurn && isBlank(newContent) && isBlank(newReasoning);
+            return new ChatMessageData(sender, newContent, isAssistant, isSystem, newReasoning, attachments, modelName,
+                    id, toolCalls, keepToolTurn);
+        }
+
+        public ChatMessageData withToolCalls(List<ToolCallDisplayData> newToolCalls) {
+            return new ChatMessageData(sender, content, isAssistant, isSystem, reasoning, attachments, modelName,
+                    id, newToolCalls, toolTurn);
+        }
+
+        public ChatMessageData asToolTurn() {
+            return new ChatMessageData(sender, "", isAssistant, isSystem, "", attachments, modelName, id, toolCalls, true); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        private static boolean isBlank(String text) {
+            return text == null || text.isBlank();
         }
     }
 
@@ -447,22 +481,43 @@ public class BrowserChatPanel extends Composite {
         if (messages.isEmpty()) return;
 
         ChatMessageData lastMsg = messages.get(messages.size() - 1);
-        ChatMessageData updated = new ChatMessageData(lastMsg.sender, content, lastMsg.isAssistant, lastMsg.isSystem,
-                null, lastMsg.attachments);
+        ChatMessageData updated = lastMsg.withContent(content, null);
         messages.set(messages.size() - 1, updated);
 
         if (browserReady && browser != null && !browser.isDisposed()) {
             String messageHtml = buildMessageContentHtml(content);
             String escapedHtml = escapeForJs(messageHtml);
+            browser.execute("updateMessageWithReasoning('', '" + escapedHtml + "')"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    /**
+     * Converts the last empty assistant placeholder into a tool-only turn.
+     *
+     * <p>Each streaming round-trip adds an empty assistant bubble up front. On a
+     * tool-call-only turn that bubble is still the ordering anchor for tool cards,
+     * so keep it in the transcript model and hide its normal assistant chrome.</p>
+     */
+    public void removeLastMessageIfEmptyAssistant() {
+        if (messages.isEmpty()) {
+            return;
+        }
+        int idx = messages.size() - 1;
+        ChatMessageData last = messages.get(idx);
+        if (!isEmptyAssistantPlaceholder(last)) {
+            return;
+        }
+        ChatMessageData toolTurn = last.asToolTurn();
+        messages.set(idx, toolTurn);
+        if (browserReady && browser != null && !browser.isDisposed()) {
+            String id = escapeForJs(toolTurn.id);
             browser.execute(
-                "var msgs = document.querySelectorAll('#messages .message');" + //$NON-NLS-1$
-                "var lastMsg = msgs.length ? msgs[msgs.length - 1].querySelector('.message-content') : null;" + //$NON-NLS-1$
-                "if (lastMsg) {" + //$NON-NLS-1$
-                "  lastMsg.innerHTML = '" + escapedHtml + "';" + //$NON-NLS-1$ //$NON-NLS-2$
-                "  scrollToBottom();" + //$NON-NLS-1$
-                "  if (typeof hljs !== 'undefined') { hljs.highlightAll(); }" + //$NON-NLS-1$
-                "}" //$NON-NLS-1$
-            );
+                    "if (typeof markMessageAsToolTurn === 'function') {" + //$NON-NLS-1$
+                    "  markMessageAsToolTurn('" + id + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+                    "} else {" + //$NON-NLS-1$
+                    "  var el = document.getElementById('" + id + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+                    "  if (el) el.className = (el.className || '') + ' tool-turn';" + //$NON-NLS-1$
+                    "}"); //$NON-NLS-1$
         }
     }
 
@@ -477,8 +532,7 @@ public class BrowserChatPanel extends Composite {
 
         // Update the backing messages list so re-renders preserve content and reasoning
         ChatMessageData lastMsg = messages.get(messages.size() - 1);
-        ChatMessageData updated = new ChatMessageData(lastMsg.sender, content, lastMsg.isAssistant, lastMsg.isSystem,
-                reasoning, lastMsg.attachments);
+        ChatMessageData updated = lastMsg.withContent(content, reasoning);
         messages.set(messages.size() - 1, updated);
 
         // Execute browser update only when browser is ready
@@ -550,6 +604,7 @@ public class BrowserChatPanel extends Composite {
                 "  indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "  if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "}" + //$NON-NLS-1$
+                "if (typeof ensureTypingIndicatorAtBottom === 'function') ensureTypingIndicatorAtBottom();" + //$NON-NLS-1$
                 "scrollToBottom();" //$NON-NLS-1$
             );
         } else {
@@ -580,6 +635,7 @@ public class BrowserChatPanel extends Composite {
             "var stageText = document.getElementById('typing-stage');" + //$NON-NLS-1$
             "if (indicator && " + typingIndicatorVisible + ") indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
+            "if (typeof ensureTypingIndicatorAtBottom === 'function') ensureTypingIndicatorAtBottom();" + //$NON-NLS-1$
             "scrollToBottom();" //$NON-NLS-1$
         );
     }
@@ -655,6 +711,7 @@ public class BrowserChatPanel extends Composite {
         messages.clear();
         activeToolCalls.clear();
         toolCallTimeline.clear();
+        standaloneToolCalls.clear();
         if (browser != null && !browser.isDisposed()) {
             browser.execute(
                 "var container = document.getElementById('messages');" + //$NON-NLS-1$
@@ -670,12 +727,13 @@ public class BrowserChatPanel extends Composite {
     public void renderAllMessages() {
         if (browser == null || browser.isDisposed()) return;
 
-        int lastAssistantIndex = findLastAssistantMessageIndex();
-        String toolCallsHtml = buildToolCallsHtml(toolCallTimeline);
         StringBuilder messagesHtml = new StringBuilder();
         for (int i = 0; i < messages.size(); i++) {
             ChatMessageData msg = messages.get(i);
-            messagesHtml.append(buildMessageHtml(msg, i == lastAssistantIndex ? toolCallsHtml : "")); //$NON-NLS-1$
+            messagesHtml.append(buildMessageHtml(msg, buildToolCallsHtml(msg.toolCalls)));
+        }
+        if (!standaloneToolCalls.isEmpty()) {
+            messagesHtml.append(buildToolCallsHtml(standaloneToolCalls));
         }
 
         String html = buildHtmlDocument(messagesHtml.toString());
@@ -692,6 +750,22 @@ public class BrowserChatPanel extends Composite {
         return -1;
     }
 
+    private int findToolCallOwnerMessageIndex() {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessageData msg = messages.get(i);
+            if (msg.isAssistant && !msg.isSystem && (msg.toolTurn || isEmptyAssistantPlaceholder(msg))) {
+                return i;
+            }
+        }
+        return findLastAssistantMessageIndex();
+    }
+
+    private static boolean isEmptyAssistantPlaceholder(ChatMessageData msg) {
+        return msg != null && msg.isAssistant && !msg.isSystem
+                && (msg.content == null || msg.content.isBlank())
+                && (msg.reasoning == null || msg.reasoning.isBlank());
+    }
+
     private void applyTypingIndicatorState() {
         if (browser == null || browser.isDisposed() || !browserReady) return;
         if (typingIndicatorVisible) {
@@ -706,6 +780,7 @@ public class BrowserChatPanel extends Composite {
                 "  indicator.style.display = '" + display + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "  if (stageText) stageText.textContent = '" + stageText + "';" + //$NON-NLS-1$ //$NON-NLS-2$
                 "}" + //$NON-NLS-1$
+                "if (typeof ensureTypingIndicatorAtBottom === 'function') ensureTypingIndicatorAtBottom();" + //$NON-NLS-1$
                 "scrollToBottom();" //$NON-NLS-1$
             );
         } else {
@@ -775,19 +850,8 @@ public class BrowserChatPanel extends Composite {
         String cardHtml = buildToolCallCardHtml(toolCall);
         String escapedHtml = escapeForJs(cardHtml);
 
-        String jsCode =
-            "var container = document.getElementById('messages');" + //$NON-NLS-1$
-            "if (container) {" + //$NON-NLS-1$
-            "  var assistantContents = container.querySelectorAll('.message.assistant .message-content');" + //$NON-NLS-1$
-            "  if (assistantContents.length) {" + //$NON-NLS-1$
-            "    assistantContents[assistantContents.length - 1].insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  } else if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
-            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  } else {" + //$NON-NLS-1$
-            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  }" + //$NON-NLS-1$
-            "  scrollToBottom();" + //$NON-NLS-1$
-            "}"; //$NON-NLS-1$
+        String ownerId = escapeForJs(toolCall.getOwnerMessageId());
+        String jsCode = buildInsertToolCallsScript(ownerId, escapedHtml);
 
         boolean success = browser.execute(jsCode);
         LOG.debug("addToolCallCard: inserted=%d, total=%d, status=%s, execute=%b", //$NON-NLS-1$
@@ -828,19 +892,8 @@ public class BrowserChatPanel extends Composite {
 
         String escapedHtml = escapeForJs(wrappedHtml);
 
-        String jsCode =
-            "var container = document.getElementById('messages');" + //$NON-NLS-1$
-            "if (container) {" + //$NON-NLS-1$
-            "  var assistantContents = container.querySelectorAll('.message.assistant .message-content');" + //$NON-NLS-1$
-            "  if (assistantContents.length) {" + //$NON-NLS-1$
-            "    assistantContents[assistantContents.length - 1].insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  } else if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
-            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  } else {" + //$NON-NLS-1$
-            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
-            "  }" + //$NON-NLS-1$
-            "  scrollToBottom();" + //$NON-NLS-1$
-            "}"; //$NON-NLS-1$
+        String ownerId = commonOwnerMessageId(newToolCalls);
+        String jsCode = buildInsertToolCallsScript(escapeForJs(ownerId), escapedHtml);
 
         boolean success = browser.execute(jsCode);
         String statusSummary = newToolCalls.stream()
@@ -1031,11 +1084,68 @@ public class BrowserChatPanel extends Composite {
             return false;
         }
 
+        if (activeToolCalls.containsKey(toolCall.getId())) {
+            return false;
+        }
+
         applyToolCallDisplayDefaults(toolCall);
         toolCall.setDisplayId("tc-" + System.nanoTime() + "-" + toolCallTimeline.size()); //$NON-NLS-1$ //$NON-NLS-2$
         activeToolCalls.put(toolCall.getId(), toolCall);
         toolCallTimeline.add(toolCall);
+        toolCall.setOwnerMessageId(attachToolCallToCurrentTurn(toolCall));
         return true;
+    }
+
+    private String attachToolCallToCurrentTurn(ToolCallDisplayData toolCall) {
+        int assistantIndex = findToolCallOwnerMessageIndex();
+        if (assistantIndex >= 0) {
+            ChatMessageData owner = messages.get(assistantIndex);
+            List<ToolCallDisplayData> ownedToolCalls = new ArrayList<>(owner.toolCalls);
+            ownedToolCalls.add(toolCall);
+            messages.set(assistantIndex, owner.withToolCalls(ownedToolCalls));
+            return owner.id;
+        } else {
+            standaloneToolCalls.add(toolCall);
+            return null;
+        }
+    }
+
+    private String commonOwnerMessageId(List<ToolCallDisplayData> toolCalls) {
+        String ownerId = null;
+        for (ToolCallDisplayData toolCall : toolCalls) {
+            String currentOwnerId = toolCall.getOwnerMessageId();
+            if (currentOwnerId == null || currentOwnerId.isEmpty()) {
+                return null;
+            }
+            if (ownerId == null) {
+                ownerId = currentOwnerId;
+            } else if (!ownerId.equals(currentOwnerId)) {
+                return null;
+            }
+        }
+        return ownerId;
+    }
+
+    private String buildInsertToolCallsScript(String escapedOwnerMessageId, String escapedHtml) {
+        return "var container = document.getElementById('messages');" + //$NON-NLS-1$
+            "if (container) {" + //$NON-NLS-1$
+            "  var target = null;" + //$NON-NLS-1$
+            "  var ownerId = '" + escapedOwnerMessageId + "';" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  if (ownerId) {" + //$NON-NLS-1$
+            "    var owner = document.getElementById(ownerId);" + //$NON-NLS-1$
+            "    if (owner) target = owner.querySelector('.message-content');" + //$NON-NLS-1$
+            "  }" + //$NON-NLS-1$
+            "  if (target) {" + //$NON-NLS-1$
+            "    target.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else if (typeof insertMessageFlowHtml === 'function') {" + //$NON-NLS-1$
+            "    insertMessageFlowHtml('" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  } else {" + //$NON-NLS-1$
+            "    container.insertAdjacentHTML('beforeend', '" + escapedHtml + "');" + //$NON-NLS-1$ //$NON-NLS-2$
+            "  }" + //$NON-NLS-1$
+            "  if (typeof ensureTypingIndicatorAtBottom === 'function') ensureTypingIndicatorAtBottom();" + //$NON-NLS-1$
+            "  if (typeof bindToolCallInteractions === 'function') bindToolCallInteractions();" + //$NON-NLS-1$
+            "  scrollToBottom();" + //$NON-NLS-1$
+            "}"; //$NON-NLS-1$
     }
 
     private void applyToolCallDisplayDefaults(ToolCallDisplayData toolCall) {
@@ -1171,25 +1281,28 @@ public class BrowserChatPanel extends Composite {
 
     private String buildMessageHtml(ChatMessageData msg, String extraContentHtml) {
         String messageClass = msg.isSystem ? "system" : (msg.isAssistant ? "assistant" : "user"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        String contentHtml = buildMessageContentHtml(msg.content);
-        String attachmentsHtml = buildAttachmentsHtml(msg.attachments);
+        if (msg.toolTurn) {
+            messageClass += " tool-turn"; //$NON-NLS-1$
+        }
+        String contentHtml = msg.toolTurn ? "" : buildMessageContentHtml(msg.content); //$NON-NLS-1$
+        String attachmentsHtml = msg.toolTurn ? "" : buildAttachmentsHtml(msg.attachments); //$NON-NLS-1$
         String extraHtml = extraContentHtml != null ? extraContentHtml : ""; //$NON-NLS-1$
 
         // Include reasoning block if present (for thinking mode)
         String reasoningHtml = ""; //$NON-NLS-1$
-        if (msg.reasoning != null && !msg.reasoning.isEmpty()) {
+        if (!msg.toolTurn && msg.reasoning != null && !msg.reasoning.isEmpty()) {
             reasoningHtml = buildReasoningBlock(msg.reasoning);
         }
 
         // Model badge for assistant messages
         String modelBadgeHtml = ""; //$NON-NLS-1$
-        if (msg.isAssistant && msg.modelName != null && !msg.modelName.isEmpty()) {
+        if (msg.isAssistant && !msg.toolTurn && msg.modelName != null && !msg.modelName.isEmpty()) {
             modelBadgeHtml = " <span class=\"model-badge\">" + escapeHtml(msg.modelName) + "</span>"; //$NON-NLS-1$ //$NON-NLS-2$
         }
 
         // Copy response button for assistant messages
         String copyResponseHtml = ""; //$NON-NLS-1$
-        if (msg.isAssistant && !msg.isSystem) {
+        if (msg.isAssistant && !msg.isSystem && !msg.toolTurn) {
             copyResponseHtml = "        <button class=\"copy-response-btn\" onclick=\"copyResponse(this)\" title=\"\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043E\u0442\u0432\u0435\u0442\">\uD83D\uDCCB</button>\n"; //$NON-NLS-1$
         }
 
@@ -1316,12 +1429,19 @@ public class BrowserChatPanel extends Composite {
                "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
                "  if (container) container.scrollTop = container.scrollHeight;\n" + //$NON-NLS-1$
                "}\n" + //$NON-NLS-1$
+               "function ensureTypingIndicatorAtBottom() {\n" + //$NON-NLS-1$
+               "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
+               "  var typing = document.getElementById('typing-indicator');\n" + //$NON-NLS-1$
+               "  if (container && typing && typing.parentElement === container && typing !== container.lastElementChild) container.appendChild(typing);\n" + //$NON-NLS-1$
+               "  return typing;\n" + //$NON-NLS-1$
+               "}\n" + //$NON-NLS-1$
                "function insertMessageFlowHtml(html) {\n" + //$NON-NLS-1$
                "  var container = document.getElementById('messages');\n" + //$NON-NLS-1$
                "  if (!container) return null;\n" + //$NON-NLS-1$
-               "  var typing = document.getElementById('typing-indicator');\n" + //$NON-NLS-1$
+               "  var typing = ensureTypingIndicatorAtBottom();\n" + //$NON-NLS-1$
                "  if (typing && typing.parentElement === container) typing.insertAdjacentHTML('beforebegin', html);\n" + //$NON-NLS-1$
                "  else container.insertAdjacentHTML('beforeend', html);\n" + //$NON-NLS-1$
+               "  ensureTypingIndicatorAtBottom();\n" + //$NON-NLS-1$
                "  return container;\n" + //$NON-NLS-1$
                "}\n" + //$NON-NLS-1$
                "function clearMessageFlow() {\n" + //$NON-NLS-1$

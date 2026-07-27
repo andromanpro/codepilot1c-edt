@@ -171,4 +171,35 @@ public class FormGroupTypeIntentTest {
         assertFalse("must not include name='' marker when name is blank:\n" + msg, //$NON-NLS-1$
                 msg.contains("name=''")); //$NON-NLS-1$
     }
+
+    // --- tableNotChangeableViaSetItemMessage --------------------------------
+
+    @Test
+    public void setItemTableMessage_echoesValueAndItemIdAndPointsAtRemoveItemPlusXmlEdit() {
+        String msg = FormGroupTypeIntent.tableNotChangeableViaSetItemMessage("TABLE", Integer.valueOf(175)); //$NON-NLS-1$
+        assertTrue("must echo raw type:\n" + msg, msg.contains("'TABLE'")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("must reference set_item, not add_group:\n" + msg, msg.contains("set_item")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("must NOT mention add_group at all:\n" + msg, msg.contains("add_group")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("must echo item_id:\n" + msg, msg.contains("item_id=175")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("must mention xsi:type=\"form:Table\":\n" + msg, //$NON-NLS-1$
+                msg.contains("xsi:type=\"form:Table\"")); //$NON-NLS-1$
+        assertTrue("must explain that xsi:type cannot flip in place:\n" + msg, //$NON-NLS-1$
+                msg.contains("cannot be flipped")); //$NON-NLS-1$
+        assertTrue("must point at remove_item as the remediation entry point:\n" + msg, //$NON-NLS-1$
+                msg.contains("remove_item")); //$NON-NLS-1$
+        assertTrue("must mention .form XML / Edit/Write workaround:\n" + msg, //$NON-NLS-1$
+                msg.contains(".form") && msg.contains("Edit/Write")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("must reference inspect_form_layout for verification:\n" + msg, //$NON-NLS-1$
+                msg.contains("inspect_form_layout")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void setItemTableMessage_omitsItemIdWhenNullOrBlank() {
+        String msg = FormGroupTypeIntent.tableNotChangeableViaSetItemMessage("TABLE", null); //$NON-NLS-1$
+        assertFalse("must not include 'item_id=' when id is null:\n" + msg, //$NON-NLS-1$
+                msg.contains("item_id=")); //$NON-NLS-1$
+        msg = FormGroupTypeIntent.tableNotChangeableViaSetItemMessage("TABLE", "  "); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("must not include 'item_id=' when id is blank:\n" + msg, //$NON-NLS-1$
+                msg.contains("item_id=")); //$NON-NLS-1$
+    }
 }

@@ -129,9 +129,12 @@ public final class VibePreferenceConstants {
     /** Default value for {@link #LLM_COMPACTION_TAIL_MESSAGES}. Mirrors ChatView#COMPACT_TAIL_MESSAGES. */
     public static final int LLM_COMPACTION_TAIL_MESSAGES_DEFAULT = 14;
 
-    /** Model ID used for background memory extraction (Channel A). Default: kimi-k2.5. */
+    /**
+     * Model ID used for background memory extraction (Channel A). Empty (the default) means
+     * "use the active provider's configured model".
+     */
     public static final String PREF_MEMORY_EXTRACTION_MODEL = "codepilot.memory.extraction_model"; //$NON-NLS-1$
-    public static final String PREF_MEMORY_EXTRACTION_MODEL_DEFAULT = "kimi-k2.5"; //$NON-NLS-1$
+    public static final String PREF_MEMORY_EXTRACTION_MODEL_DEFAULT = ""; //$NON-NLS-1$
 
     /**
      * Rolling window size (number of most-recent tool calls) inspected by the

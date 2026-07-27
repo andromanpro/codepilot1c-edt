@@ -248,7 +248,8 @@ final class ContentToolCallFallbackParser {
      */
     private static ToolCall parseJsonFormat(String block) {
         // Attempt repair if truncated
-        String json = JsonRepairUtil.isComplete(block) ? block : JsonRepairUtil.repair(block);
+        boolean blockRepaired = !JsonRepairUtil.isComplete(block);
+        String json = blockRepaired ? JsonRepairUtil.repair(block) : block;
         if (!JsonRepairUtil.isComplete(json)) {
             LOG.debug("Content fallback: could not repair JSON tool call: %s", //$NON-NLS-1$
                     block.length() > 80 ? block.substring(0, 80) + "..." : block); //$NON-NLS-1$
@@ -263,14 +264,16 @@ final class ContentToolCallFallbackParser {
                 return null;
             }
 
-            Optional<String> arguments = ToolCallArguments.normalize(obj.get("arguments")); //$NON-NLS-1$
+            Optional<ToolCallArguments.Normalized> arguments =
+                    ToolCallArguments.normalizeWithStatus(obj.get("arguments")); //$NON-NLS-1$
             if (arguments.isEmpty()) {
                 LOG.debug("Content fallback: arguments is not a JSON object"); //$NON-NLS-1$
                 return null;
             }
 
             String id = "content_fallback_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
-            return new ToolCall(id, name, arguments.get());
+            return new ToolCall(id, name, arguments.get().json(),
+                    blockRepaired || arguments.get().repaired());
 
         } catch (Exception e) {
             LOG.debug("Content fallback: failed to parse JSON tool call: %s", e.getMessage()); //$NON-NLS-1$
@@ -334,14 +337,14 @@ final class ContentToolCallFallbackParser {
                 LOG.debug("Kimi fallback: arguments not JSON: %s", argsPart); //$NON-NLS-1$
                 continue;
             }
-            Optional<String> arguments = ToolCallArguments.normalize(argsPart);
+            Optional<ToolCallArguments.Normalized> arguments = ToolCallArguments.normalizeWithStatus(argsPart);
             if (arguments.isEmpty()) {
                 LOG.debug("Kimi fallback: could not repair JSON args"); //$NON-NLS-1$
                 continue;
             }
 
             String id = "kimi_content_" + UUID.randomUUID().toString().substring(0, 8); //$NON-NLS-1$
-            results.add(new ToolCall(id, functionName, arguments.get()));
+            results.add(new ToolCall(id, functionName, arguments.get().json(), arguments.get().repaired()));
         }
 
         return results;

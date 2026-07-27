@@ -149,6 +149,43 @@ public final class FormGroupTypeIntent {
         return sb.toString();
     }
 
+    /**
+     * Build the agent-facing rejection message for {@code set_item}'s
+     * attempt to switch an existing item's {@code type} to {@code Table}
+     * (the {@link Verdict#TABLE_NOT_A_GROUP} case via set_item).
+     *
+     * <p>The XSD discriminator for Table is {@code xsi:type="form:Table"},
+     * which cannot be flipped in place via the EMF feature setter — the
+     * EMF class itself differs.  The remediation is to remove and re-add
+     * the item; until {@code mutate_form_model} grows a dedicated
+     * {@code add_table} op, that re-add must happen via direct .form XML
+     * editing using a sibling form as a template.</p>
+     *
+     * @param rawValue the caller-supplied type string (echoed verbatim)
+     * @param itemId   the {@code item_id} from the operation, may be null
+     * @return human-readable message
+     */
+    public static String tableNotChangeableViaSetItemMessage(String rawValue, Object itemId) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("set_item type='").append(rawValue).append("' is not supported"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (itemId != null) {
+            String id = String.valueOf(itemId);
+            if (!id.isBlank() && !"null".equals(id)) { //$NON-NLS-1$
+                sb.append(" (item_id=").append(id).append(")"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
+        sb.append(": Table is a distinct form element type" //$NON-NLS-1$
+                + " (xsi:type=\"form:Table\"), not a FormGroup variant," //$NON-NLS-1$
+                + " so xsi:type cannot be flipped in place via set_item" //$NON-NLS-1$
+                + " — the underlying EMF class differs. To convert an" //$NON-NLS-1$
+                + " existing UsualGroup into a Table, remove_item the" //$NON-NLS-1$
+                + " group and reconstruct the Table via direct Form.form" //$NON-NLS-1$
+                + " XML edit (Edit/Write tools) using the Table block from" //$NON-NLS-1$
+                + " a sibling form as a template, then run" //$NON-NLS-1$
+                + " inspect_form_layout to confirm kind=\"Table\"."); //$NON-NLS-1$
+        return sb.toString();
+    }
+
     private static String normalize(String value) {
         return value
                 .replace("_", "") //$NON-NLS-1$ //$NON-NLS-2$

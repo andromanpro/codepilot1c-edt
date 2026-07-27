@@ -5,11 +5,8 @@ import java.util.concurrent.CompletableFuture;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService.WebClientInfo;
 import com.codepilot1c.core.logging.LogSanitizer;
-import com.codepilot1c.core.provider.ProviderCapabilities;
-import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.tools.AbstractTool;
 import com.codepilot1c.core.tools.ActiveProjectSupport;
-import com.codepilot1c.core.tools.ProviderContextResolver;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
@@ -19,9 +16,8 @@ import com.google.gson.JsonObject;
  * Resolves the running 1C web client URL (and designer URL) of a project's standalone-server
  * infobase so a browser/Playwright session can navigate to it and verify the live UI.
  *
- * <p>Read-only. Also reports the standalone server state and a soft multimodal check: by default the
- * caller is assumed to be vision-capable; when the active model name does not confirm image input,
- * a {@code vision_hint} suggests switching to a multimodal model or using text-based verification.</p>
+ * <p>Read-only. Also reports the standalone server state and a provider-independent soft multimodal
+ * check that assumes the caller is vision-capable and never blocks.</p>
  */
 @ToolMeta(name = "resolve_web_client_url", category = "diagnostics",
         tags = {"read-only", "edt", "diagnostics"})
@@ -41,16 +37,9 @@ public class ResolveWebClientUrlTool extends AbstractTool {
             """; //$NON-NLS-1$
 
     private final EdtRuntimeService runtimeService;
-    private final ProviderContextResolver providerContextResolver;
 
     public ResolveWebClientUrlTool() {
-        this(new EdtRuntimeService(), new ProviderContextResolver());
-    }
-
-    ResolveWebClientUrlTool(EdtRuntimeService runtimeService, ProviderContextResolver providerContextResolver) {
-        this.runtimeService = runtimeService == null ? new EdtRuntimeService() : runtimeService;
-        this.providerContextResolver =
-                providerContextResolver == null ? new ProviderContextResolver() : providerContextResolver;
+        this.runtimeService = new EdtRuntimeService();
     }
 
     @Override
@@ -112,46 +101,11 @@ public class ResolveWebClientUrlTool extends AbstractTool {
         return ActiveProjectSupport.resolveActiveProjectName();
     }
 
-    /**
-     * Soft multimodal check honoring the "assume multimodal by default" policy: the active model is
-     * treated as vision-capable unless its name clearly marks a text-only family (so new frontier
-     * models like {@code gpt-5.x} are not falsely flagged). Only a recognized text-only model yields
-     * {@code vision_confirmed=false} plus an actionable hint. Never blocks.
-     */
+    /** Provider-independent soft guard that assumes multimodal capability and never blocks. */
     private void applyMultimodalGuard(JsonObject data) {
-        String model = null;
-        try {
-            LlmProviderConfig config = providerContextResolver.resolveActiveProviderConfig();
-            model = config == null ? null : config.getModel();
-        } catch (Exception e) {
-            model = null;
-        }
-        boolean knownVision = ProviderCapabilities.inferImageInputFromModel(model);
-        boolean textOnly = !knownVision && looksTextOnly(model);
-        boolean visionConfirmed = !textOnly; // default: assume multimodal
-        String basis = knownVision ? "known-multimodal" //$NON-NLS-1$
-                : (textOnly ? "text-only" : "assumed-multimodal"); //$NON-NLS-1$ //$NON-NLS-2$
-        data.addProperty("active_model", model == null ? "" : model); //$NON-NLS-1$ //$NON-NLS-2$
-        data.addProperty("vision_confirmed", visionConfirmed); //$NON-NLS-1$
-        data.addProperty("vision_basis", basis); //$NON-NLS-1$
-        data.addProperty("vision_hint", textOnly //$NON-NLS-1$
-                ? "The active model name ('" + (model == null ? "" : model) //$NON-NLS-1$ //$NON-NLS-2$
-                        + "') looks text-only. Screenshot-based verification needs a multimodal model: " //$NON-NLS-1$
-                        + "switch to a vision-capable model, or verify via text-based DOM/markup instead of screenshots." //$NON-NLS-1$
-                : ""); //$NON-NLS-1$
-    }
-
-    /** Conservative text-only detector — matches only well-known non-vision families. */
-    private static boolean looksTextOnly(String model) {
-        if (model == null || model.isBlank()) {
-            return false; // unknown → assume multimodal
-        }
-        String lower = model.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("coder") || lower.contains("code-") || lower.contains("codestral") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                || lower.contains("codellama") || lower.contains("starcoder") //$NON-NLS-1$ //$NON-NLS-2$
-                || lower.contains("deepseek-coder") || lower.contains("embed") //$NON-NLS-1$ //$NON-NLS-2$
-                || lower.contains("rerank") || lower.contains("whisper") //$NON-NLS-1$ //$NON-NLS-2$
-                || lower.contains("-tts") || lower.contains("text-moderation"); //$NON-NLS-1$ //$NON-NLS-2$
+        data.addProperty("vision_confirmed", true); //$NON-NLS-1$
+        data.addProperty("vision_basis", "assumed-multimodal"); //$NON-NLS-1$ //$NON-NLS-2$
+        data.addProperty("vision_hint", ""); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private String usageHint(WebClientInfo info) {

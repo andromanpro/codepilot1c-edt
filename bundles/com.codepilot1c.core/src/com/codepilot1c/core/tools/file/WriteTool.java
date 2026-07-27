@@ -77,7 +77,7 @@ public class WriteTool extends AbstractTool {
                         "description": "Must be true to write empty content over an existing non-empty file"
                     }
                 },
-                "required": ["path", "content"]
+                "required": ["path", "content", "overwrite"]
             }
             """;
 

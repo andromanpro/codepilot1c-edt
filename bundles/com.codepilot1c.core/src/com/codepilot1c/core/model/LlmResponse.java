@@ -20,6 +20,8 @@ public class LlmResponse {
     public static final String FINISH_REASON_TOOL_USE = "tool_use"; //$NON-NLS-1$
     /** Finish reason for normal completion */
     public static final String FINISH_REASON_STOP = "stop"; //$NON-NLS-1$
+    /** Finish reason when the provider stopped at the configured output limit */
+    public static final String FINISH_REASON_LENGTH = "length"; //$NON-NLS-1$
 
     private final String content;
     private final String model;
@@ -150,6 +152,15 @@ public class LlmResponse {
      */
     public boolean isToolUse() {
         return FINISH_REASON_TOOL_USE.equals(finishReason) || !toolCalls.isEmpty();
+    }
+
+    /**
+     * Returns whether the provider stopped because the output token limit was reached.
+     *
+     * @return true if finish reason is length
+     */
+    public boolean isLengthLimited() {
+        return FINISH_REASON_LENGTH.equals(finishReason);
     }
 
     /**

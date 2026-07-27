@@ -24,7 +24,6 @@ import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.CoreException;
-import org.eclipse.emf.common.util.TreeIterator;
 import org.eclipse.emf.ecore.EObject;
 import org.eclipse.emf.ecore.util.EcoreUtil;
 import org.w3c.dom.Document;
@@ -217,7 +216,8 @@ public class EdtDcsService {
 
         IProject project = resolveProject(request.normalizedProjectName());
         readinessChecker.ensureReady(project);
-        MdObject ownerForPath = resolveOwner(request.normalizedProjectName(), request.normalizedOwnerFqn());
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        MdObject ownerForPath = resolveOwner(project, configuration, request.normalizedOwnerFqn());
         SchemaResolution existingBefore = resolveSchema(project, ownerForPath);
         Holder<DcsCreateMainSchemaResult> holder = new Holder<>();
         if (existingBefore.schemaPresent() && !request.shouldForceReplace()) {
@@ -239,7 +239,8 @@ public class EdtDcsService {
         executeWrite(project, transaction -> {
             MdObject owner = resolveOwnerInTransaction(
                     transaction,
-                    request.normalizedProjectName(),
+                    project,
+                    configuration,
                     request.normalizedOwnerFqn());
             OwnerTemplates templates = resolveOwnerTemplates(owner);
             if (templates == null) {
@@ -301,7 +302,8 @@ public class EdtDcsService {
 
         IProject project = resolveProject(request.normalizedProjectName());
         readinessChecker.ensureReady(project);
-        MdObject readOwner = resolveOwner(request.normalizedProjectName(), request.normalizedOwnerFqn());
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        MdObject readOwner = resolveOwner(project, configuration, request.normalizedOwnerFqn());
         SchemaResolution readResolution = resolveSchema(project, readOwner);
         if (readResolution.schema() == null && readResolution.externalSchema() != null) {
             return upsertExternalQueryDataset(request, readResolution.externalSchema());
@@ -311,7 +313,8 @@ public class EdtDcsService {
         executeWrite(project, transaction -> {
             MdObject owner = resolveOwnerInTransaction(
                     transaction,
-                    request.normalizedProjectName(),
+                    project,
+                    configuration,
                     request.normalizedOwnerFqn());
             DataCompositionSchema schema = requireSchema(project, owner, request.normalizedOwnerFqn());
 
@@ -363,7 +366,8 @@ public class EdtDcsService {
 
         IProject project = resolveProject(request.normalizedProjectName());
         readinessChecker.ensureReady(project);
-        MdObject readOwner = resolveOwner(request.normalizedProjectName(), request.normalizedOwnerFqn());
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        MdObject readOwner = resolveOwner(project, configuration, request.normalizedOwnerFqn());
         SchemaResolution readResolution = resolveSchema(project, readOwner);
         if (readResolution.schema() == null && readResolution.externalSchema() != null) {
             return upsertExternalParameter(request, readResolution.externalSchema());
@@ -373,7 +377,8 @@ public class EdtDcsService {
         executeWrite(project, transaction -> {
             MdObject owner = resolveOwnerInTransaction(
                     transaction,
-                    request.normalizedProjectName(),
+                    project,
+                    configuration,
                     request.normalizedOwnerFqn());
             DataCompositionSchema schema = requireSchema(project, owner, request.normalizedOwnerFqn());
 
@@ -429,7 +434,8 @@ public class EdtDcsService {
 
         IProject project = resolveProject(request.normalizedProjectName());
         readinessChecker.ensureReady(project);
-        MdObject readOwner = resolveOwner(request.normalizedProjectName(), request.normalizedOwnerFqn());
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        MdObject readOwner = resolveOwner(project, configuration, request.normalizedOwnerFqn());
         SchemaResolution readResolution = resolveSchema(project, readOwner);
         if (readResolution.schema() == null && readResolution.externalSchema() != null) {
             return upsertExternalCalculatedField(request, readResolution.externalSchema());
@@ -439,7 +445,8 @@ public class EdtDcsService {
         executeWrite(project, transaction -> {
             MdObject owner = resolveOwnerInTransaction(
                     transaction,
-                    request.normalizedProjectName(),
+                    project,
+                    configuration,
                     request.normalizedOwnerFqn());
             DataCompositionSchema schema = requireSchema(project, owner, request.normalizedOwnerFqn());
 
@@ -490,21 +497,27 @@ public class EdtDcsService {
 
     private MdObject resolveOwnerInTransaction(
             IBmPlatformTransaction transaction,
-            String projectName,
+            IProject project,
+            Configuration configuration,
             String ownerFqn
     ) {
-        IProject project = resolveProject(projectName);
-        IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
-        MdObject txOwnerByFqn = castMdObject(transaction.getTopObjectByFqn(namespace, ownerFqn));
-        if (txOwnerByFqn != null) {
-            return txOwnerByFqn;
-        }
-        MdObject txOwnerFromConfiguration = resolveOwnerFromTransactionConfiguration(transaction, projectName, ownerFqn);
+        MdObject txOwnerFromConfiguration = resolveOwnerFromTransactionConfiguration(
+                transaction, configuration, ownerFqn);
         if (txOwnerFromConfiguration != null) {
             return txOwnerFromConfiguration;
         }
 
-        MdObject owner = resolveOwner(projectName, ownerFqn);
+        try {
+            IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
+            MdObject txOwnerByFqn = castMdObject(transaction.getTopObjectByFqn(namespace, ownerFqn));
+            if (txOwnerByFqn != null) {
+                return txOwnerByFqn;
+            }
+        } catch (RuntimeException e) {
+            // Fall through to outside-transaction resolution.
+        }
+
+        MdObject owner = resolveOwner(project, configuration, ownerFqn);
         MdObject txOwner = castMdObject(transaction.toTransactionObject(owner));
         if (txOwner == null) {
             txOwner = resolveOwnerByUri(transaction, owner);
@@ -523,17 +536,19 @@ public class EdtDcsService {
 
     private MdObject resolveOwnerFromTransactionConfiguration(
             IBmPlatformTransaction transaction,
-            String projectName,
+            Configuration configuration,
             String ownerFqn
     ) {
-        IProject project = resolveProject(projectName);
-        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
         if (configuration == null) {
             return null;
         }
-        EObject txConfiguration = transaction.toTransactionObject(configuration);
-        if (txConfiguration instanceof Configuration configurationInTransaction) {
-            return findInConfiguration(configurationInTransaction, ownerFqn);
+        try {
+            EObject txConfiguration = transaction.toTransactionObject(configuration);
+            if (txConfiguration instanceof Configuration configurationInTransaction) {
+                return findInConfiguration(configurationInTransaction, ownerFqn);
+            }
+        } catch (RuntimeException e) {
+            // Fall through to alternative transaction lookup.
         }
         return null;
     }
@@ -556,7 +571,11 @@ public class EdtDcsService {
 
     private MdObject resolveOwner(String projectName, String ownerFqn) {
         IProject project = resolveProject(projectName);
+        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
+        return resolveOwner(project, configuration, ownerFqn);
+    }
 
+    private MdObject resolveOwner(IProject project, Configuration configuration, String ownerFqn) {
         IExternalObjectProject externalProject = asExternalProject(project);
         if (externalProject != null) {
             MdObject external = findInExternalProject(externalProject, ownerFqn);
@@ -565,11 +584,10 @@ public class EdtDcsService {
             }
         }
 
-        Configuration configuration = gateway.getConfigurationProvider().getConfiguration(project);
         if (configuration == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.METADATA_NOT_FOUND,
-                    "Configuration is unavailable for project: " + projectName,
+                    "Configuration is unavailable",
                     false); //$NON-NLS-1$
         }
         MdObject object = findInConfiguration(configuration, ownerFqn);
@@ -609,24 +627,7 @@ public class EdtDcsService {
     }
 
     private MdObject findInConfiguration(Configuration configuration, String ownerFqn) {
-        MdObject topLevel = findTopLevelOwner(configuration, ownerFqn);
-        if (topLevel != null) {
-            return topLevel;
-        }
-
-        String normalizedRef = normalize(ownerFqn);
-        TreeIterator<EObject> it = configuration.eAllContents();
-        while (it.hasNext()) {
-            EObject next = it.next();
-            if (!(next instanceof MdObject mdObject)) {
-                continue;
-            }
-            String shortRef = mdObject.eClass().getName() + "." + safe(mdObject.getName()); //$NON-NLS-1$
-            if (normalize(shortRef).equals(normalizedRef) || normalize(mdObject.getName()).equals(normalizedRef)) {
-                return mdObject;
-            }
-        }
-        return null;
+        return findTopLevelOwner(configuration, ownerFqn);
     }
 
     private MdObject findTopLevelOwner(Configuration configuration, String ownerFqn) {

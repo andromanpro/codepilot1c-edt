@@ -11,8 +11,8 @@
 .playwright-mcp/
 .scripts/
 tools/__pycache__/
-.planning/local/
-.planning/qwen35-optimization-*.md
+.qwen-runtime-surface/
+skills-lock.json
 
 # IDE / OS
 .idea/
@@ -27,7 +27,6 @@ docs/*
 OSS_SUMMARY.md
 AGENTS.md
 CLAUDE.md
-CLAUDE.md
 *.bak
 git-paperclip-sync*.py
 github-sync-state*.json
@@ -38,8 +37,44 @@ tools/run_github_sync.sh
 # QA локальная конфигурация и результаты
 tests/qa/qa-config.json
 tests/results/
-.planning/
 .agents/
 _bmad*/
 e2e*
 output/
+
+.bg-shell/
+Thumbs.db
+nul
+nul.*
+con
+con.*
+prn
+prn.*
+aux
+aux.*
+com[1-9]
+com[1-9].*
+lpt[1-9]
+lpt[1-9].*
+*.swp
+*.swo
+*~
+.vscode/
+*.code-workspace
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+target/
+vendor/
+*.log
+coverage/
+.cache/
+tmp/

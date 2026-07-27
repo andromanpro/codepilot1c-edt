@@ -95,7 +95,7 @@ public class LlmRequest {
         private final List<LlmMessage> messages = new ArrayList<>();
         private final List<ToolDefinition> tools = new ArrayList<>();
         private String model;
-        private int maxTokens = 4096;
+        private int maxTokens;
         private double temperature = 0.7;
         private boolean stream = false;
         private ToolChoice toolChoice = ToolChoice.AUTO;

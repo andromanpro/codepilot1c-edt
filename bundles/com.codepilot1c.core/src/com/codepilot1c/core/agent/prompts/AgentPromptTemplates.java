@@ -75,7 +75,7 @@ public final class AgentPromptTemplates {
         sb.append("6. Отчитайся по схеме: что было -> что изменено -> почему -> результат проверки.\n\n"); //$NON-NLS-1$
 
         sb.append("## Доступные инструменты\n"); //$NON-NLS-1$
-        sb.append("- Файлы и workspace: read_file, edit_file, write_file, glob, grep, workspace_import_project, connect_infobase, import_project_from_infobase\n"); //$NON-NLS-1$
+        sb.append("- Файлы и workspace: read_file, edit_file, write_file, workspace_copy_transform, workspace_copy_transform_batch, glob, grep, workspace_import_project, connect_infobase, import_project_from_infobase\n"); //$NON-NLS-1$
         sb.append("- Git: git_inspect (status/log/branches/remotes/diff), git_mutate (create_repo/init/clone/remote/fetch/pull/push/branch/add/commit), git_clone_and_import_project (clone + workspace import)\n"); //$NON-NLS-1$
         sb.append("- EDT AST/API: edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info, get_diagnostics\n"); //$NON-NLS-1$
         sb.append("- EDT СКД: dcs_manage(command=get_summary|list_nodes|create_schema|upsert_dataset|upsert_param|upsert_field)\n"); //$NON-NLS-1$

@@ -10,6 +10,7 @@ import java.util.Set;
 import org.eclipse.core.resources.IProject;
 
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -165,6 +166,22 @@ public class MetadataRequestValidationService {
         payload.put("project", projectName); //$NON-NLS-1$
         payload.put("kind", kind.name()); //$NON-NLS-1$
         payload.put("name", name); //$NON-NLS-1$
+        payload.put("requestedName", name); //$NON-NLS-1$
+        payload.put("requestedFqn", kind.getFqnPrefix() + "." + name); //$NON-NLS-1$ //$NON-NLS-2$
+        EffectiveName effective = resolveEffectiveName(projectName, name);
+        boolean autoPrefixed = !safeEquals(name, effective.name());
+        Boolean propertyFlag = asOptionalBoolean(getMapValueIgnoreCase(properties, "allow_auto_prefix")); //$NON-NLS-1$
+        Boolean effectiveAllowAutoPrefix = allowAutoPrefix != null ? allowAutoPrefix : propertyFlag;
+        if (autoPrefixed && Boolean.FALSE.equals(effectiveAllowAutoPrefix)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "Extension project would auto-prefix name '" + name + "' to '" + effective.name() //$NON-NLS-1$ //$NON-NLS-2$
+                            + "'; pass allow_auto_prefix=true or use the effective name explicitly", //$NON-NLS-1$
+                    false);
+        }
+        payload.put("effectiveName", effective.name()); //$NON-NLS-1$
+        payload.put("effectiveFqn", kind.getFqnPrefix() + "." + effective.name()); //$NON-NLS-1$ //$NON-NLS-2$
+        payload.put("autoPrefixed", Boolean.valueOf(autoPrefixed)); //$NON-NLS-1$
         if (synonym != null && !synonym.isBlank()) {
             payload.put("synonym", synonym); //$NON-NLS-1$
         }
@@ -1461,6 +1478,10 @@ public class MetadataRequestValidationService {
                     effectiveModuleKind = suffixMatch.moduleKindValue;
                 }
             }
+            if ((effectiveModuleKind == null || effectiveModuleKind.isBlank())
+                    && normalizedObjectFqn.startsWith("CommonCommand.")) { //$NON-NLS-1$
+                effectiveModuleKind = "command"; //$NON-NLS-1$
+            }
         }
         return new ModuleArtifactTarget(
                 normalizedObjectFqn,
@@ -1473,6 +1494,7 @@ public class MetadataRequestValidationService {
     private enum ModuleSuffixMatch {
         OBJECT(".ObjectModule", "object"), //$NON-NLS-1$ //$NON-NLS-2$
         MANAGER(".ManagerModule", "manager"), //$NON-NLS-1$ //$NON-NLS-2$
+        COMMAND(".CommandModule", "command"), //$NON-NLS-1$ //$NON-NLS-2$
         MODULE(".FormModule", "module"), //$NON-NLS-1$ //$NON-NLS-2$
         GENERIC_MODULE(".Module", "module"); //$NON-NLS-1$ //$NON-NLS-2$
 

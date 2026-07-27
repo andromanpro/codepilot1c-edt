@@ -14,6 +14,8 @@ import com.google.gson.JsonParser;
  */
 final class OpenAiStreamingSession {
 
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(OpenAiStreamingSession.class);
+
     private final OpenAiChunkAdapter chunkAdapter;
     private final OpenAiStreamingToolCallParser toolCallParser;
     private final ProviderStreamProcessingSummary summary;
@@ -148,9 +150,13 @@ final class OpenAiStreamingSession {
             OpenAiStreamingToolCallParser.DrainResult drainResult = toolCallParser.drainCompletedToolCalls();
             if (drainResult.repairedCount() > 0) {
                 summary.getRepairedToolCalls().addAndGet(drainResult.repairedCount());
+                LOG.warn("[%s] %d tool call(s) had truncated arguments repaired; mutating tools will reject them", //$NON-NLS-1$
+                        summary.getCorrelationId(), drainResult.repairedCount());
             }
             if (drainResult.truncatedCount() > 0) {
                 summary.getTruncatedToolCalls().addAndGet(drainResult.truncatedCount());
+                LOG.warn("[%s] %d tool call(s) dropped: arguments unrecoverably truncated", //$NON-NLS-1$
+                        summary.getCorrelationId(), drainResult.truncatedCount());
             }
             if (!drainResult.toolCalls().isEmpty()) {
                 summary.getCompletedToolCalls().addAndGet(drainResult.toolCalls().size());

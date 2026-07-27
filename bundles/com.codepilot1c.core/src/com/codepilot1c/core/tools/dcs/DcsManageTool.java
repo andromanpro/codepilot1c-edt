@@ -26,6 +26,7 @@ import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Composite DCS tool that replaces 6 individual DCS tools.
@@ -48,9 +49,12 @@ public class DcsManageTool extends AbstractTool {
     private static final Set<String> READ_COMMANDS = Set.of(
             "get_summary", "list_nodes"); //$NON-NLS-1$ //$NON-NLS-2$
 
-    private static final Set<String> ALL_COMMANDS = Set.of(
+    /** Stable command order is part of the public validation/error contract. */
+    private static final String[] COMMANDS = {
             "get_summary", "list_nodes", "create_schema", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "upsert_dataset", "upsert_param", "upsert_field"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "upsert_dataset", "upsert_param", "upsert_field" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    };
+    private static final Set<String> ALL_COMMANDS = Set.of(COMMANDS);
 
     private static final String SCHEMA = """
             {
@@ -150,7 +154,8 @@ public class DcsManageTool extends AbstractTool {
                   "description": "(mutating commands) One-time token from edt_validate_request; required for create_schema and all upsert commands"
                 }
               },
-              "required": ["command", "project", "owner_fqn"]
+              "required": ["command", "project", "owner_fqn"],
+              "additionalProperties": false
             }
             """; //$NON-NLS-1$
 
@@ -192,8 +197,7 @@ public class DcsManageTool extends AbstractTool {
             Map<String, Object> p = params.getRaw();
             String command = asString(p.get("command")); //$NON-NLS-1$
             if (command == null || !ALL_COMMANDS.contains(command)) {
-                return ToolResult.failure("Unknown command: " + command + //$NON-NLS-1$
-                        ". Use one of: " + String.join(", ", ALL_COMMANDS)); //$NON-NLS-1$ //$NON-NLS-2$
+                return invalidCommand(command);
             }
             try {
                 return switch (command) {
@@ -206,11 +210,40 @@ public class DcsManageTool extends AbstractTool {
                     default -> ToolResult.failure("Unknown command: " + command); //$NON-NLS-1$
                 };
             } catch (MetadataOperationException e) {
-                return ToolResult.failure(toErrorJson(e, command, p));
+                return structuredFailure(toErrorJson(e, command, p));
             } catch (Exception e) {
-                return ToolResult.failure("INTERNAL_ERROR: " + e.getMessage()); //$NON-NLS-1$
+                return structuredFailure(toInternalErrorJson(e, command, p));
             }
         });
+    }
+
+    private ToolResult invalidCommand(String command) {
+        JsonObject error = new JsonObject();
+        error.addProperty("error", "INVALID_COMMAND"); //$NON-NLS-1$
+        error.addProperty("command", command); //$NON-NLS-1$
+        error.addProperty("message", "Unsupported DCS command"); //$NON-NLS-1$
+        error.addProperty("allowed_commands", String.join(", ", COMMANDS)); //$NON-NLS-1$
+        return ToolResult.failure(GSON.toJson(error), error);
+    }
+
+    private ToolResult structuredFailure(String json) {
+        try {
+            return ToolResult.failure(json, JsonParser.parseString(json).getAsJsonObject());
+        } catch (RuntimeException ignored) {
+            // Error serialization must not hide the original failure.
+            return ToolResult.failure(json);
+        }
+    }
+
+    private String toInternalErrorJson(Exception e, String command, Map<String, Object> parameters) {
+        JsonObject error = new JsonObject();
+        error.addProperty("error", "INTERNAL_ERROR"); //$NON-NLS-1$
+        error.addProperty("message", e.getMessage()); //$NON-NLS-1$
+        error.addProperty("command", command); //$NON-NLS-1$
+        error.addProperty("project", asString(parameters.get("project"))); //$NON-NLS-1$ //$NON-NLS-2$
+        error.addProperty("owner_fqn", asString(parameters.get("owner_fqn"))); //$NON-NLS-1$ //$NON-NLS-2$
+        error.addProperty("stage", "execution"); //$NON-NLS-1$
+        return GSON.toJson(error);
     }
 
     // --- Read commands ---

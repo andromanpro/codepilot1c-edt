@@ -66,7 +66,6 @@ public class ToolRegistry {
     private final Gson gson = new Gson();
     private ToolArgumentParser argumentParser;
     private ToolExecutionService executionService;
-    private ProviderContextResolver providerContextResolver;
     private volatile ToolSurfaceAugmentor augmentor;
 
     private ToolRegistry() {
@@ -74,7 +73,6 @@ public class ToolRegistry {
         registerDefaultTools();
         augmentor = ToolSurfaceAugmentor.defaultAugmentor();
         argumentParser = new ToolArgumentParser();
-        providerContextResolver = new ProviderContextResolver();
         executionService = new ToolExecutionService(this);
         LOG.info("ToolRegistry initialized with %d tools", tools.size()); //$NON-NLS-1$
     }
@@ -97,6 +95,8 @@ public class ToolRegistry {
         register(new ListFilesTool());
         register(new EditFileTool());
         register(new WriteTool());
+        register(new WorkspaceCopyTransformTool());
+        register(new WorkspaceCopyTransformBatchTool());
         register(new GrepTool());
         register(new GlobTool());
         register(new WorkspaceImportProjectTool());
@@ -170,6 +170,7 @@ public class ToolRegistry {
         register(new GetInfobaseCredentialsTool());
         register(new TailEdtLogsTool());
         register(new ExtensionManageTool());
+        register(new MigrateToExtensionNativeTool());
         register(new EdtExtensionSmokeTool());
         register(new DcsManageTool());
         register(new ExternalManageTool());
@@ -336,7 +337,9 @@ public class ToolRegistry {
     }
 
     public ToolSurfaceContext createRuntimeSurfaceContext(AgentProfile profile) {
-        return providerContextResolver().createRuntimeSurfaceContext(profile);
+        return ToolSurfaceContext.builder()
+                .profile(profile != null ? profile : ToolSurfaceContext.defaultProfile())
+                .build();
     }
 
     public void setAugmentor(ToolSurfaceAugmentor augmentor) {
@@ -392,13 +395,6 @@ public class ToolRegistry {
             executionService = new ToolExecutionService(this);
         }
         return executionService;
-    }
-
-    private ProviderContextResolver providerContextResolver() {
-        if (providerContextResolver == null) {
-            providerContextResolver = new ProviderContextResolver();
-        }
-        return providerContextResolver;
     }
 
     private ToolArgumentParser argumentParser() {

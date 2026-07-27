@@ -557,6 +557,11 @@ public class EditFileTool extends AbstractTool {
         String after = currentContent.substring(location.getEndOffset());
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
         String newContent = before + normalizedNewText + after;
+        if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, newContent)) {
+            LOG.warn("edit_file: fuzzy результат пуст при непустом исходнике, запись отклонена: %s", //$NON-NLS-1$
+                    file.getFullPath());
+            return ToolResult.failure(EditResultGuard.wipeRejectionMessage(file.getFullPath().toString()));
+        }
 
         if (EditResultGuard.wouldWipeNonEmptyFile(currentContent, newContent)) {
             LOG.warn("edit_file: fuzzy-замена опустошает непустой файл, запись отклонена: %s", //$NON-NLS-1$

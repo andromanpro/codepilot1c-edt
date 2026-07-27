@@ -42,7 +42,16 @@ public enum ProviderType {
      * policies can be keyed on an explicit provider type instead of URL
      * heuristics.</p>
      */
-    CODEPILOT_BACKEND("codepilot_backend", "1C CodePilot Backend"); //$NON-NLS-1$ //$NON-NLS-2$
+    CODEPILOT_BACKEND("codepilot_backend", "1C CodePilot Backend"), //$NON-NLS-1$ //$NON-NLS-2$
+
+    /**
+     * OpenAI Codex (ChatGPT subscription) via the Responses API.
+     *
+     * <p>Authenticated by OAuth (Bearer access token + {@code chatgpt-account-id}) instead of a
+     * static API key. Wire format is the OpenAI Responses API ({@code POST /responses}) served
+     * from {@code https://chatgpt.com/backend-api/codex}, not chat completions.</p>
+     */
+    OPENAI_CODEX("openai_codex", "OpenAI Codex (ChatGPT)"); //$NON-NLS-1$ //$NON-NLS-2$
 
     private final String id;
     private final String displayName;
@@ -64,7 +73,7 @@ public enum ProviderType {
      * Returns whether this provider type supports fetching model list from API.
      */
     public boolean supportsModelListing() {
-        // All provider types support model listing now
+        // All provider types support model listing (Codex returns a curated candidate list).
         return true;
     }
 
@@ -96,6 +105,8 @@ public enum ProviderType {
                 return "/messages"; //$NON-NLS-1$
             case OLLAMA:
                 return "/api/chat"; //$NON-NLS-1$
+            case OPENAI_CODEX:
+                return "/responses"; //$NON-NLS-1$
             default:
                 return "/chat/completions"; //$NON-NLS-1$
         }

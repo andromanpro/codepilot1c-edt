@@ -26,7 +26,6 @@ import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.tools.ITool;
-import com.codepilot1c.core.tools.ProviderContextResolver;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceAugmentor;
@@ -92,7 +91,6 @@ public class LangGraphAgentRunnerTest {
         setField(registry, "dynamicTools", new ConcurrentHashMap<String, ITool>()); //$NON-NLS-1$
         setField(registry, "gson", new Gson()); //$NON-NLS-1$
         setField(registry, "augmentor", ToolSurfaceAugmentor.passthrough()); //$NON-NLS-1$
-        setField(registry, "providerContextResolver", new ProviderContextResolver()); //$NON-NLS-1$
         return registry;
     }
 

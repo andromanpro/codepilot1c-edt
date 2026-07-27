@@ -22,6 +22,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.eclipse.core.resources.IFile;
@@ -58,6 +60,7 @@ import com.e1c.g5.dt.applications.IApplicationManager;
 import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
+import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.ui.diagnostics.EdtDiagnostic.Severity;
@@ -268,13 +271,19 @@ public class EdtDiagnosticsCollector {
                 }
 
                 ResolvedFileContext context = resolveFileContext(filePath);
+
+                if (context.file() == null) {
+                    throw new IllegalArgumentException("File not found in workspace: " + filePath); //$NON-NLS-1$
+                }
+
                 String resultPath = context.resolvedPath() != null ? context.resolvedPath() : normalizePath(filePath);
 
                 List<EdtDiagnostic> diagnostics = new ArrayList<>();
                 Set<String> seen = new HashSet<>();
 
-                if (context.file() != null && context.file().exists()) {
-                    collectFromMarkers(context.file(), resultPath, query, diagnostics, seen);
+                collectFromMarkers(context.file(), resultPath, query, diagnostics, seen);
+                if (query.includeRuntimeMarkers() && context.project() != null) {
+                    collectRuntimeFileMarkers(context, query, diagnostics, seen);
                 }
                 // EDT validation/check results (incl. BSL "method not defined") live in the DT
                 // marker manager, not as Eclipse IMarkers, so file scope must read them too.
@@ -298,6 +307,8 @@ public class EdtDiagnosticsCollector {
 
                 return new DiagnosticsResult(resultPath, false, diagnostics, errors, warnings, infos);
 
+            } catch (IllegalArgumentException e) {
+                throw e; // propagate as exceptional future completion (e.g. file-not-found)
             } catch (Exception e) {
                 LOG.error("Error collecting diagnostics for file %s: %s", filePath, e.getMessage()); //$NON-NLS-1$
                 return new DiagnosticsResult(filePath, false, List.of(), 0, 0, 0);
@@ -461,48 +472,11 @@ public class EdtDiagnosticsCollector {
     }
 
     private List<String> buildMatchTokens(List<String> relativeCandidates) {
-        Set<String> generic = Set.of(
-                "src", //$NON-NLS-1$
-                "configuration", //$NON-NLS-1$
-                "конфигурация", //$NON-NLS-1$
-                "forms", //$NON-NLS-1$
-                "documents", //$NON-NLS-1$
-                "catalogs", //$NON-NLS-1$
-                "commonmodules", //$NON-NLS-1$
-                "module", //$NON-NLS-1$
-                "module.bsl", //$NON-NLS-1$
-                "mdo"); //$NON-NLS-1$
-
-        LinkedHashSet<String> tokens = new LinkedHashSet<>();
-        for (String candidate : relativeCandidates) {
-            if (candidate == null || candidate.isBlank()) {
-                continue;
-            }
-            String[] segments = candidate.split("/"); //$NON-NLS-1$
-            for (String rawSegment : segments) {
-                if (rawSegment == null || rawSegment.isBlank()) {
-                    continue;
-                }
-                String segment = rawSegment.toLowerCase(Locale.ROOT);
-                if (segment.endsWith(".bsl")) { //$NON-NLS-1$
-                    segment = segment.substring(0, segment.length() - 4);
-                } else if (segment.endsWith(".mdo")) { //$NON-NLS-1$
-                    segment = segment.substring(0, segment.length() - 4);
-                }
-                if (segment.length() < 3 || generic.contains(segment)) {
-                    continue;
-                }
-                tokens.add(segment);
-            }
-        }
-        return List.copyOf(tokens);
+        return PathMatchTokens.buildMatchTokens(relativeCandidates);
     }
 
     private int computeTokenThreshold(List<String> tokens) {
-        if (tokens == null || tokens.isEmpty()) {
-            return 0;
-        }
-        return tokens.size() > 1 ? 2 : 1;
+        return PathMatchTokens.computeTokenThreshold(tokens);
     }
 
     /**
@@ -596,6 +570,7 @@ public class EdtDiagnosticsCollector {
                             return;
                         }
 
+                        String locationText = safeString(marker.getLocation());
                         int[] position = readMarkerPosition(marker);
                         diagnostics.add(EdtDiagnostic.fromRuntimeMarker(
                                 context.resolvedPath(),
@@ -611,7 +586,7 @@ public class EdtDiagnosticsCollector {
                                 meta != null ? meta.issueType() : null,
                                 meta != null ? meta.issueSeverity() : null,
                                 safeString(marker.getObjectPresentation()),
-                                safeString(marker.getLocation())));
+                                locationText));
                     });
         } catch (Exception e) {
             LOG.warn("Runtime marker manager file diagnostics unavailable for %s: %s", //$NON-NLS-1$
@@ -641,7 +616,8 @@ public class EdtDiagnosticsCollector {
 
         int matches = 0;
         for (String token : context.matchTokens()) {
-            if (token != null && !token.isBlank() && haystack.contains(token)) {
+            if (token != null && !token.isBlank()
+                    && com.codepilot1c.core.diagnostics.PathMatchTokens.matchesAsWord(haystack, token)) {
                 matches++;
                 if (matches >= threshold) {
                     return true;
@@ -688,6 +664,9 @@ public class EdtDiagnosticsCollector {
             }
         } catch (RuntimeException e) {
             LOG.debug("Unable to read DT marker position: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        if (line < 0) {
+            line = parseLineFromLocation(safeString(marker.getLocation()));
         }
         return new int[] { line, charStart, charEnd };
     }
@@ -1279,6 +1258,22 @@ public class EdtDiagnosticsCollector {
         } catch (CoreException e) {
             return "unknown"; //$NON-NLS-1$
         }
+    }
+
+    private static final Pattern LOCATION_LINE_PATTERN =
+            Pattern.compile("(?i)\\bline\\s+(\\d+)\\b"); //$NON-NLS-1$
+
+    private static int parseLineFromLocation(String locationText) {
+        if (locationText == null || locationText.isBlank()) return -1;
+        Matcher m = LOCATION_LINE_PATTERN.matcher(locationText);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+        return -1;
     }
 
     private int safeGetLineOfOffset(IDocument doc, int offset) {

@@ -2,7 +2,7 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: %Bundle-Name
 Bundle-SymbolicName: com.codepilot1c.core;singleton:=true
-Bundle-Version: 0.1.7.qualifier
+Bundle-Version: 1.0.0.qualifier
 Bundle-Vendor: %Bundle-Vendor
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-Activator: com.codepilot1c.core.internal.VibeCorePlugin
@@ -108,6 +108,7 @@ Export-Package: com.codepilot1c.core.agent,
  com.codepilot1c.core.agent.events,
  com.codepilot1c.core.agent.profiles,
  com.codepilot1c.core.provider,
+ com.codepilot1c.core.provider.codex,
  com.codepilot1c.core.provider.config,
  com.codepilot1c.core.model,
  com.codepilot1c.core.settings,
@@ -117,6 +118,7 @@ Export-Package: com.codepilot1c.core.agent,
  com.codepilot1c.core.state,
  com.codepilot1c.core.http,
  com.codepilot1c.core.diff,
+ com.codepilot1c.core.diagnostics,
  com.codepilot1c.core.edit,
  com.codepilot1c.core.tools,
  com.codepilot1c.core.tools.bsl,
@@ -151,7 +153,6 @@ Export-Package: com.codepilot1c.core.agent,
  com.codepilot1c.core.mcp.transport,
  com.codepilot1c.core.mcp.client,
  com.codepilot1c.core.mcp.config,
- com.codepilot1c.core.context7,
  com.codepilot1c.core.evaluation.trace,
  com.codepilot1c.core.evaluation.benchmark,
  com.codepilot1c.core.agent.prompts,

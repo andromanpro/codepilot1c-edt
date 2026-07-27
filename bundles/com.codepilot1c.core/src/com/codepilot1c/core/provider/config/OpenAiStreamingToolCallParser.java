@@ -106,7 +106,7 @@ class OpenAiStreamingToolCallParser {
         if (repairOutcome.repaired() && allowRepair) {
             stats.repaired++;
         }
-        toolCalls.add(new ToolCall(id, accumulator.name, repairOutcome.arguments()));
+        toolCalls.add(new ToolCall(id, accumulator.name, repairOutcome.arguments(), repairOutcome.repaired()));
     }
 
     private boolean isCollision(Accumulator accumulator, String id, String name) {
@@ -124,9 +124,10 @@ class OpenAiStreamingToolCallParser {
 
     private RepairOutcome repairArguments(String arguments) {
         String normalized = arguments != null && !arguments.isBlank() ? arguments.strip() : "{}"; //$NON-NLS-1$
-        Optional<String> normalizedArguments = ToolCallArguments.normalize(normalized);
+        Optional<ToolCallArguments.Normalized> normalizedArguments = ToolCallArguments.normalizeWithStatus(normalized);
         if (normalizedArguments.isPresent()) {
-            return new RepairOutcome(normalizedArguments.get(), !normalizedArguments.get().equals(normalized), true);
+            // repaired() is true only for actual JsonRepairUtil salvage, not Gson canonicalization.
+            return new RepairOutcome(normalizedArguments.get().json(), normalizedArguments.get().repaired(), true);
         }
         return new RepairOutcome(normalized, false, false);
     }
