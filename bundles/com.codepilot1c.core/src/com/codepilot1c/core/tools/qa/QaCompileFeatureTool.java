@@ -113,7 +113,11 @@ public class QaCompileFeatureTool extends AbstractTool {
                 boolean autoCreateConfig = !Boolean.FALSE.equals(parameters.get("auto_create_config")); //$NON-NLS-1$
                 boolean overwrite = Boolean.TRUE.equals(parameters.get("overwrite")); //$NON-NLS-1$
 
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                // Резолв с учётом проекта (QaPaths.resolveConfigForProject): в воркспейсе с
+                // несколькими проектами общий конфиг почти наверняка чужой.
+                File configFile = QaPaths.resolveConfigForProject(configPath, workspaceRoot,
+                        parameters == null ? null : (String) parameters.get("project_name"), //$NON-NLS-1$
+                        DEFAULT_CONFIG_PATH).file();
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     return ToolResult.failure("QA_COMPILE_FEATURE_ERROR: config_path must be within workspace"); //$NON-NLS-1$

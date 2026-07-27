@@ -36,6 +36,74 @@ public final class QaPaths {
         return resolve(path, workspaceRoot);
     }
 
+    /**
+     * Где именно взят qa-config. Возвращается наружу, чтобы промах «взяли конфиг чужого
+     * проекта» был виден сразу в ответе тула, а не через час прогонов не на той базе.
+     */
+    public enum ConfigSource {
+        /** Путь передан вызывающим явно. */
+        EXPLICIT,
+        /** Найден конфиг проекта: {@code <workspace>/<project>/tests/qa/qa-config.json}. */
+        PROJECT,
+        /** Фолбэк на общий конфиг воркспейса. */
+        WORKSPACE_DEFAULT
+    }
+
+    /** Результат резолва: сам файл и то, откуда он взялся. */
+    public record ResolvedConfig(File file, ConfigSource source, String projectName) {
+
+        public String describe() {
+            switch (source) {
+                case EXPLICIT:
+                    return "явно переданный config_path"; //$NON-NLS-1$
+                case PROJECT:
+                    return "конфиг проекта " + projectName; //$NON-NLS-1$
+                default:
+                    return "общий конфиг воркспейса (у проекта своего нет)"; //$NON-NLS-1$
+            }
+        }
+    }
+
+    /**
+     * Куда СОЗДАВАТЬ qa-config. В отличие от {@link #resolveConfigForProject}, не проверяет
+     * существование: если задан проект, конфиг всегда кладётся в
+     * {@code <workspace>/<project>/tests/qa/qa-config.json}, чтобы у каждого проекта воркспейса
+     * был свой, а не один общий на всех.
+     */
+    public static File resolveConfigTarget(String path, File workspaceRoot, String projectName,
+                                           String defaultRelative) {
+        if (path != null && !path.isBlank()) {
+            return resolve(path, workspaceRoot);
+        }
+        if (projectName != null && !projectName.isBlank() && workspaceRoot != null) {
+            return new File(new File(workspaceRoot, projectName), defaultRelative);
+        }
+        return resolve(defaultRelative, workspaceRoot);
+    }
+
+    /**
+     * Резолвит qa-config с учётом проекта. Порядок: явный путь → конфиг проекта
+     * {@code <workspace>/<project>/tests/qa/qa-config.json} → общий конфиг воркспейса.
+     *
+     * <p>Без этого в воркспейсе с несколькими проектами все QA-тулы читали один и тот же
+     * {@code <workspace>/tests/qa/qa-config.json} — то есть настройки и launch-конфигурацию
+     * того проекта, кто настроил их последним, независимо от того, с каким работают сейчас.
+     */
+    public static ResolvedConfig resolveConfigForProject(String path, File workspaceRoot,
+                                                        String projectName, String defaultRelative) {
+        if (path != null && !path.isBlank()) {
+            return new ResolvedConfig(resolve(path, workspaceRoot), ConfigSource.EXPLICIT, projectName);
+        }
+        if (projectName != null && !projectName.isBlank() && workspaceRoot != null) {
+            File projectConfig = new File(new File(workspaceRoot, projectName), defaultRelative);
+            if (projectConfig.isFile()) {
+                return new ResolvedConfig(projectConfig, ConfigSource.PROJECT, projectName);
+            }
+        }
+        return new ResolvedConfig(resolve(defaultRelative, workspaceRoot), ConfigSource.WORKSPACE_DEFAULT,
+                projectName);
+    }
+
     public static boolean isWithinWorkspace(File workspaceRoot, File target) {
         if (workspaceRoot == null || target == null) {
             return false;

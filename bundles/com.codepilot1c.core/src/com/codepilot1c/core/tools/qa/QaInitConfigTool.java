@@ -87,7 +87,9 @@ public class QaInitConfigTool extends AbstractTool {
                 String paramsTemplate = parameters == null ? null : (String) parameters.get("params_template"); //$NON-NLS-1$
                 boolean force = parameters != null && Boolean.TRUE.equals(parameters.get("force")); //$NON-NLS-1$
 
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                // Конфиг создаётся В КАТАЛОГЕ ПРОЕКТА, чтобы у каждого проекта воркспейса был свой.
+                File configFile = QaPaths.resolveConfigTarget(configPath, workspaceRoot, projectName,
+                        DEFAULT_CONFIG_PATH);
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     return ToolResult.failure("QA_INIT_CONFIG_ERROR: config_path must be within workspace"); //$NON-NLS-1$

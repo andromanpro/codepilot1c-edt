@@ -39,6 +39,14 @@ public class QaInspectTool extends AbstractTool {
                   "type": "string",
                   "description": "Read-only QA command: explain_config, status, or steps_search",
                   "enum": ["explain_config", "status", "steps_search"]
+                },
+                "project_name": {
+                  "type": "string",
+                  "description": "EDT-проект, чей qa-config брать. Ищется <workspace>/<project>/tests/qa/qa-config.json, при отсутствии — общий конфиг воркспейса. В воркспейсе с несколькими проектами указывать ОБЯЗАТЕЛЬНО, иначе возьмётся конфиг чужого проекта."
+                },
+                "config_path": {
+                  "type": "string",
+                  "description": "Явный путь к qa-config.json (workspace-relative или абсолютный). Переопределяет project_name."
                 }
               },
               "required": ["command"],

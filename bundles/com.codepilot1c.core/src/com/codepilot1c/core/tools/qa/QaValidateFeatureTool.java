@@ -87,8 +87,11 @@ public class QaValidateFeatureTool extends AbstractTool {
                     return ToolResult.failure("QA_VALIDATE_FEATURE_ERROR: feature_file is required"); //$NON-NLS-1$
                 }
                 File workspaceRoot = getWorkspaceRoot();
-                File configFile = QaPaths.resolveConfigFile((String) parameters.get("config_path"), workspaceRoot,
-                        DEFAULT_CONFIG_PATH); //$NON-NLS-1$
+                // Резолв с учётом проекта (QaPaths.resolveConfigForProject): в воркспейсе с
+                // несколькими проектами общий конфиг почти наверняка чужой.
+                File configFile = QaPaths.resolveConfigForProject(
+                        (String) parameters.get("config_path"), workspaceRoot, //$NON-NLS-1$
+                        (String) parameters.get("project_name"), DEFAULT_CONFIG_PATH).file(); //$NON-NLS-1$
                 QaConfig config = QaConfig.load(configFile);
                 String unknownStepsMode = resolveUnknownStepsMode(parameters, config);
                 File featuresDir = QaPaths.resolve(config.paths == null ? null : config.paths.features_dir, workspaceRoot);

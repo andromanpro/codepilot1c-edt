@@ -100,7 +100,8 @@ public class QaStepsSearchTool extends AbstractTool {
                 boolean includeRegex = Boolean.TRUE.equals(parameters.get("include_regex")); //$NON-NLS-1$
 
                 File workspaceRoot = getWorkspaceRoot();
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                File configFile = QaPaths.resolveConfigForProject(configPath, workspaceRoot,
+                        asString(parameters.get("project_name")), DEFAULT_CONFIG_PATH).file(); //$NON-NLS-1$
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     return ToolResult.failure("QA_STEPS_SEARCH_ERROR: config_path must be within workspace"); //$NON-NLS-1$

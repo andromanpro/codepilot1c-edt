@@ -174,7 +174,12 @@ public class QaRunTool extends AbstractTool {
             try {
                 File workspaceRoot = getWorkspaceRoot();
                 String configPath = parameters == null ? null : (String) parameters.get("config_path"); //$NON-NLS-1$
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                // Резолв с учётом проекта, см. QaPaths.resolveConfigForProject: без этого в воркспейсе
+                // с несколькими проектами запуск уходил на инфобазу и launch-конфигурацию чужого проекта.
+                QaPaths.ResolvedConfig resolvedConfig = QaPaths.resolveConfigForProject(configPath, workspaceRoot,
+                        parameters == null ? null : (String) parameters.get("project_name"), //$NON-NLS-1$
+                        DEFAULT_CONFIG_PATH);
+                File configFile = resolvedConfig.file();
                 boolean skipStatusCheck = parameters != null && Boolean.TRUE.equals(parameters.get("skip_status_check")); //$NON-NLS-1$
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {

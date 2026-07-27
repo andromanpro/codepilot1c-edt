@@ -83,7 +83,8 @@ public class QaMigrateConfigTool extends AbstractTool {
                 boolean dryRun = parameters != null && Boolean.TRUE.equals(parameters.get("dry_run")); //$NON-NLS-1$
                 boolean createBackup = parameters == null || !Boolean.FALSE.equals(parameters.get("create_backup")); //$NON-NLS-1$
 
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                File configFile = QaPaths.resolveConfigForProject(configPath, workspaceRoot, projectName,
+                        DEFAULT_CONFIG_PATH).file();
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     return ToolResult.failure("QA_MIGRATE_CONFIG_ERROR: config_path must be within workspace"); //$NON-NLS-1$

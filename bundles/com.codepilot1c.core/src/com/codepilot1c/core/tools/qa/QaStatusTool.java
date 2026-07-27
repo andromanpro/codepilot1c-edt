@@ -106,9 +106,25 @@ public class QaStatusTool extends AbstractTool {
                 boolean autoCreateConfig = parameters == null
                         || !Boolean.FALSE.equals(parameters.get("auto_create_config")); //$NON-NLS-1$
 
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                // Резолв с учётом проекта: явный config_path → <workspace>/<project>/tests/qa/qa-config.json
+                // → общий конфиг воркспейса. Раньше брался всегда общий, поэтому в воркспейсе с
+                // несколькими проектами статус показывал настройки и launch-конфигурацию чужого проекта.
+                QaPaths.ResolvedConfig resolvedConfig = QaPaths.resolveConfigForProject(configPath, workspaceRoot,
+                        projectNameParam, DEFAULT_CONFIG_PATH);
+                File configFile = resolvedConfig.file();
 
                 List<Check> checks = new ArrayList<>();
+                // Источник конфига всегда виден в ответе — иначе промах «взяли чужой проект»
+                // обнаруживается только после прогона не на той базе.
+                checks.add(Check.info("config.scope", "Конфиг взят: " + resolvedConfig.describe(), configFile)); //$NON-NLS-1$ //$NON-NLS-2$
+                if (resolvedConfig.source() == QaPaths.ConfigSource.WORKSPACE_DEFAULT
+                        && projectNameParam != null && !projectNameParam.isBlank()) {
+                    checks.add(Check.warn("config.scope", //$NON-NLS-1$
+                            "У проекта " + projectNameParam + " нет своего tests/qa/qa-config.json — взят общий" //$NON-NLS-1$ //$NON-NLS-2$
+                                    + " конфиг воркспейса. Если в воркспейсе несколько проектов, настройки и" //$NON-NLS-1$
+                                    + " инфобаза почти наверняка чужие; заведите свой через" //$NON-NLS-1$
+                                    + " qa_generate(command=init_config, project_name=…)", configFile)); //$NON-NLS-1$
+                }
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     checks.add(Check.error("config_path", "QA config must be within workspace", configFile)); //$NON-NLS-1$ //$NON-NLS-2$

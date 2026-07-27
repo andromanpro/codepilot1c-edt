@@ -75,7 +75,11 @@ public class QaExplainConfigTool extends AbstractTool {
                 String configPath = parameters == null ? null : (String) parameters.get("config_path"); //$NON-NLS-1$
                 boolean includeContract = parameters == null
                         || !Boolean.FALSE.equals(parameters.get("include_contract")); //$NON-NLS-1$
-                File configFile = QaPaths.resolveConfigFile(configPath, workspaceRoot, DEFAULT_CONFIG_PATH);
+                // Резолв с учётом проекта (QaPaths.resolveConfigForProject): в воркспейсе с
+                // несколькими проектами общий конфиг почти наверняка чужой.
+                File configFile = QaPaths.resolveConfigForProject(configPath, workspaceRoot,
+                        parameters == null ? null : (String) parameters.get("project_name"), //$NON-NLS-1$
+                        DEFAULT_CONFIG_PATH).file();
                 if (configFile != null && workspaceRoot != null
                         && !QaPaths.isWithinWorkspace(workspaceRoot, configFile)) {
                     return ToolResult.failure("QA_EXPLAIN_CONFIG_ERROR: config_path must be within workspace"); //$NON-NLS-1$
