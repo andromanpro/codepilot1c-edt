@@ -130,6 +130,18 @@ public final class ProviderMessageContentSerializer {
         return imageBlock;
     }
 
+    /**
+     * Builds a {@code data:<mime>;base64,<data>} URI for an attachment, or {@code null}
+     * when the attachment cannot be read. Shared with non-OpenAI transports (e.g. the
+     * Codex Responses builder) that also embed images as data URIs.
+     *
+     * @param attachment the attachment to encode
+     * @return the data URI, or {@code null}
+     */
+    public static String toImageDataUri(LlmAttachment attachment) {
+        return toDataUri(attachment);
+    }
+
     private static String toDataUri(LlmAttachment attachment) {
         EncodedBinary encoded = readBinary(attachment);
         if (encoded == null) {

@@ -346,7 +346,7 @@ public class BslSemanticService {
         return new BslModuleContextResult(
                 request.getProjectName(),
                 request.getFilePath(),
-                normalizeModuleType(context.module().getModuleType()),
+                effectiveModuleType(request.getFilePath(), context.module().getModuleType()),
                 owner != null ? owner.eClass().getName() : null,
                 owner != null ? extractName(owner) : null,
                 owner != null ? EcoreUtil.getURI(owner).toString() : null,
@@ -1007,6 +1007,14 @@ public class BslSemanticService {
             return symbol;
         }
         return symbol + "=" + value; //$NON-NLS-1$
+    }
+
+    private String effectiveModuleType(String filePath, ModuleType moduleType) {
+        String normalized = normalizeModuleType(moduleType);
+        if (filePath != null && filePath.replace('\\', '/').endsWith("/CommandModule.bsl")) { //$NON-NLS-1$
+            return "COMMAND_MODULE"; //$NON-NLS-1$
+        }
+        return normalized;
     }
 
     private String normalizeModuleType(ModuleType moduleType) {

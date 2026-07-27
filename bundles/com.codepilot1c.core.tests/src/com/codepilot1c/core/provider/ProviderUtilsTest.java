@@ -16,9 +16,9 @@ public class ProviderUtilsTest {
         ProviderCapabilities capabilities = ProviderUtils.capabilitiesFor(configured(ProviderType.CODEPILOT_BACKEND));
 
         assertTrue(capabilities.isCodePilotBackend());
-        assertTrue(capabilities.supportsBackendOptimizations());
         assertTrue(capabilities.supportsPromptCacheHeaders());
         assertTrue(capabilities.supportsResolvedModel());
+        assertTrue(capabilities.supportsTextToolCallFallback());
     }
 
     @Test
@@ -26,9 +26,9 @@ public class ProviderUtilsTest {
         ProviderCapabilities capabilities = ProviderUtils.capabilitiesFor(configured(ProviderType.OPENAI_COMPATIBLE));
 
         assertFalse(capabilities.isCodePilotBackend());
-        assertFalse(capabilities.supportsBackendOptimizations());
         assertFalse(capabilities.supportsPromptCacheHeaders());
         assertFalse(capabilities.supportsResolvedModel());
+        assertFalse(capabilities.supportsTextToolCallFallback());
         assertTrue(capabilities.supportsImageInput());
         assertTrue(capabilities.supportsDocumentInput());
     }
@@ -38,7 +38,6 @@ public class ProviderUtilsTest {
         DynamicLlmProvider provider = new DynamicLlmProvider(configured(ProviderType.CODEPILOT_BACKEND));
 
         assertTrue(ProviderUtils.isCodePilotBackend(provider));
-        assertTrue(ProviderUtils.supportsBackendOptimizations(provider));
     }
 
     @Test

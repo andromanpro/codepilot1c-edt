@@ -9,7 +9,6 @@ package com.codepilot1c.core.tools.memory;
 
 import java.util.concurrent.CompletableFuture;
 
-import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.memory.MemoryCategory;
 import com.codepilot1c.core.memory.MemoryEntry;
 import com.codepilot1c.core.memory.MemoryService;
@@ -39,8 +38,6 @@ import com.google.gson.JsonObject;
     tags = {"memory", "workspace"}
 )
 public class RememberFactTool extends AbstractTool {
-
-    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(RememberFactTool.class);
 
     private static final String SCHEMA = """
             {
@@ -116,7 +113,7 @@ public class RememberFactTool extends AbstractTool {
             }
 
             MemoryService.remember(projectPath, entry);
-            LOG.info("RememberFactTool: saved fact [" + category + "] " + content); //$NON-NLS-1$ //$NON-NLS-2$
+            log.info("RememberFactTool: saved fact [" + category + "] " + content); //$NON-NLS-1$ //$NON-NLS-2$
 
             JsonObject result = new JsonObject();
             result.addProperty("status", "saved"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -154,7 +151,7 @@ public class RememberFactTool extends AbstractTool {
                 return session.getProjectPath();
             }
         } catch (Exception e) {
-            LOG.warn("RememberFactTool: could not resolve session project path", e); //$NON-NLS-1$
+            log.warn("RememberFactTool: could not resolve session project path", e); //$NON-NLS-1$
         }
         try {
             var root = org.eclipse.core.resources.ResourcesPlugin.getWorkspace().getRoot();
@@ -165,7 +162,7 @@ public class RememberFactTool extends AbstractTool {
                 }
             }
         } catch (Exception e) {
-            LOG.warn("RememberFactTool: could not resolve project path", e); //$NON-NLS-1$
+            log.warn("RememberFactTool: could not resolve project path", e); //$NON-NLS-1$
         }
         return null;
     }

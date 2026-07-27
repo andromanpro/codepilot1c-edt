@@ -514,7 +514,7 @@ public class VibeCorePlugin extends Plugin {
                 BackendConfig.LITELLM_BASE_URL,
                 apiKey,
                 "auto", //$NON-NLS-1$
-                4096);
+                BackendConfig.DEFAULT_MAX_OUTPUT_TOKENS);
         config.setStreamingEnabled(true);
         registry.setBackendProvider(new DynamicLlmProvider(config));
         if (activateIfNoConfiguredProvider

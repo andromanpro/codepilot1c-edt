@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
+import com.codepilot1c.core.provider.codex.CodexOAuthConstants;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -152,6 +153,11 @@ public class ModelFetchService {
      * @return a future with the fetch result
      */
     public CompletableFuture<FetchResult> fetchModels(String baseUrl, String apiKey, ProviderType type) {
+        if (type == ProviderType.OPENAI_CODEX) {
+            // The set of models a ChatGPT account may use is controlled by OpenAI and is not
+            // exposed via a public HTTP endpoint; offer the curated candidate list instead.
+            return CompletableFuture.completedFuture(FetchResult.success(codexCuratedModels()));
+        }
         if (!type.supportsModelListing()) {
             return CompletableFuture.completedFuture(
                     FetchResult.failure("This provider type does not support model listing")); //$NON-NLS-1$
@@ -294,6 +300,14 @@ public class ModelFetchService {
         models.sort((a, b) -> a.getId().compareToIgnoreCase(b.getId()));
 
         return FetchResult.success(models);
+    }
+
+    private static List<ModelInfo> codexCuratedModels() {
+        List<ModelInfo> models = new ArrayList<>();
+        for (String id : CodexOAuthConstants.KNOWN_MODELS) {
+            models.add(new ModelInfo(id, id, "openai-codex")); //$NON-NLS-1$
+        }
+        return models;
     }
 
     /**

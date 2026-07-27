@@ -2,17 +2,17 @@ Process the local planning bundle for this repository through the Claude -> Code
 
 Planning source of truth:
 
-- `/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface/BACKLOG.md`
-- `/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface/EXECUTION-SLICE.md`
+- `/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface/BACKLOG.md`
+- `/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface/EXECUTION-SLICE.md`
 
 Workflow:
 
-1. Check `/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface/queue/todo/`.
+1. Check `/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface/queue/todo/`.
 2. If queue tasks already exist there, run exactly this command:
 
    ```bash
    RUN_ID="auto-$(date +%Y%m%d-%H%M%S)" \
-   QUEUE_DIR=/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface/queue \
+   QUEUE_DIR=/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface/queue \
    QUEUE_RUNS_DIR=/Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-plan/qwen-runtime-surface/queue-runs \
    FLOW_RUNS_ROOT=/Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-plan/qwen-runtime-surface/flow-runs \
    WORKTREE_PARENT=/Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-plan/qwen-runtime-surface/_worktrees \
@@ -27,7 +27,7 @@ Workflow:
 
    ```bash
    python3 /Users/alexorlik/repo/codepilot1c-oss/tools/qwen-codex-plan-sync.py apply-results \
-     --plan-root /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface \
+     --plan-root /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface \
      --queue-run-dir /Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-plan/qwen-runtime-surface/queue-runs/$RUN_ID \
      --approved-status done \
      --no-changes-status blocked \
@@ -39,14 +39,14 @@ Workflow:
 4. If `/queue/todo/` is empty, run exactly this command instead to enqueue one new task from the plan bundle and process it:
 
    ```bash
-   QUEUE_DIR=/Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface/queue \
+   QUEUE_DIR=/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface/queue \
    NEEDS_HUMAN_PLAN_STATUS=in_progress \
    CLAUDE_LAUNCH_MODE=direct \
    AUTO_GENERATE_REVIEW_FOLLOWUPS=true \
    FOLLOWUP_MAX_FINDINGS=2 \
    MAX_TASKS=1 \
    bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
-     /Users/alexorlik/repo/codepilot1c-oss/.planning/local/qwen-runtime-surface
+     /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
    ```
 
 5. Summarize:

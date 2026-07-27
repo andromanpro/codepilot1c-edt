@@ -31,11 +31,14 @@ public class ExtensionBuildProfile implements AgentProfile {
             "read_file",
             "edit_file",
             "write_file",
+            "workspace_copy_transform",
+            "workspace_copy_transform_batch",
             "glob",
             "grep",
             "list_files",
             // Extension composite tool + smoke
             "extension_manage",
+            "migrate_to_extension_native",
             "edt_extension_smoke",
             // External composite tool + smoke
             "external_manage",
@@ -84,6 +87,7 @@ public class ExtensionBuildProfile implements AgentProfile {
                 PermissionRule.allow("grep").forAllResources(),
                 PermissionRule.allow("list_files").forAllResources(),
                 PermissionRule.allow("extension_manage").forAllResources(),
+                PermissionRule.allow("migrate_to_extension_native").forAllResources(),
                 PermissionRule.allow("edt_extension_smoke").forAllResources(),
                 PermissionRule.allow("external_manage").forAllResources(),
                 PermissionRule.allow("edt_external_smoke").forAllResources(),
@@ -103,6 +107,12 @@ public class ExtensionBuildProfile implements AgentProfile {
                         .forAllResources(),
                 PermissionRule.ask("write_file")
                         .withDescription("Создание файлов")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform")
+                        .withDescription("Копирование workspace файла с заменами")
+                        .forAllResources(),
+                PermissionRule.ask("workspace_copy_transform_batch")
+                        .withDescription("Пакетное копирование workspace файлов с заменами")
                         .forAllResources(),
                 PermissionRule.ask("extension_manage")
                         .withDescription("Управление расширениями конфигурации")

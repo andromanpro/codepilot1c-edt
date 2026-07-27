@@ -10,6 +10,9 @@ package com.codepilot1c.core.provider;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Method;
+import java.util.Arrays;
+
 import org.junit.Test;
 
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
@@ -20,6 +23,21 @@ import com.codepilot1c.core.provider.config.ProviderType;
  * gating added in Plan 2.3.
  */
 public class ProviderCapabilitiesTest {
+
+    @Test
+    public void backendOptimizationCapabilityIsNotPartOfPublicApi() {
+        String getter = "supportsBackend" + "Optimizations"; //$NON-NLS-1$ //$NON-NLS-2$
+        String builder = "backend" + "Optimizations"; //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(Arrays.stream(ProviderCapabilities.class.getDeclaredMethods())
+                .map(Method::getName)
+                .anyMatch(name -> name.equals(getter)));
+        assertFalse(Arrays.stream(ProviderCapabilities.Builder.class.getDeclaredMethods())
+                .map(Method::getName)
+                .anyMatch(name -> name.equals(builder)));
+        assertFalse(Arrays.stream(ProviderUtils.class.getDeclaredMethods())
+                .map(Method::getName)
+                .anyMatch(name -> name.equals(getter)));
+    }
 
     @Test
     public void codePilotBackendSupportsStreamUsageByDefault() {
@@ -96,6 +114,29 @@ public class ProviderCapabilitiesTest {
 
         ProviderCapabilities unset = ProviderCapabilities.builder().build();
         assertFalse(unset.supportsStreamUsage());
+    }
+
+    @Test
+    public void inferImageInputRecognizesModernMultimodalFamilies() {
+        // The reported case: GPT-5.5 must be treated as multimodal.
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5.5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-5o-mini")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("GPT-5.5")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gpt-4o")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("o1")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("o3-mini")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("claude-opus-4-8")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("anthropic/claude-3.5-sonnet")); //$NON-NLS-1$
+        assertTrue(ProviderCapabilities.inferImageInputFromModel("gemini-2.0-flash")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void inferImageInputRejectsTextOnlyAndBlankModels() {
+        assertFalse(ProviderCapabilities.inferImageInputFromModel(null));
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("")); //$NON-NLS-1$
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("text-embedding-3-large")); //$NON-NLS-1$
+        assertFalse(ProviderCapabilities.inferImageInputFromModel("deepseek-chat")); //$NON-NLS-1$
     }
 
     private static LlmProviderConfig configured(ProviderType type, String model) {

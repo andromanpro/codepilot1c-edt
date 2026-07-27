@@ -31,7 +31,7 @@ public class EdtValidateRequestToolTest {
                         "command", "create_report", //$NON-NLS-1$ //$NON-NLS-2$
                         "project", "DemoConfiguration", //$NON-NLS-1$ //$NON-NLS-2$
                         "external_project", "ExtReports", //$NON-NLS-1$ //$NON-NLS-2$
-                        "name", "SalesReport" //$NON-NLS-1$ //$NON-NLS-2$
+                        "name", "SalesReport" //$NON-NLS-1$
                 ))).join();
 
         assertTrue(result.isSuccess());

@@ -136,6 +136,93 @@ public class BrowserChatPanelToolCallTest {
                 "tool execution stage should be represented by the tool card, not a duplicate typing indicator"); //$NON-NLS-1$
     }
 
+    @Test
+    public void streamingReasoningUpdatePreservesExistingToolCards() {
+        panel.addMessage("AI", "Начало", true); //$NON-NLS-1$ //$NON-NLS-2$
+        panel.addToolCallCards(List.of(
+                new ToolCallDisplayData("call_stream", "read_file", //$NON-NLS-1$ //$NON-NLS-2$
+                        "{\"path\":\"src/Configuration/Configuration.mdo\"}") //$NON-NLS-1$
+        ));
+        waitUntil(() -> number("return document.querySelectorAll('.tool-call').length;") == 1, //$NON-NLS-1$
+                "tool-call card was not rendered before streaming update"); //$NON-NLS-1$
+
+        panel.updateLastMessageWithReasoning("Финальный текст", "Проверяю файлы"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        waitUntil(() -> booleanValue("return document.querySelector('.message.assistant .message-text') " //$NON-NLS-1$
+                        + "&& document.querySelector('.message.assistant .message-text').textContent.indexOf('Финальный текст') >= 0;"), //$NON-NLS-1$
+                "streamed message text was not updated"); //$NON-NLS-1$
+        assertEquals(1, number("return document.querySelectorAll('.message.assistant .tool-call').length;")); //$NON-NLS-1$
+        assertTrue(booleanValue("return document.querySelector('[data-tool-call-id=\"call_stream\"]') !== null;")); //$NON-NLS-1$
+        assertTrue(booleanValue("var tool = document.querySelector('[data-tool-call-id=\"call_stream\"]');" //$NON-NLS-1$
+                + "var text = document.querySelector('.message.assistant .message-text');" //$NON-NLS-1$
+                + "return !!(tool && text && (tool.compareDocumentPosition(text) " //$NON-NLS-1$
+                + "& Node.DOCUMENT_POSITION_FOLLOWING));")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void duplicateToolCallIdUpdatesExistingCardInsteadOfAppending() {
+        panel.addMessage("AI", "", true); //$NON-NLS-1$ //$NON-NLS-2$
+        panel.addToolCallCards(List.of(
+                new ToolCallDisplayData("call_duplicate", "read_file", //$NON-NLS-1$ //$NON-NLS-2$
+                        "{\"path\":\"first.txt\"}") //$NON-NLS-1$
+        ));
+        waitUntil(() -> number("return document.querySelectorAll('.tool-call').length;") == 1, //$NON-NLS-1$
+                "initial tool-call card was not rendered"); //$NON-NLS-1$
+
+        panel.addToolCallCards(List.of(
+                new ToolCallDisplayData("call_duplicate", "read_file", //$NON-NLS-1$ //$NON-NLS-2$
+                        "{\"path\":\"second.txt\"}") //$NON-NLS-1$
+        ));
+
+        drainEvents();
+        assertEquals(1, number("return document.querySelectorAll('[data-tool-call-id=\"call_duplicate\"]').length;")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void renderAllMessagesKeepsToolCardsWithOriginalAssistantTurn() {
+        panel.addMessage("AI", "Первый ответ", true); //$NON-NLS-1$ //$NON-NLS-2$
+        panel.addToolCallCards(List.of(
+                new ToolCallDisplayData("call_first_turn", "glob", //$NON-NLS-1$ //$NON-NLS-2$
+                        "{\"pattern\":\"**/*.java\"}") //$NON-NLS-1$
+        ));
+        waitUntil(() -> number("return document.querySelectorAll('.tool-call').length;") == 1, //$NON-NLS-1$
+                "tool-call card was not rendered on first turn"); //$NON-NLS-1$
+
+        panel.addMessage("AI", "Второй ответ", true); //$NON-NLS-1$ //$NON-NLS-2$
+        panel.renderAllMessages();
+        waitUntil(() -> number("return document.querySelectorAll('.message.assistant').length;") == 2, //$NON-NLS-1$
+                "assistant messages were not re-rendered"); //$NON-NLS-1$
+
+        assertEquals(1, number("return document.querySelectorAll('.message.assistant')[0].querySelectorAll('.tool-call').length;")); //$NON-NLS-1$
+        assertEquals(0, number("return document.querySelectorAll('.message.assistant')[1].querySelectorAll('.tool-call').length;")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void finalAssistantMessageStaysAfterToolOnlyTurn() {
+        panel.addMessage("AI", "", true); //$NON-NLS-1$ //$NON-NLS-2$
+        panel.removeLastMessageIfEmptyAssistant();
+        panel.addToolCallCards(List.of(
+                new ToolCallDisplayData("call_tool_only", "edit_file", //$NON-NLS-1$ //$NON-NLS-2$
+                        "{\"path\":\"plan.md\"}") //$NON-NLS-1$
+        ));
+        panel.addMessage("AI", "Финальный ответ", true); //$NON-NLS-1$ //$NON-NLS-2$
+
+        waitUntil(() -> number("return document.querySelectorAll('#messages .message.assistant').length;") == 2, //$NON-NLS-1$
+                "assistant messages were not rendered"); //$NON-NLS-1$
+        waitUntil(() -> number("return document.querySelectorAll('#messages .tool-call').length;") == 1, //$NON-NLS-1$
+                "tool-call card was not rendered"); //$NON-NLS-1$
+
+        assertTrue(booleanValue(
+                "var assistants = document.querySelectorAll('#messages .message.assistant');" //$NON-NLS-1$
+              + "var first = assistants[0];" //$NON-NLS-1$
+              + "var second = assistants[1];" //$NON-NLS-1$
+              + "var tool = document.querySelector('[data-tool-call-id=\"call_tool_only\"]');" //$NON-NLS-1$
+              + "return !!(first && second && tool " //$NON-NLS-1$
+              + "&& first.contains(tool) " //$NON-NLS-1$
+              + "&& !second.contains(tool) " //$NON-NLS-1$
+              + "&& (tool.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING));")); //$NON-NLS-1$
+    }
+
     private int number(String script) {
         Object value = panel.evaluateScript(script);
         if (value instanceof Number number) {

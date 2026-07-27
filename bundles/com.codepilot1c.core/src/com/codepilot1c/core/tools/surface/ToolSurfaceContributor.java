@@ -10,7 +10,7 @@ package com.codepilot1c.core.tools.surface;
 import com.codepilot1c.core.model.ToolDefinition;
 
 /**
- * Contract for provider-aware augmentation of model-facing tool definitions.
+ * Contract for provider-neutral augmentation of model-facing tool definitions.
  */
 public interface ToolSurfaceContributor {
 

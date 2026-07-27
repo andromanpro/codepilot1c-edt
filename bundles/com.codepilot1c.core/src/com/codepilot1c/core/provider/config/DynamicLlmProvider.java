@@ -42,6 +42,7 @@ import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderException;
 import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.provider.ProviderUtils;
+import com.codepilot1c.core.provider.codex.CodexProvider;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -72,6 +73,7 @@ public class DynamicLlmProvider implements ILlmProvider {
     private final OpenAiStreamingToolCallParser streamingToolCallParser;
     private final ProviderHttpTransport httpTransport;
     private final Gson gson;
+    private final ILlmProvider codexDelegate;
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private CompletableFuture<?> currentRequest;
     private LlmRequest currentLlmRequest; // Store for tool support
@@ -93,6 +95,12 @@ public class DynamicLlmProvider implements ILlmProvider {
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
         this.httpTransport = new ProviderHttpTransport(client);
+
+        // OPENAI_CODEX uses the Responses API (different wire format and OAuth headers); route it
+        // to a dedicated provider instead of the chat/completions path implemented below.
+        this.codexDelegate = config.getType() == ProviderType.OPENAI_CODEX
+                ? new CodexProvider(config)
+                : null;
     }
 
     @Override
@@ -107,16 +115,25 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public boolean isConfigured() {
+        if (codexDelegate != null) {
+            return codexDelegate.isConfigured();
+        }
         return config.isConfigured();
     }
 
     @Override
     public boolean supportsStreaming() {
+        if (codexDelegate != null) {
+            return codexDelegate.supportsStreaming();
+        }
         return config.isStreamingEnabled();
     }
 
     @Override
     public ProviderCapabilities getCapabilities() {
+        if (codexDelegate != null) {
+            return codexDelegate.getCapabilities();
+        }
         return ProviderUtils.capabilitiesFor(config);
     }
 
@@ -129,6 +146,9 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public CompletableFuture<LlmResponse> complete(LlmRequest request) {
+        if (codexDelegate != null) {
+            return codexDelegate.complete(request);
+        }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
@@ -150,6 +170,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
+        if (codexDelegate != null) {
+            codexDelegate.streamComplete(request, consumer);
+            return;
+        }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
@@ -400,6 +424,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void cancel() {
+        if (codexDelegate != null) {
+            codexDelegate.cancel();
+            return;
+        }
         cancelled.set(true);
         if (currentRequest != null) {
             currentRequest.cancel(true);
@@ -408,6 +436,10 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public void dispose() {
+        if (codexDelegate != null) {
+            codexDelegate.dispose();
+            return;
+        }
         cancel();
     }
 
@@ -1057,12 +1089,16 @@ public class DynamicLlmProvider implements ILlmProvider {
             if (name == null || name.isBlank()) {
                 continue;
             }
-            Optional<String> arguments = ToolCallArguments.normalize(function.get("arguments")); //$NON-NLS-1$
+            Optional<ToolCallArguments.Normalized> arguments =
+                    ToolCallArguments.normalizeWithStatus(function.get("arguments")); //$NON-NLS-1$
             if (arguments.isEmpty()) {
                 LOG.warn("Dropping tool call %s (%s): arguments is not a JSON object", id, name); //$NON-NLS-1$
                 continue;
             }
-            toolCalls.add(new ToolCall(id, name, arguments.get()));
+            if (arguments.get().repaired()) {
+                LOG.warn("Tool call %s (%s): arguments repaired from malformed payload", id, name); //$NON-NLS-1$
+            }
+            toolCalls.add(new ToolCall(id, name, arguments.get().json(), arguments.get().repaired()));
         }
         return toolCalls;
     }

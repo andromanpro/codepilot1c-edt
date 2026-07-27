@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLAN_ROOT_DEFAULT="$ROOT_DIR/.planning/local/qwen-runtime-surface"
+PLAN_ROOT_DEFAULT="$ROOT_DIR/.qwen-runtime-surface"
 PLAN_ROOT="${PLAN_ROOT:-}"
 PLAN_SYNC_SCRIPT="${PLAN_SYNC_SCRIPT:-$ROOT_DIR/tools/qwen-codex-plan-sync.py}"
 QUEUE_SCRIPT="${QUEUE_SCRIPT:-$ROOT_DIR/tools/run-qwen-codex-queue.sh}"

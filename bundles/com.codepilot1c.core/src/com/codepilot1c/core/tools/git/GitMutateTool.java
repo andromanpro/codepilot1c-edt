@@ -96,7 +96,7 @@ public class GitMutateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Выполняет разрешённые git-изменения. Для существующего EDT проекта передавай project_name, а для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$
+        return "Выполняет разрешённые git-изменения. Для существующего репозитория используй project_name или repo_path, либо текущий EDT-контекст; для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$
     }
 
     @Override
@@ -141,8 +141,6 @@ public class GitMutateTool extends AbstractTool {
      * rejected by the Anthropic Claude input_schema validator (see GitHub issue #31).
      */
     static void validateArguments(GitOperation operation, Path repoPath, Map<String, Object> parameters) {
-        String projectName = asString(parameters.get("project_name")); //$NON-NLS-1$
-
         // init/clone need an explicit repo_path (no project-context fallback).
         if ((operation == GitOperation.INIT || operation == GitOperation.CLONE) && repoPath == null) {
             throw new GitToolException(GitErrorCode.INVALID_ARGUMENT,

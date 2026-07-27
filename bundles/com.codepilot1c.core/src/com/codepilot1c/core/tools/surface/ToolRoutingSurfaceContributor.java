@@ -11,7 +11,7 @@ import java.util.EnumMap;
 import java.util.Map;
 
 /**
- * Adds backend-specific execution discipline for built-in tools.
+ * Adds provider-neutral execution discipline for built-in tools.
  */
 public final class ToolRoutingSurfaceContributor implements ToolSurfaceContributor {
 
@@ -21,7 +21,6 @@ public final class ToolRoutingSurfaceContributor implements ToolSurfaceContribut
     public boolean supports(ToolSurfaceContext context) {
         return context != null
                 && context.isBuiltIn()
-                && context.isBackendSelectedInUi()
                 && context.getCategory() != ToolCategory.DYNAMIC;
     }
 
