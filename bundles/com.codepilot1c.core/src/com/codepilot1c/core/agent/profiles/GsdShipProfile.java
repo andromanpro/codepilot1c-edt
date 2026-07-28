@@ -15,9 +15,9 @@ import com.codepilot1c.core.permissions.PermissionRule;
 /**
  * GSD Ship-фаза: финализация и доставка изменений.
  *
- * <p>Допускает минимальные мутации репозитория/артефактов: git-операции
- * и запись release-нот. Помнит факты. Если используются EDT-мутации,
- * edt_validate_request остаётся обязательным.</p>
+ * <p>Отвечает только за git/release-артефакты. Допускает минимальные
+ * git-операции и запись release-нот. Помнит факты. Не выполняет и
+ * не предполагает EDT-мутаций.</p>
  */
 public final class GsdShipProfile extends GsdPhaseProfile {
 

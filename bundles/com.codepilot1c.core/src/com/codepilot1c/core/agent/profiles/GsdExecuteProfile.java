@@ -15,9 +15,11 @@ import com.codepilot1c.core.permissions.PermissionRule;
 /**
  * GSD Execute-фаза: реализация плана минимальными обратимыми изменениями.
  *
- * <p>Включает ограниченный набор project/EDT мутаций: редактирование файлов,
- * подготовку артефактов модулей, обновление задач. Перед EDT-мутациями
- * обязателен edt_validate_request; validation_token не обходится.</p>
+ * <p>Включает project/EDT мутации: редактирование файлов, подготовку модулей
+ * и CRUD метаданных/форм. Перед любой EDT-мутацией обязателен
+ * edt_validate_request; validation_token не обходится. write_file напрямую
+ * для .mdo/Configuration.mdo запрещён — такие изменения идут только через
+ * семантические EDT mutation tools.</p>
  */
 public final class GsdExecuteProfile extends GsdPhaseProfile {
 
@@ -31,6 +33,12 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
             "edit_file", //$NON-NLS-1$
             "write_file", //$NON-NLS-1$
             "ensure_module_artifact", //$NON-NLS-1$
+            "create_metadata", //$NON-NLS-1$
+            "create_form", //$NON-NLS-1$
+            "add_metadata_child", //$NON-NLS-1$
+            "update_metadata", //$NON-NLS-1$
+            "mutate_form_model", //$NON-NLS-1$
+            "delete_metadata", //$NON-NLS-1$
             "remember_fact" //$NON-NLS-1$
     );
 
@@ -40,6 +48,10 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
             PermissionRule.allow("gsd_transition").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("edt_validate_request").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("remember_fact").forAllResources(), //$NON-NLS-1$
+            PermissionRule.deny("write_file") //$NON-NLS-1$
+                    .withDescription("Прямая запись .mdo и Configuration.mdo запрещена; используй EDT mutation tools") //$NON-NLS-1$
+                    .forResourcePattern("**/*.mdo") //$NON-NLS-1$
+                    .build(),
             PermissionRule.ask("edit_file") //$NON-NLS-1$
                     .withDescription("Редактирование файлов проекта") //$NON-NLS-1$
                     .forAllResources(),
@@ -48,6 +60,24 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
                     .forAllResources(),
             PermissionRule.ask("ensure_module_artifact") //$NON-NLS-1$
                     .withDescription("Создание/подготовка файлов модулей EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("create_metadata") //$NON-NLS-1$
+                    .withDescription("Создание объектов метаданных EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("create_form") //$NON-NLS-1$
+                    .withDescription("Создание управляемых форм EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("add_metadata_child") //$NON-NLS-1$
+                    .withDescription("Создание вложенных объектов метаданных EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("update_metadata") //$NON-NLS-1$
+                    .withDescription("Обновление свойств объектов метаданных EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("mutate_form_model") //$NON-NLS-1$
+                    .withDescription("Обновление модели управляемых форм EDT") //$NON-NLS-1$
+                    .forAllResources(),
+            PermissionRule.ask("delete_metadata") //$NON-NLS-1$
+                    .withDescription("Удаление объектов метаданных EDT") //$NON-NLS-1$
                     .forAllResources()
     );
 
@@ -56,7 +86,8 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
                 ID,
                 "GSD Исполнение", //$NON-NLS-1$
                 "Фаза GSD: реализация задач плана. Допускает минимальные " //$NON-NLS-1$
-                        + "project/EDT мутации только через edt_validate_request + validation_token.", //$NON-NLS-1$
+                        + "project/EDT мутации только через edt_validate_request + validation_token. " //$NON-NLS-1$
+                        + "Прямая запись .mdo/Configuration.mdo запрещена.", //$NON-NLS-1$
                 ALLOWED_TOOLS,
                 DEFAULT_PERMISSIONS,
                 40,

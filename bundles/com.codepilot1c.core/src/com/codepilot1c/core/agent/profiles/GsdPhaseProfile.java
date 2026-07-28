@@ -64,7 +64,6 @@ abstract class GsdPhaseProfile implements AgentProfile {
                 "bsl_module_exports", //$NON-NLS-1$
                 "inspect_platform_reference", //$NON-NLS-1$
                 "skill", //$NON-NLS-1$
-                "task", //$NON-NLS-1$
                 "discover_tools" //$NON-NLS-1$
         ));
         BASE_READ_TOOLS = Collections.unmodifiableSet(tools);
@@ -107,7 +106,6 @@ abstract class GsdPhaseProfile implements AgentProfile {
                 PermissionRule.allow("bsl_module_exports").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("inspect_platform_reference").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("skill").forAllResources(), //$NON-NLS-1$
-                PermissionRule.allow("task").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("discover_tools").forAllResources() //$NON-NLS-1$
         );
         BASE_READ_PERMISSIONS = Collections.unmodifiableList(rules);

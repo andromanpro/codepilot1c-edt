@@ -430,7 +430,7 @@ public final class AgentPromptTemplates {
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
-        sb.append("inspect_platform_reference, skill, task, discover_tools, "); //$NON-NLS-1$
+        sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
         sb.append("gsd_get_state, gsd_record_decision, gsd_transition.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Краткое резюме обсуждения, цель и scope.\n"); //$NON-NLS-1$
@@ -463,7 +463,7 @@ public final class AgentPromptTemplates {
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
-        sb.append("inspect_platform_reference, skill, task, discover_tools, "); //$NON-NLS-1$
+        sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
         sb.append("gsd_get_state, gsd_create_plan, gsd_transition.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Краткий анализ: что есть, ограничения, риски.\n"); //$NON-NLS-1$
@@ -483,9 +483,10 @@ public final class AgentPromptTemplates {
         sb.append("## Операционный контракт\n"); //$NON-NLS-1$
         sb.append("1. Следуй плану задач; при необходимости вернись в Plan-фазу через gsd_transition.\n"); //$NON-NLS-1$
         sb.append("2. Для каждой задачи сначала собери контекст, затем примени подходящий инструмент.\n"); //$NON-NLS-1$
-        sb.append("3. Перед любыми EDT/метаданными/формами мутациями обязательно вызови edt_validate_request.\n"); //$NON-NLS-1$
-        sb.append("4. Передай validation_token из ответа edt_validate_request в мутационный инструмент без изменения payload.\n"); //$NON-NLS-1$
-        sb.append("5. Не обходи validation_token контракт: без токена не вызывай мутации EDT.\n"); //$NON-NLS-1$
+        sb.append("3. Flow EDT-мутаций: edt_validate_request -> передай полученный validation_token без изменений -> "); //$NON-NLS-1$
+        sb.append("create_metadata/create_form/add_metadata_child/update_metadata/mutate_form_model/delete_metadata -> get_diagnostics.\n"); //$NON-NLS-1$
+        sb.append("4. Не обходи validation_token контракт: без токена не вызывай мутации EDT.\n"); //$NON-NLS-1$
+        sb.append("5. Явно запрещено write_file для *.mdo/Configuration.mdo; метаданные изменяй только через семантические EDT mutation tools с validation_token.\n"); //$NON-NLS-1$
         sb.append("6. Обновляй статус задач через gsd_update_task по завершении шага.\n"); //$NON-NLS-1$
         sb.append("7. После изменений запускай get_diagnostics и устраняй errors/warnings.\n\n"); //$NON-NLS-1$
         sb.append("## Инструменты\n"); //$NON-NLS-1$
@@ -496,9 +497,12 @@ public final class AgentPromptTemplates {
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
-        sb.append("inspect_platform_reference, skill, task, discover_tools, "); //$NON-NLS-1$
+        sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
         sb.append("gsd_get_state, gsd_update_task, gsd_transition, "); //$NON-NLS-1$
-        sb.append("edt_validate_request, edit_file, write_file, ensure_module_artifact, remember_fact.\n\n"); //$NON-NLS-1$
+        sb.append("edt_validate_request, "); //$NON-NLS-1$
+        sb.append("edit_file, write_file, ensure_module_artifact, "); //$NON-NLS-1$
+        sb.append("create_metadata, create_form, add_metadata_child, update_metadata, mutate_form_model, delete_metadata, "); //$NON-NLS-1$
+        sb.append("remember_fact.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Что реализовано и какие файлы/объекты затронуты.\n"); //$NON-NLS-1$
         sb.append("2. gsd_update_task с новым статусом и evidence-комментарием.\n"); //$NON-NLS-1$
@@ -530,7 +534,7 @@ public final class AgentPromptTemplates {
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
-        sb.append("inspect_platform_reference, skill, task, discover_tools, "); //$NON-NLS-1$
+        sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
         sb.append("gsd_get_state, gsd_record_evidence, gsd_transition.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Общий вердикт: passed / needs_fix / blocked с обоснованием.\n"); //$NON-NLS-1$
@@ -562,7 +566,7 @@ public final class AgentPromptTemplates {
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
-        sb.append("inspect_platform_reference, skill, task, discover_tools, "); //$NON-NLS-1$
+        sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
         sb.append("gsd_get_state, gsd_transition, git_mutate, write_file, remember_fact.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Список артефактов доставки и коммит/теги.\n"); //$NON-NLS-1$
