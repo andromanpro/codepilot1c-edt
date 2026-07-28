@@ -120,6 +120,9 @@ public class GsdRecordDecisionTool extends AbstractTool {
             } catch (IOException e) {
                 return ToolResult.failure("I/O error: " + e.getMessage(), //$NON-NLS-1$
                         GsdWorkflowService.buildResult(false, "gsd_record_decision", 0, null, GsdWorkflowService.ERR_IO)); //$NON-NLS-1$
+            } catch (RuntimeException e) {
+                return ToolResult.failure("Internal error: " + e.getMessage(), //$NON-NLS-1$
+                        GsdWorkflowService.buildResult(false, "gsd_record_decision", 0, null, GsdWorkflowService.ERR_INVALID)); //$NON-NLS-1$
             }
         });
     }
