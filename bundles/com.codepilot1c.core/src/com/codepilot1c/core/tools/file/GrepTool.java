@@ -213,9 +213,13 @@ public class GrepTool extends AbstractTool {
 
     private boolean matchesFilePattern(String name, String pattern) {
         if (pattern == null || pattern.isEmpty()) {
-            // Default to common code files
+            // Default to common code files plus EDT descriptors. Omitting .mdo/.form made a bare
+            // grep silently skip every metadata and form descriptor in an EDT workspace and answer
+            // "0 matches" — a false negative that reads as proof of absence.
             return name.endsWith(".bsl") || name.endsWith(".os") ||  //$NON-NLS-1$ //$NON-NLS-2$
-                   name.endsWith(".java") || name.endsWith(".xml"); //$NON-NLS-1$ //$NON-NLS-2$
+                   name.endsWith(".java") || name.endsWith(".xml") || //$NON-NLS-1$ //$NON-NLS-2$
+                   name.endsWith(".mdo") || name.endsWith(".form") || //$NON-NLS-1$ //$NON-NLS-2$
+                   name.endsWith(".dcs") || name.endsWith(".dcss"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         String regex = pattern
                 .replace(".", "\\.") //$NON-NLS-1$ //$NON-NLS-2$
