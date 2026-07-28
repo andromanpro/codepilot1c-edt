@@ -712,4 +712,181 @@ public class GsdStateStoreTest {
             assertFalse(e instanceof GsdCorruptException);
         }
     }
+
+    // ---- Fix: fail-closed save when primary was recovered from backup ------
+
+    @Test
+    public void saveWithCorruptPrimaryPreservesGoodBackupAndFails() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+
+        GsdState base = store.load();
+        GsdState first = store.save(new GsdState(GsdState.CURRENT_SCHEMA_VERSION, base.revision(),
+                GsdPhase.EXECUTING, "first", List.of(), List.of(), List.of(), List.of(), //$NON-NLS-1$
+                GsdSessionPointer.empty()));
+        GsdState second = store.save(new GsdState(GsdState.CURRENT_SCHEMA_VERSION, first.revision(),
+                GsdPhase.PLANNING, "second", List.of(), List.of(), List.of(), List.of(), //$NON-NLS-1$
+                GsdSessionPointer.empty()));
+
+        Path gsd = store.getGsdDirectory();
+        assertTrue("backup exists before corruption", Files.exists(gsd.resolve(GsdStateStore.STATE_BAK)));
+
+        // Corrupt the primary WITHOUT any intervening reloads — so the next read
+        // will detect recovery-needed (primary corrupt, backup valid) and the save
+        // should fail-closed per the fix.
+        Files.writeString(gsd.resolve(GsdStateStore.STATE_JSON),
+                "{ bad json ", StandardCharsets.UTF_8); //$NON-NLS-1$
+
+        // The backup still holds the good EXECUTING state.
+        String bakContent = Files.readString(gsd.resolve(GsdStateStore.STATE_BAK), StandardCharsets.UTF_8);
+        assertTrue("backup still contains good state", bakContent.contains("EXECUTING"));
+
+        // Attempting to save while primary is corrupt must fail closed,
+        // because readOutcome detects recovery-needed under the lock.
+        GsdStateStore store2 = new GsdStateStore(root);
+        // Build a state with the revision from the recovered backup (rev 1).
+        GsdState wantSave = new GsdState(GsdState.CURRENT_SCHEMA_VERSION, first.revision(),
+                GsdPhase.VERIFYING, "next-goal", List.of(), List.of(), List.of(), List.of(),
+                GsdSessionPointer.empty());
+
+        try {
+            store2.save(wantSave);
+            fail("expected GsdCorruptException when saving with corrupt/recovered primary"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue("error mentions recovery or corrupt", e.getMessage().contains("recovered")
+                    || e.getMessage().contains("corrupt")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        // Backup is still intact — no data loss.
+        String bakAfter = Files.readString(gsd.resolve(GsdStateStore.STATE_BAK), StandardCharsets.UTF_8);
+        assertTrue("backup preserved after failed save", bakAfter.contains("EXECUTING"));
+    }
+
+    // ---- Fix: strict enum adapters reject unknown values -------------------
+
+    @Test
+    public void unknownPhaseCausesParseCorruption() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+        Path statePath = store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON);
+        Files.createDirectories(store.getGsdDirectory());
+        String badJson = "{ " + //$NON-NLS-1$
+                "\"schemaVersion\":1," + //$NON-NLS-1$
+                "\"revision\":0," + //$NON-NLS-1$
+                "\"phase\":\"UNKNOWN_PHASE\",\"goal\":\"x\"," + //$NON-NLS-1$
+                "\"decisions\":[],\"tasks\":[],\"waves\":[],\"evidence\":[" + //$NON-NLS-1$
+                "{\"id\":\"e1\",\"text\":\"ev\",\"provenance\":\"OBSERVED\",\"taskIds\":[],\"createdAt\":\"2025-01-01T00:00:00Z\"}," + //$NON-NLS-1$
+                "]," + //$NON-NLS-1$
+                "\"sessionPointer\":{\"sessionId\":\"s\",\"workstreamId\":\"w\"}}"; //$NON-NLS-1$
+        Files.write(statePath, badJson.getBytes(StandardCharsets.UTF_8));
+
+        try {
+            new GsdStateStore(root).load();
+            fail("expected GsdCorruptException for unknown phase"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue("message mentions corruption or unknown value",
+                    e.getMessage().toLowerCase().contains("corrupt")
+                            || e.getMessage().toLowerCase().contains("unknown")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    @Test
+    public void unknownTaskStatusCausesParseCorruption() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+        Path statePath = store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON);
+        Files.createDirectories(store.getGsdDirectory());
+
+        String badJson = "{ " + //$NON-NLS-1$
+                "\"schemaVersion\":1,\"revision\":0,\"phase\":\"DISCOVERY\",\"goal\":\"x\"," + //$NON-NLS-1$
+                "\"decisions\":[],\"tasks\":[" + //$NON-NLS-1$
+                "{\"id\":\"t1\",\"text\":\"t\",\"status\":\"GHOST_STATUS\",\"waveId\":null,\"dependsOn\":[],\"evidenceIds\":[]}," + //$NON-NLS-1$
+                "],\"waves\":[],\"evidence\":[]," + //$NON-NLS-1$
+                "\"sessionPointer\":{\"sessionId\":\"s\",\"workstreamId\":\"w\"}}"; //$NON-NLS-1$
+        Files.write(statePath, badJson.getBytes(StandardCharsets.UTF_8));
+
+        try {
+            new GsdStateStore(root).load();
+            fail("expected GsdCorruptException for unknown task status"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue("message mentions corruption or unknown value",
+                    e.getMessage().toLowerCase().contains("corrupt")
+                            || e.getMessage().toLowerCase().contains("unknown")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    @Test
+    public void unknownProvenanceCausesParseCorruption() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+        Path statePath = store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON);
+        Files.createDirectories(store.getGsdDirectory());
+
+        String badJson = "{ " + //$NON-NLS-1$
+                "\"schemaVersion\":1,\"revision\":0,\"phase\":\"DISCOVERY\",\"goal\":\"x\"," + //$NON-NLS-1$
+                "\"decisions\":[],\"tasks\":[],\"waves\":[],\"evidence\":[" + //$NON-NLS-1$
+                "{\"id\":\"e1\",\"text\":\"ev\",\"provenance\":\"FAKE_PROVENANCE\",\"taskIds\":[],\"createdAt\":\"2025-01-01T00:00:00Z\"}" + //$NON-NLS-1$
+                "],\"sessionPointer\":{\"sessionId\":\"s\",\"workstreamId\":\"w\"}}"; //$NON-NLS-1$
+        Files.write(statePath, badJson.getBytes(StandardCharsets.UTF_8));
+
+        try {
+            new GsdStateStore(root).load();
+            fail("expected GsdCorruptException for unknown provenance"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue("message mentions corruption or unknown value",
+                    e.getMessage().toLowerCase().contains("corrupt")
+                            || e.getMessage().toLowerCase().contains("unknown")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    // ---- Fix: guard validation rejects invalid states even from backup -----
+
+    @Test
+    public void invalidBackupGuardRejects() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+
+        GsdState base = store.load();
+        GsdState first = store.save(new GsdState(GsdState.CURRENT_SCHEMA_VERSION, base.revision(),
+                GsdPhase.EXECUTING, "first", List.of(), List.of(), List.of(), List.of(), //$NON-NLS-1$
+                GsdSessionPointer.empty()));
+        store.save(new GsdState(GsdState.CURRENT_SCHEMA_VERSION, first.revision(),
+                GsdPhase.PLANNING, "second", List.of(), List.of(), List.of(), List.of(), //$NON-NLS-1$
+                GsdSessionPointer.empty()));
+
+        Path gsd = store.getGsdDirectory();
+        Path bakPath = gsd.resolve(GsdStateStore.STATE_BAK);
+        Path statePath = gsd.resolve(GsdStateStore.STATE_JSON);
+
+        // Write an invalid state to backup: DONE task with INFERRED-only evidence
+        // + CLOSED phase not all done -> guard violations. Uses valid JSON field names.
+        String badJson = "{ " + //$NON-NLS-1$
+                "\"schemaVersion\":1,\"revision\":99,\"phase\":\"CLOSED\",\"goal\":\"bad\"," + //$NON-NLS-1$
+                "\"decisions\":[]," + //$NON-NLS-1$
+                "\"tasks\":[{" + //$NON-NLS-1$
+                "\"id\":\"t1\",\"title\":\"done-task\",\"status\":\"DONE\"," + //$NON-NLS-1$
+                "\"waveId\":null,\"dependsOn\":[],\"evidenceIds\":[\"e1\"]}]," + //$NON-NLS-1$
+                "\"waves\":[]," + //$NON-NLS-1$
+                "\"evidence\":[{" + //$NON-NLS-1$
+                "\"id\":\"e1\",\"description\":\"guessed\",\"provenance\":\"INFERRED\"," + //$NON-NLS-1$
+                "\"taskIds\":[\"t1\"],\"createdAt\":\"2025-01-01T00:00:00Z\"}]," + //$NON-NLS-1$
+                "\"sessionPointer\":{\"sessionId\":\"s\",\"workstreamId\":\"w\"}}"; //$NON-NLS-1$
+        Files.writeString(bakPath, badJson, StandardCharsets.UTF_8);
+
+        // Primary is missing -> recovery tries backup -> backup passes parse
+        // but fails guard validation -> wrapped as GsdCorruptException.
+        Files.deleteIfExists(statePath);
+
+        try {
+            store.load();
+            fail("expected GsdCorruptException for invalid backup (guard violation)"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue("error wraps guard violations as corruption",
+                    e.getMessage().toLowerCase().contains("guard")
+                            || e.getCause() != null
+                                    && e.getCause() instanceof GsdGuardException); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        // No corrupted copy written since neither file was successfully validated.
+        assertFalse(Files.exists(gsd.resolve(GsdStateStore.STATE_CORRUPT)));
+    }
 }

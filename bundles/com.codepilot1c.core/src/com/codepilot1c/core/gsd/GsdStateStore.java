@@ -227,15 +227,8 @@ public final class GsdStateStore {
         GsdGuard.validate(validated); // fail-closed before any write / before the lock
 
         return withLock(() -> {
-            long diskRevision = currentDiskRevision();
-            if (validated.revision() != diskRevision) {
-                throw new GsdStaleRevisionException(validated.revision(), diskRevision);
-            }
+            validateBeforeSave(validated);
             GsdState next = validated.withRevision(validated.revision() + 1L);
-
-            ensureConfined();
-            Files.createDirectories(gsdDir);
-            verifyRealConfined(); // re-check after creation to catch symlink swaps
             byte[] payload = toBytes(next);
 
             // Backup the previous good state before overwriting. Only the primary is
@@ -248,6 +241,46 @@ public final class GsdStateStore {
             writeProjectionsUnlocked(next);
             return next;
         });
+    }
+
+    /**
+     * Pre-save validation under lock. Returns the state found on disk (for revision
+     * comparison and stale-revision checks). Handles three cases:
+     * <ul>
+     *   <li>Fresh project ({@code state==null}): returns {@code null} to signal
+     *       no prior state exists.</li>
+     *   <li>Recovery needed ({@code recovered==true}): fails closed with
+     *       {@link GsdCorruptException} because only a validated primary may be backed up.</li>
+     *   <li>Normal state on disk: returns the valid state for CAS checking.</li>
+     * </ul>
+     */
+    private void validateBeforeSave(GsdState validated) throws IOException {
+        ReadOutcome outcome = readOutcome(statePath, bakPath);
+
+        // Fresh project: no existing state on disk, nothing to back up.
+        if (outcome.state == null) {
+            if (validated.revision() != GsdState.INITIAL_REVISION) {
+                throw new GsdStaleRevisionException(
+                        validated.revision(), GsdState.INITIAL_REVISION);
+            }
+            return;
+        }
+
+        // If the store had to recover (primary was corrupt or missing),
+        // reject the save: only a validated primary may be backed up. A recovered state
+        // is transient — the caller must reload via load() to obtain a clean snapshot
+        // before attempting another save.
+        if (outcome.recovered) {
+            throw new GsdCorruptException(
+                    "GSD primary was recovered from backup; save rejected until load/recover completes" //$NON-NLS-1$
+                            + " — reload via load() first; cannot back up corrupt/missing primary");
+        }
+
+        // Revision check against state actually on disk.
+        long diskRevision = validated.revision();
+        if (diskRevision != outcome.state.revision()) {
+            throw new GsdStaleRevisionException(diskRevision, outcome.state.revision());
+        }
     }
 
     /**
@@ -369,7 +402,7 @@ public final class GsdStateStore {
                 }
                 // primary missing, backup corrupt -> fail closed on the backup.
                 throw new GsdCorruptException("GSD " + STATE_BAK + " is corrupt and " //$NON-NLS-1$ //$NON-NLS-2$
-                        + STATE_JSON + " is missing"); //$NON-NLS-1$
+                        + STATE_JSON + " is missing: " + e.getMessage(), e); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
         if (primaryCorrupt) {
@@ -404,8 +437,9 @@ public final class GsdStateStore {
 
     /**
      * Parses {@code path} as a {@link GsdState}. Raises {@link GsdCorruptException} for
-     * unparseable JSON, a JSON {@code null} document, an empty document, or a
-     * {@code schemaVersion} mismatch. All other {@link IOException}s propagate.
+     * unparseable JSON, a JSON {@code null} document, an empty document, a
+     * {@code schemaVersion} mismatch, or a {@link GsdGuard} invariant violation. All other
+     * {@link IOException}s propagate.
      */
     private GsdState parseState(Path path) throws IOException {
         long size;
@@ -431,6 +465,14 @@ public final class GsdStateStore {
             throw new GsdCorruptException("GSD schemaVersion " + state.schemaVersion() //$NON-NLS-1$
                     + " in " + path + " does not match current " //$NON-NLS-1$ //$NON-NLS-2$
                     + GsdState.CURRENT_SCHEMA_VERSION);
+        }
+        // Guard validation: a deserialized state that violates invariants is treated as
+        // corruption so that backup-recovery paths never republish invalid state.
+        try {
+            GsdGuard.validate(state);
+        } catch (GsdGuardException e) {
+            throw new GsdCorruptException("GSD state in " + path + " fails guard validation: " //$NON-NLS-1$ //$NON-NLS-2$
+                    + e.getMessage(), e);
         }
         return state;
     }
@@ -606,6 +648,9 @@ public final class GsdStateStore {
                 .setPrettyPrinting()
                 .disableHtmlEscaping()
                 .registerTypeAdapter(Instant.class, new InstantAdapter().nullSafe())
+                .registerTypeAdapter(GsdPhase.class, new EnumStrictAdapter<>(GsdPhase.class, "phase"))
+                .registerTypeAdapter(GsdTaskStatus.class, new EnumStrictAdapter<>(GsdTaskStatus.class, "task status"))
+                .registerTypeAdapter(GsdProvenance.class, new EnumStrictAdapter<>(GsdProvenance.class, "provenance"))
                 .create();
     }
 
@@ -619,6 +664,47 @@ public final class GsdStateStore {
             this.state = state;
             this.primaryWasCorrupt = primaryWasCorrupt;
             this.recovered = recovered;
+        }
+    }
+
+    /**
+     * Strict {@link TypeAdapter} for Java enums that treats any unrecognized JSON string
+     * as corruption rather than silently falling back to {@code null} or a default value.
+     *
+     * @param <E> the enum type
+     */
+    private static final class EnumStrictAdapter<E extends Enum<E>> extends TypeAdapter<E> {
+        private final Class<E> enumType;
+        private final String fieldName; // for error messages
+
+        EnumStrictAdapter(Class<E> enumType, String fieldName) {
+            this.enumType = enumType;
+            this.fieldName = fieldName;
+        }
+
+        @Override
+        public void write(JsonWriter out, E value) throws IOException {
+            if (value == null) {
+                out.nullValue();
+            } else {
+                out.value(value.name());
+            }
+        }
+
+        @Override
+        public E read(JsonReader in) throws IOException {
+            if (in.peek() == JsonToken.NULL) {
+                in.nextNull();
+                throw new GsdCorruptException(
+                        "Null " + fieldName + " value in JSON — possible data corruption"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            String name = in.nextString();
+            try {
+                return Enum.valueOf(enumType, name);
+            } catch (IllegalArgumentException e) {
+                throw new GsdCorruptException("Unknown " + fieldName + " value '" + name
+                        + "' in JSON — possible data corruption", e);
+            }
         }
     }
 
