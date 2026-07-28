@@ -156,8 +156,8 @@ public class GsdStateStoreTest {
         GsdState bad = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, base.revision(), GsdPhase.EXECUTING, "g", //$NON-NLS-1$
                 List.of(),
-                List.of(new GsdTask("t1", "do thing", GsdTaskStatus.DONE, null, List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                List.of(),
+                List.of(new GsdTask("t1", "do thing", GsdTaskStatus.DONE, "w1", List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 List.of(new GsdEvidence("e1", "guessed", GsdProvenance.INFERRED, List.of("t1"), Instant.EPOCH)), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 GsdSessionPointer.empty());
 
@@ -181,8 +181,8 @@ public class GsdStateStoreTest {
         GsdState good = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, base.revision(), GsdPhase.EXECUTING, "g", //$NON-NLS-1$
                 List.of(),
-                List.of(new GsdTask("t1", "do thing", GsdTaskStatus.DONE, null, List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                List.of(),
+                List.of(new GsdTask("t1", "do thing", GsdTaskStatus.DONE, "w1", List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 List.of(new GsdEvidence("e1", "tests green", GsdProvenance.TESTED, //$NON-NLS-1$ //$NON-NLS-2$
                         List.of("t1"), Instant.EPOCH)), //$NON-NLS-1$
                 GsdSessionPointer.empty());
@@ -201,8 +201,9 @@ public class GsdStateStoreTest {
         GsdState notReady = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, base.revision(), GsdPhase.CLOSED, "g", //$NON-NLS-1$
                 List.of(),
-                List.of(new GsdTask("t1", "x", GsdTaskStatus.IN_PROGRESS, null, List.of(), List.of())), //$NON-NLS-1$
-                List.of(), List.of(), GsdSessionPointer.empty());
+                List.of(new GsdTask("t1", "x", GsdTaskStatus.IN_PROGRESS, "w1", List.of(), List.of())), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(), GsdSessionPointer.empty());
         try {
             store.save(notReady);
             fail("expected guard to reject CLOSED phase with non-DONE tasks"); //$NON-NLS-1$
@@ -210,13 +211,13 @@ public class GsdStateStoreTest {
             assertTrue(e.getViolations().stream().anyMatch(v -> v.contains("CLOSED"))); //$NON-NLS-1$
         }
 
-        // All DONE with TESTED evidence -> closeable.
+        // All DONE with TESTED evidence and capturedPhase VERIFYING -> closeable.
         GsdState ready = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, base.revision(), GsdPhase.CLOSED, "g", //$NON-NLS-1$
                 List.of(),
-                List.of(new GsdTask("t1", "x", GsdTaskStatus.DONE, null, List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$
-                List.of(),
-                List.of(new GsdEvidence("e1", "verified", GsdProvenance.TESTED, List.of("t1"), Instant.EPOCH)), //$NON-NLS-1$ //$NON-NLS-2$
+                List.of(new GsdTask("t1", "x", GsdTaskStatus.DONE, "w1", List.of(), List.of("e1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(new GsdEvidence("e1", "verified", GsdProvenance.TESTED, List.of("t1"), Instant.EPOCH, GsdPhase.VERIFYING)), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 GsdSessionPointer.empty());
         GsdState saved = store.save(ready);
         assertEquals(GsdPhase.CLOSED, saved.phase());
@@ -421,9 +422,10 @@ public class GsdStateStoreTest {
         GsdState populated = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, 0L, GsdPhase.PLANNING,
                 "read-only goal", //$NON-NLS-1$
-                List.of(), List.of(new GsdTask("t1", "task", GsdTaskStatus.PENDING, null, //$NON-NLS-1$
+                List.of(), List.of(new GsdTask("t1", "task", GsdTaskStatus.PENDING, "w1", //$NON-NLS-1$ //$NON-NLS-2$
                         List.of(), List.of())),
-                List.of(), List.of(), GsdSessionPointer.of("sess-ro", "ws-ro")); //$NON-NLS-1$ //$NON-NLS-2$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(), GsdSessionPointer.of("sess-ro", "ws-ro")); //$NON-NLS-1$ //$NON-NLS-2$
         GsdState saved = store.save(populated);
 
         // Now read-only should return the same state without modifying anything.
@@ -530,16 +532,18 @@ public class GsdStateStoreTest {
                 GsdState.CURRENT_SCHEMA_VERSION, 0, GsdPhase.PLANNING, "g", //$NON-NLS-1$
                 List.of(new GsdDecision("d2", "b", "y", List.of()), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         new GsdDecision("d1", "a", "x", List.of())), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                List.of(new GsdTask("t2", "b", GsdTaskStatus.PENDING, null, List.of(), List.of()), //$NON-NLS-1$ //$NON-NLS-2$
-                        new GsdTask("t1", "a", GsdTaskStatus.PENDING, null, List.of(), List.of())), //$NON-NLS-1$ //$NON-NLS-2$
-                List.of(), List.of(), GsdSessionPointer.empty());
+                List.of(new GsdTask("t2", "b", GsdTaskStatus.PENDING, "w1", List.of(), List.of()), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        new GsdTask("t1", "a", GsdTaskStatus.PENDING, "w1", List.of(), List.of())), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1", "t2"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                List.of(), GsdSessionPointer.empty());
         GsdState b = new GsdState(
                 GsdState.CURRENT_SCHEMA_VERSION, 0, GsdPhase.PLANNING, "g", //$NON-NLS-1$
                 List.of(new GsdDecision("d1", "a", "x", List.of()), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         new GsdDecision("d2", "b", "y", List.of())), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                List.of(new GsdTask("t1", "a", GsdTaskStatus.PENDING, null, List.of(), List.of()), //$NON-NLS-1$ //$NON-NLS-2$
-                        new GsdTask("t2", "b", GsdTaskStatus.PENDING, null, List.of(), List.of())), //$NON-NLS-1$ //$NON-NLS-2$
-                List.of(), List.of(), GsdSessionPointer.empty());
+                List.of(new GsdTask("t1", "a", GsdTaskStatus.PENDING, "w1", List.of(), List.of()), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        new GsdTask("t2", "b", GsdTaskStatus.PENDING, "w1", List.of(), List.of())), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                List.of(new GsdWave("w1", "wave", "", List.of("t1", "t2"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                List.of(), GsdSessionPointer.empty());
 
         assertEquals(GsdProjections.toStateMd(a), GsdProjections.toStateMd(b));
         assertEquals(GsdProjections.toPlanMd(a), GsdProjections.toPlanMd(b));
@@ -571,9 +575,10 @@ public class GsdStateStoreTest {
         GsdState seeded = new GsdState(GsdState.CURRENT_SCHEMA_VERSION, base.revision(),
                 GsdPhase.EXECUTING, "seeded-goal", //$NON-NLS-1$
                 List.of(),
-                List.of(new GsdTask("t-seed", "seed task", GsdTaskStatus.PENDING, null, //$NON-NLS-1$ //$NON-NLS-2$
+                List.of(new GsdTask("t-seed", "seed task", GsdTaskStatus.PENDING, "w1", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         List.of(), List.of())),
-                List.of(), List.of(), GsdSessionPointer.empty());
+                List.of(new GsdWave("w1", "seed-wave", "seed", List.of("t-seed"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                List.of(), GsdSessionPointer.empty());
         GsdState seededSaved = store.save(seeded);
         assertEquals(1L, seededSaved.revision());
 

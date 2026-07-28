@@ -12,12 +12,13 @@ import java.util.List;
 /**
  * A unit of work toward the goal.
  *
- * @param id          stable task identifier (non-blank, unique within state)
- * @param title       short human-readable title (non-blank)
- * @param status      lifecycle status (never {@code null})
- * @param waveId      optional wave id this task belongs to (may be {@code null}/blank)
- * @param dependsOn   ids of tasks that must complete first (never {@code null})
- * @param evidenceIds ids of evidence backing this task (never {@code null})
+ * @param id             stable task identifier (non-blank, unique within state)
+ * @param title          short human-readable title (non-blank)
+ * @param status         lifecycle status (never {@code null})
+ * @param waveId         optional wave id this task belongs to (may be {@code null}/blank)
+ * @param dependsOn      ids of tasks that must complete first (never {@code null})
+ * @param evidenceIds    ids of evidence backing this task (never {@code null})
+ * @param executionKind  side-effect profile (never {@code null}; defaults to {@link GsdExecutionKind#READ_ONLY})
  */
 public record GsdTask(
         String id,
@@ -25,7 +26,8 @@ public record GsdTask(
         GsdTaskStatus status,
         String waveId,
         List<String> dependsOn,
-        List<String> evidenceIds) {
+        List<String> evidenceIds,
+        GsdExecutionKind executionKind) {
 
     /**
      * Canonical record constructor; defensive-copies lists and enforces non-null.
@@ -42,6 +44,18 @@ public record GsdTask(
         }
         dependsOn = dependsOn == null ? List.of() : List.copyOf(dependsOn);
         evidenceIds = evidenceIds == null ? List.of() : List.copyOf(evidenceIds);
+        if (executionKind == null) {
+            executionKind = GsdExecutionKind.READ_ONLY;
+        }
+    }
+
+    /**
+     * Backward-compatible constructor (6-arg) for source compatibility.
+     * Defaults {@code executionKind} to {@link GsdExecutionKind#READ_ONLY}.
+     */
+    public GsdTask(String id, String title, GsdTaskStatus status, String waveId,
+                   List<String> dependsOn, List<String> evidenceIds) {
+        this(id, title, status, waveId, dependsOn, evidenceIds, GsdExecutionKind.READ_ONLY);
     }
 
     /**
@@ -52,6 +66,6 @@ public record GsdTask(
      * @return the task
      */
     public static GsdTask pending(String id, String title) {
-        return new GsdTask(id, title, GsdTaskStatus.PENDING, null, List.of(), List.of());
+        return new GsdTask(id, title, GsdTaskStatus.PENDING, null, List.of(), List.of(), GsdExecutionKind.READ_ONLY);
     }
 }

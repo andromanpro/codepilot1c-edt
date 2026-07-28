@@ -13,18 +13,20 @@ import java.util.List;
 /**
  * A piece of evidence backing a task or decision.
  *
- * @param id          stable evidence identifier (non-blank, unique within state)
- * @param description what the evidence shows (non-blank)
- * @param provenance  how the evidence was obtained (never {@code null})
- * @param taskIds     tasks this evidence supports (never {@code null})
- * @param createdAt   when the evidence was recorded (never {@code null})
+ * @param id             stable evidence identifier (non-blank, unique within state)
+ * @param description    what the evidence shows (non-blank)
+ * @param provenance     how the evidence was obtained (never {@code null})
+ * @param taskIds        tasks this evidence supports (never {@code null})
+ * @param createdAt      when the evidence was recorded (never {@code null})
+ * @param capturedPhase  phase during which evidence was captured (never {@code null}; defaults to {@link GsdPhase#EXECUTING})
  */
 public record GsdEvidence(
         String id,
         String description,
         GsdProvenance provenance,
         List<String> taskIds,
-        Instant createdAt) {
+        Instant createdAt,
+        GsdPhase capturedPhase) {
 
     /**
      * Canonical record constructor; defensive-copies lists and enforces non-null.
@@ -41,5 +43,17 @@ public record GsdEvidence(
         }
         taskIds = taskIds == null ? List.of() : List.copyOf(taskIds);
         createdAt = createdAt == null ? Instant.EPOCH : createdAt;
+        if (capturedPhase == null) {
+            capturedPhase = GsdPhase.EXECUTING;
+        }
+    }
+
+    /**
+     * Backward-compatible constructor (5-arg) for source compatibility.
+     * Defaults {@code capturedPhase} to {@link GsdPhase#EXECUTING}.
+     */
+    public GsdEvidence(String id, String description, GsdProvenance provenance,
+                       List<String> taskIds, Instant createdAt) {
+        this(id, description, provenance, taskIds, createdAt, GsdPhase.EXECUTING);
     }
 }

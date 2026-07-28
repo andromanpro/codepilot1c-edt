@@ -75,10 +75,11 @@ public final class GsdProjections {
         if (evidence.isEmpty()) {
             sb.append("_None._\n\n"); //$NON-NLS-1$
         } else {
-            sb.append("| id | provenance | tasks | description |\n"); //$NON-NLS-1$
-            sb.append("|---|---|---|---|\n"); //$NON-NLS-1$
+            sb.append("| id | provenance | capturedPhase | tasks | description |\n"); //$NON-NLS-1$
+            sb.append("|---|---|---|---|---|\n"); //$NON-NLS-1$
             for (GsdEvidence e : evidence) {
-                sb.append("| ").append(e.id()).append(" | ").append(e.provenance().name()).append(" | ") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                sb.append("| ").append(e.id()).append(" | ").append(e.provenance().name()) //$NON-NLS-1$ //$NON-NLS-2$
+                        .append(" | ").append(e.capturedPhase().name()).append(" | ") //$NON-NLS-1$ //$NON-NLS-2$
                         .append(String.join(", ", e.taskIds())).append(" | ") //$NON-NLS-1$ //$NON-NLS-2$
                         .append(escape(e.description())).append(" |\n"); //$NON-NLS-1$
             }
@@ -117,7 +118,8 @@ public final class GsdProjections {
                     for (GsdTask t : tasks) {
                         sb.append("- [").append(statusMark(t.status())).append("] ") //$NON-NLS-1$ //$NON-NLS-2$
                                 .append(t.id()).append(" — ").append(escape(t.title())) //$NON-NLS-1$
-                                .append(" (").append(t.status().name()).append(")"); //$NON-NLS-1$ //$NON-NLS-2$
+                                .append(" (").append(t.status().name()) //$NON-NLS-1$
+                                .append(", ").append(t.executionKind().name()).append(")"); //$NON-NLS-1$ //$NON-NLS-2$
                         if (!t.dependsOn().isEmpty()) {
                             sb.append(" depends: ").append(String.join(", ", t.dependsOn())); //$NON-NLS-1$ //$NON-NLS-2$
                         }
@@ -143,7 +145,8 @@ public final class GsdProjections {
             for (GsdTask t : unassigned) {
                 sb.append("- [").append(statusMark(t.status())).append("] ") //$NON-NLS-1$ //$NON-NLS-2$
                         .append(t.id()).append(" — ").append(escape(t.title())) //$NON-NLS-1$
-                        .append(" (").append(t.status().name()).append(")\n"); //$NON-NLS-1$ //$NON-NLS-2$
+                        .append(" (").append(t.status().name()) //$NON-NLS-1$
+                        .append(", ").append(t.executionKind().name()).append(")\n"); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
         return sb.toString();

@@ -677,6 +677,7 @@ public final class GsdStateStore {
                 .registerTypeAdapter(GsdPhase.class, new EnumStrictAdapter<>(GsdPhase.class, "phase"))
                 .registerTypeAdapter(GsdTaskStatus.class, new EnumStrictAdapter<>(GsdTaskStatus.class, "task status"))
                 .registerTypeAdapter(GsdProvenance.class, new EnumStrictAdapter<>(GsdProvenance.class, "provenance"))
+                .registerTypeAdapter(GsdExecutionKind.class, new EnumStrictAdapter<>(GsdExecutionKind.class, "execution kind"))
                 .create();
     }
 
