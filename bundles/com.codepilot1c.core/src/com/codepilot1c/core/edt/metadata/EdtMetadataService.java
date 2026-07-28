@@ -3761,12 +3761,23 @@ public class EdtMetadataService {
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
         final String platformVersion = resolvePlatformVersionString(project);
 
+        // Standard attributes live outside the MdObject tree, so export/post-verify must run on
+        // their owner: resolveByFqn cannot find <Owner>.StandardAttribute.<Name>.
+        final String[] persistenceFqn = new String[1];
+
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.EDT_TRANSACTION_FAILED,
                         "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+            StandardAttributeTarget standardAttribute =
+                    resolveStandardAttributeTarget(txConfiguration, request.targetFqn());
+            if (standardAttribute != null) {
+                applyStandardAttributeChanges(standardAttribute, request.changes());
+                persistenceFqn[0] = standardAttribute.parentFqn();
+                return request.targetFqn();
             }
             MdObject target = resolveByFqn(txConfiguration, request.targetFqn());
             if (target == null) {
@@ -3777,12 +3788,14 @@ public class EdtMetadataService {
             applyObjectChanges(txConfiguration, target, request.changes(), request.targetFqn(),
                     transaction, capturedTypes, platformVersion);
             ensureUuidsRecursively(target, opId, request.targetFqn());
+            persistenceFqn[0] = request.targetFqn();
             return request.targetFqn();
         });
 
-        String topLevelFqn = extractTopLevelFqn(targetFqn);
+        String fqnForPersistence = persistenceFqn[0] != null ? persistenceFqn[0] : targetFqn;
+        String topLevelFqn = extractTopLevelFqn(fqnForPersistence);
         forceExportTopLevelObject(project, topLevelFqn, opId);
-        verifyObjectPersisted(project, targetFqn, opId);
+        verifyObjectPersisted(project, fqnForPersistence, opId);
         refreshProjectSafely(project);
         LOG.info("[%s] updateMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -6083,6 +6096,162 @@ public class EdtMetadataService {
             }
         }
         return null;
+    }
+
+    /**
+     * Standard attribute (Владелец, Родитель, Наименование, …) resolved together with its owner.
+     */
+    private record StandardAttributeTarget(MdObject parent, String parentFqn, EObject attribute, String name) {
+    }
+
+    /**
+     * Resolves {@code <Owner>.StandardAttribute.<Name>}, e.g. {@code Catalog.Контрагенты.StandardAttribute.Владелец}.
+     *
+     * <p>Standard attributes are plain EObjects inside the {@code standardAttributes} feature, not
+     * MdObjects, so the generic {@link #resolveByFqn} walker never reaches them and update_metadata
+     * answered METADATA_NOT_FOUND. 1С:АПК rules 86 and 347 demand a synonym on exactly those
+     * attributes, so they have to be addressable.</p>
+     *
+     * <p>Returns {@code null} when the FQN is not a standard-attribute one, so the caller falls back
+     * to the regular metadata path.</p>
+     */
+    private StandardAttributeTarget resolveStandardAttributeTarget(Configuration configuration, String fqn) {
+        if (fqn == null || fqn.isBlank()) {
+            return null;
+        }
+        String[] parts = fqn.split("\\."); //$NON-NLS-1$
+        int markerIndex = -1;
+        for (int i = 2; i < parts.length; i++) {
+            String token = normalizeToken(parts[i]);
+            if ("standardattribute".equals(token) //$NON-NLS-1$
+                    || "standardattributes".equals(token) //$NON-NLS-1$
+                    || "стандартныйреквизит".equals(token)) { //$NON-NLS-1$
+                markerIndex = i;
+                break;
+            }
+        }
+        if (markerIndex < 0) {
+            return null;
+        }
+        if (markerIndex != parts.length - 2) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
+                    "StandardAttribute FQN must be <Owner>.StandardAttribute.<Name>: " + fqn, false); //$NON-NLS-1$
+        }
+        String parentFqn = String.join(".", List.of(parts).subList(0, markerIndex)); //$NON-NLS-1$
+        String requestedName = parts[markerIndex + 1];
+        MdObject parent = resolveByFqn(configuration, parentFqn);
+        if (parent == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
+                    "Owner object not found: " + parentFqn, false); //$NON-NLS-1$
+        }
+        EStructuralFeature feature = parent.eClass().getEStructuralFeature("standardAttributes"); //$NON-NLS-1$
+        if (feature == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    parent.eClass().getName() + " has no standard attributes: " + parentFqn, false); //$NON-NLS-1$
+        }
+        String canonicalRequested = canonicalAttributeToken(requestedName);
+        List<String> available = new ArrayList<>();
+        Object rawValues = parent.eGet(feature);
+        if (rawValues instanceof Collection<?> values) {
+            for (Object value : values) {
+                if (!(value instanceof EObject attribute)) {
+                    continue;
+                }
+                String name = readStandardAttributeName(attribute);
+                if (name == null || name.isBlank()) {
+                    continue;
+                }
+                available.add(name);
+                if (canonicalAttributeToken(name).equals(canonicalRequested)) {
+                    LOG.debug("resolveStandardAttributeTarget: %s -> %s", fqn, name); //$NON-NLS-1$
+                    return new StandardAttributeTarget(parent, parentFqn, attribute, name);
+                }
+            }
+        }
+        // The list of what IS there beats a bare "not found": standard attributes only materialize
+        // in .mdo once customized, and RU/EN spelling differs per object kind.
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Standard attribute not found: " + requestedName + " in " + parentFqn //$NON-NLS-1$ //$NON-NLS-2$
+                        + ". Available: " + String.join(", ", available), false); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private String readStandardAttributeName(EObject attribute) {
+        EStructuralFeature nameFeature = attribute.eClass().getEStructuralFeature("name"); //$NON-NLS-1$
+        if (nameFeature == null) {
+            return null;
+        }
+        Object raw = attribute.eGet(nameFeature);
+        return raw instanceof String name ? name : null;
+    }
+
+    private String canonicalAttributeToken(String name) {
+        String normalized = normalizeToken(name);
+        return ATTRIBUTE_NAME_ALIASES.getOrDefault(normalized, normalized);
+    }
+
+    /**
+     * Applies {@code set}/{@code unset} to a standard attribute. Localized string maps (synonym,
+     * toolTip) go through the same EMap patch as regular objects; everything else is a scalar
+     * feature. Renaming is rejected: the name of a standard attribute belongs to the platform.
+     */
+    private void applyStandardAttributeChanges(StandardAttributeTarget target, Map<String, Object> changes) {
+        Map<String, Object> setChanges = asMap(changes.get("set")); //$NON-NLS-1$
+        List<?> unsetChanges = changes.get("unset") instanceof List<?> list ? list : List.of(); //$NON-NLS-1$
+        if (changes.get("children_ops") != null) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Standard attributes have no children: children_ops is not supported", false); //$NON-NLS-1$
+        }
+        if (setChanges.isEmpty() && unsetChanges.isEmpty()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "changes must include set and/or unset", false); //$NON-NLS-1$
+        }
+
+        for (Map.Entry<String, Object> entry : setChanges.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            if ("name".equalsIgnoreCase(key)) { //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "Renaming a standard attribute is not supported", false); //$NON-NLS-1$
+            }
+            EMap<String, String> localized = localizedStringFeature(target.attribute(), key);
+            if (localized != null) {
+                applyEMapStringPatch(localized, entry.getValue(), key);
+                continue;
+            }
+            applySimpleFeatureValue(target.attribute(), key, entry.getValue());
+        }
+
+        for (Object rawKey : unsetChanges) {
+            String key = rawKey == null ? null : String.valueOf(rawKey);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            EMap<String, String> localized = localizedStringFeature(target.attribute(), key);
+            if (localized != null) {
+                localized.removeKey(RU_LANGUAGE);
+                continue;
+            }
+            applySimpleFeatureValue(target.attribute(), key, null);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private EMap<String, String> localizedStringFeature(EObject target, String key) {
+        EStructuralFeature feature = resolveStructuralFeatureIgnoreCase(target, key);
+        if (feature == null) {
+            return null;
+        }
+        Object value = target.eGet(feature);
+        return value instanceof EMap<?, ?> map ? (EMap<String, String>) map : null;
     }
 
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
