@@ -50,6 +50,7 @@ Export-Package: com.codepilot1c.ui.chat,
  com.codepilot1c.ui.dialogs,
  com.codepilot1c.ui.diff,
  com.codepilot1c.ui.editor,
+ com.codepilot1c.ui.gsd,
  com.codepilot1c.ui.markdown,
  com.codepilot1c.ui.preferences,
  com.codepilot1c.ui.views

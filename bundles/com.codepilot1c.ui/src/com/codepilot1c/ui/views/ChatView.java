@@ -99,6 +99,7 @@ import com.codepilot1c.ui.diff.DiffReviewDialog;
 import com.codepilot1c.ui.diff.ProposedChange;
 import com.codepilot1c.ui.diff.ProposedChangeSet;
 import com.codepilot1c.ui.editor.CodeApplicationService;
+import com.codepilot1c.ui.gsd.GsdStatusPanel;
 import com.codepilot1c.ui.internal.Messages;
 import com.codepilot1c.ui.internal.ToolDisplayNames;
 import com.codepilot1c.ui.internal.VibeUiPlugin;
@@ -160,6 +161,7 @@ public class ChatView extends ViewPart {
     private TypingIndicatorWidget typingIndicator;
     private Label tokenUsageLabel;
     private Composite attachmentPreviewArea;
+    private GsdStatusPanel gsdStatusPanel;
 
     private final List<LlmMessage> conversationHistory = new ArrayList<>();
     private final List<ChatMessageComposite> messageWidgets = new ArrayList<>();
@@ -293,6 +295,7 @@ public class ChatView extends ViewPart {
         container.setBackground(theme.getBackground());
 
         createChatArea(container);
+        createGsdStatusPanel(container);
         createInputArea(container);
 
         // Phase 0: restore the last chat (persistence) or show the welcome message.
@@ -304,6 +307,76 @@ public class ChatView extends ViewPart {
             createBrowserChatArea(parent);
         } else {
             createStyledTextChatArea(parent);
+        }
+    }
+
+    /**
+     * Creates the GSD status panel between the chat area and the input composer.
+     * The panel is read-only, collapsible, and loads state asynchronously off the UI thread.
+     */
+    private void createGsdStatusPanel(Composite parent) {
+        gsdStatusPanel = new GsdStatusPanel(parent);
+        GridData gsdData = new GridData(SWT.FILL, SWT.CENTER, true, false);
+        gsdStatusPanel.getControl().setLayoutData(gsdData);
+
+        // Wire the suggested-profile hint to open profile preferences
+        gsdStatusPanel.setSuggestedProfileAction(profileId -> {
+            try {
+                org.eclipse.ui.PlatformUI.getWorkbench().getDisplay().asyncExec(() -> {
+                    if (isDisposed()) {
+                        return;
+                    }
+                    org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(
+                            getSite().getShell(),
+                            "com.codepilot1c.ui.preferences.ProfilesPreferencePage", //$NON-NLS-1$
+                            null, null).open();
+                });
+            } catch (Exception e) {
+                LOG.debug("Failed to open profile preferences: %s", e.getMessage()); //$NON-NLS-1$
+            }
+        });
+
+        // Initial refresh
+        refreshGsdStatus();
+    }
+
+    /**
+     * Resolves the project root for the GSD status panel from this view's own session
+     * first, falling back to workspace resolution. Triggers an async reload of the
+     * GSD state off the UI thread.
+     */
+    private void refreshGsdStatus() {
+        if (gsdStatusPanel == null || gsdStatusPanel.isDisposed()) {
+            return;
+        }
+        Path projectRoot = resolveGsdProjectRoot();
+        gsdStatusPanel.setProjectRoot(projectRoot);
+        gsdStatusPanel.refresh();
+    }
+
+    /**
+     * Resolves the project root for GSD state reading. Prefers this view's own session
+     * over the global {@code currentSession} to avoid cross-view interference.
+     *
+     * @return the project root path, or {@code null} if no project is available
+     */
+    private Path resolveGsdProjectRoot() {
+        // 1. Try this view's own session first
+        if (session != null && session.hasProject()) {
+            IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+            Path root = GsdStatusPanel.resolveProjectRoot(project);
+            if (root != null) {
+                return root;
+            }
+        }
+
+        // 2. Fallback: resolve from session manager (same as Code.md resolution)
+        try {
+            IProject project = resolveCodeMdProject();
+            return GsdStatusPanel.resolveProjectRoot(project);
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve GSD project root: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
         }
     }
 
@@ -2709,6 +2782,7 @@ public class ChatView extends ViewPart {
                 SessionManager.getInstance().setCurrentSession(restored);
                 renderSession(restored);
                 updateModelButtonLabel();
+                refreshGsdStatus();
                 return;
             }
         } catch (Exception e) {
@@ -3501,6 +3575,11 @@ public class ChatView extends ViewPart {
         }
         currentRequestUsesDesktopController = false;
         conversationHistory.clear();
+
+        // Dispose GSD status panel
+        if (gsdStatusPanel != null && !gsdStatusPanel.isDisposed()) {
+            gsdStatusPanel.dispose();
+        }
 
         // Dispose typing indicator
         if (typingIndicator != null && !typingIndicator.isDisposed()) {

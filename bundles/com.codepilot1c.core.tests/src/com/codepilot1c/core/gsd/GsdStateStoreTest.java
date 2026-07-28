@@ -392,6 +392,97 @@ public class GsdStateStoreTest {
         assertTrue(Files.exists(root.resolve(".codepilot1c/gsd/state.json"))); //$NON-NLS-1$
     }
 
+    // ---- loadReadOnly ---------------------------------------------------
+
+    @Test
+    public void loadReadOnlyFreshProjectReturnsFreshStateWithoutWriting() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+
+        GsdState loaded = store.loadReadOnly();
+
+        assertEquals(GsdState.CURRENT_SCHEMA_VERSION, loaded.schemaVersion());
+        assertEquals(GsdState.INITIAL_REVISION, loaded.revision());
+        assertEquals(GsdPhase.DISCOVERY, loaded.phase());
+        // Zero filesystem writes: no GSD directory, no state.json, no lock, no projections.
+        assertFalse(Files.exists(store.getGsdDirectory()));
+        assertFalse(Files.exists(store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON)));
+        assertFalse(Files.exists(store.getGsdDirectory().resolve(GsdStateStore.STATE_LOCK)));
+        assertFalse(Files.exists(store.getGsdDirectory().resolve(GsdProjections.STATE_FILE)));
+        assertFalse(Files.exists(store.getGsdDirectory().resolve(GsdProjections.PLAN_FILE)));
+    }
+
+    @Test
+    public void loadReadOnlyParsesExistingState() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+
+        // Write state via the normal (writing) path first.
+        GsdState populated = new GsdState(
+                GsdState.CURRENT_SCHEMA_VERSION, 0L, GsdPhase.PLANNING,
+                "read-only goal", //$NON-NLS-1$
+                List.of(), List.of(new GsdTask("t1", "task", GsdTaskStatus.PENDING, null, //$NON-NLS-1$
+                        List.of(), List.of())),
+                List.of(), List.of(), GsdSessionPointer.of("sess-ro", "ws-ro")); //$NON-NLS-1$ //$NON-NLS-2$
+        GsdState saved = store.save(populated);
+
+        // Now read-only should return the same state without modifying anything.
+        Path stateFile = store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON);
+        long lastModifiedBefore = Files.getLastModifiedTime(stateFile).toMillis();
+
+        GsdState loaded = store.loadReadOnly();
+
+        assertEquals(saved.revision(), loaded.revision());
+        assertEquals(GsdPhase.PLANNING, loaded.phase());
+        assertEquals("read-only goal", loaded.goal()); //$NON-NLS-1$
+        assertEquals("sess-ro", loaded.sessionPointer().sessionId()); //$NON-NLS-1$
+        // No writes: mtime unchanged.
+        long lastModifiedAfter = Files.getLastModifiedTime(stateFile).toMillis();
+        assertEquals(lastModifiedBefore, lastModifiedAfter);
+        // No backup created by read-only.
+        assertFalse(Files.exists(store.getGsdDirectory().resolve(GsdStateStore.STATE_BAK)));
+    }
+
+    @Test
+    public void loadReadOnlyCorruptPrimaryThrows() throws IOException {
+        Path root = newProject();
+        GsdStateStore store = new GsdStateStore(root);
+        Files.createDirectories(store.getGsdDirectory());
+        Files.writeString(store.getGsdDirectory().resolve(GsdStateStore.STATE_JSON),
+                "not valid json {{{", //$NON-NLS-1$
+                StandardCharsets.UTF_8);
+
+        try {
+            store.loadReadOnly();
+            fail("expected GsdCorruptException"); //$NON-NLS-1$
+        } catch (GsdCorruptException e) {
+            assertTrue(e.getMessage().contains("invalid JSON")); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void loadReadOnlySymlinkedDirEscapingProjectIsRejected() throws IOException {
+        // Skip on platforms that do not support symlinks (Windows without admin).
+        Path root = newProject();
+        Path outside = tmp.newFolder("outside-ro").toPath(); //$NON-NLS-1$
+        try {
+            Files.createSymbolicLink(root.resolve(".codepilot1c"), outside); //$NON-NLS-1$
+        } catch (UnsupportedOperationException | IOException e) {
+            // Platform does not support symlinks; skip this test.
+            return;
+        }
+
+        GsdStateStore store = new GsdStateStore(root);
+        try {
+            store.loadReadOnly();
+            fail("expected confinement rejection on read-only path"); //$NON-NLS-1$
+        } catch (AccessDeniedException e) {
+            assertTrue(e.getMessage().contains("outside the project root")); //$NON-NLS-1$
+        }
+        // No files written in the outside target.
+        assertFalse(Files.exists(outside.resolve("gsd").resolve(GsdStateStore.STATE_JSON))); //$NON-NLS-1$
+    }
+
     // ---- Deterministic projections --------------------------------------
 
     @Test

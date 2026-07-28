@@ -210,6 +210,46 @@ public final class GsdStateStore {
     }
 
     /**
+     * Reads the current state without any filesystem writes.
+     *
+     * <p>Unlike {@link #load()}, this method never creates directories, never acquires
+     * the cross-process lock, never regenerates projections, never quarantines or
+     * publishes a backup, and never recovers from {@code state.json.bak}. Because
+     * writes are atomic ({@link StandardCopyOption#ATOMIC_MOVE}), a concurrent
+     * reader is safe: it either sees the fully-written previous state or the new one,
+     * never a half-written file.</p>
+     *
+     * <p>Behavior:</p>
+     * <ul>
+     *   <li>Primary {@code state.json} exists and parses correctly → returns the parsed state.</li>
+     *   <li>Primary {@code state.json} exists but is corrupt → throws
+     *       {@link GsdCorruptException} (caller surfaces the error in the UI).</li>
+     *   <li>Primary {@code state.json} does not exist → returns {@link GsdState#fresh()}.</li>
+     *   <li>I/O failure reading the primary → propagates as {@link IOException}.</li>
+     * </ul>
+     *
+     * <p>Confinement is enforced before reading: a pre-existing symlink (e.g.
+     * {@code .codepilot1c} pointing outside the project root) is rejected with
+     * {@link AccessDeniedException}, preventing reads of another project's state.
+     * This check is purely read-only — no directories or files are created.</p>
+     *
+     * <p>This method is designed for read-only UI consumers (e.g. status panels)
+     * that must never mutate the project directory.</p>
+     *
+     * @return the loaded state, or {@link GsdState#fresh()} when no primary exists; never {@code null}
+     * @throws GsdCorruptException  if the primary exists but is corrupt
+     * @throws AccessDeniedException if the GSD directory escapes the project root via symlink
+     * @throws IOException          on I/O failure reading the primary
+     */
+    public GsdState loadReadOnly() throws IOException {
+        ensureConfined();
+        if (!Files.exists(statePath)) {
+            return GsdState.fresh();
+        }
+        return parseState(statePath);
+    }
+
+    /**
      * Persists the state atomically under the cross-process lock. Enforces
      * {@link GsdGuard} and optimistic revision before writing. Backs up the previous
      * {@code state.json} to {@code state.json.bak}, writes the new state with
