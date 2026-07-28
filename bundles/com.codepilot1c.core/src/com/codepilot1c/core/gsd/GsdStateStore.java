@@ -392,20 +392,6 @@ public final class GsdStateStore {
         T run() throws IOException;
     }
 
-    private long currentDiskRevision() throws IOException {
-        ReadOutcome outcome = readOutcome(statePath, bakPath);
-        if (outcome.state == null) {
-            if (outcome.primaryWasCorrupt) {
-                // readOutcome already threw GsdCorruptException when backup was also bad;
-                // reaching here means primary corrupt + backup usable but state==null,
-                // which cannot happen by construction.
-                throw new GsdCorruptException("GSD state.json is corrupt and unrecoverable"); //$NON-NLS-1$
-            }
-            return GsdState.INITIAL_REVISION;
-        }
-        return outcome.state.revision();
-    }
-
     private void regenerateProjectionsIfMissing(GsdState state) throws IOException {
         Path stateMd = gsdDir.resolve(GsdProjections.STATE_FILE);
         Path planMd = gsdDir.resolve(GsdProjections.PLAN_FILE);

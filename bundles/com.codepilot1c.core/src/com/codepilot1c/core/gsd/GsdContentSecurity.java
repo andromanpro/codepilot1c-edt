@@ -8,10 +8,10 @@
 package com.codepilot1c.core.gsd;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,8 +30,8 @@ import java.util.regex.Pattern;
  *       tool-call impersonation and similar attack vectors with typed
  *       {@link Severity} and human-readable reasons.</li>
  *   <li><b>Policy API</b> — {@link Policy} lets callers configure
- *       {@code block HIGH}, {@code mark MEDIUM}, {@code accept CLEAN} and
- *       returns a {@link Report} with sanitized text + findings.</li>
+ *       {@code blockHigh}, {@code blockMedium}, {@code blockClean} with clear
+ *       block-or-pass semantics. Default policy blocks HIGH only.</li>
  * </ul>
  *
  * <p>This class deliberately does <em>not</em> attempt to identify secrets
@@ -154,70 +154,79 @@ public final class GsdContentSecurity {
 	/**
 	 * Configurable security policy.
 	 *
-	 * <p>Default policy: block HIGH, mark MEDIUM, accept CLEAN.</p>
+	 * <p>All three flags express whether the corresponding severity level is <b>blocked</b>
+	 * (causes {@link Report#blocked()} to be {@code true}).
+	 *
+	 * <h3>Truth table</h3>
+	 * <table border="1" cellpadding="4" cellspacing="0">
+	 * <tr><th>blockHigh</th><th>blockMedium</th><th>blockClean</th><th>HIGH finding</th><th>MEDIUM only</th><th>No findings</th></tr>
+	 * <tr><td>true</td><td>true</td><td>true</td><td>✅ blocked</td><td>✅ blocked</td><td>✅ blocked</td></tr>
+	 * <tr><td><b>true</b></td><td><b>false</b></td><td><b>false</b></td><td>✅ blocked</td><td>❌ passes</td><td>❌ passes</td></tr>
+	 * <tr><td>false</td><td>false</td><td>false</td><td>❌ passes</td><td>❌ passes</td><td>❌ passes</td></tr>
+	 * <tr><td>false</td><td>true</td><td>false</td><td>❌ passes</td><td>✅ blocked</td><td>❌ passes</td></tr>
+	 * </table>
+	 *
+	 * <p><b>Default:</b> {@code blockHigh=true, blockMedium=false, blockClean=false}
+	 * — only HIGH findings cause blocking.</p>
 	 */
 	public static final class Policy {
 		private final boolean blockHigh;
-		private final boolean markMedium;
-		private final boolean acceptClean;
+		private final boolean blockMedium;
+		private final boolean blockClean;
 
-		private Policy(boolean blockHigh, boolean markMedium, boolean acceptClean) {
+		private Policy(boolean blockHigh, boolean blockMedium, boolean blockClean) {
 			this.blockHigh = blockHigh;
-			this.markMedium = markMedium;
-			this.acceptClean = acceptClean;
+			this.blockMedium = blockMedium;
+			this.blockClean = blockClean;
 		}
 
 		/**
-		 * The default policy — block HIGH, mark MEDIUM, accept CLEAN.
+		 * The default policy — block HIGH only; MEDIUM findings are reported but do not
+		 * block, and clean text passes.
+		 *
+		 * <p>Equivalent to {@code of(true, false, false)}.
 		 */
 		public static Policy defaults() {
-			return new Policy(true, true, true);
+			return new Policy(true, false, false);
 		}
 
 		/**
-		 * Create a custom policy.
+		 * Create a custom policy with explicit block semantics.
 		 *
-		 * @param blockHigh   when {@code true}, a HIGH finding causes {@link Report#blocked()} to be true
-		 * @param markMedium  when {@code true}, MEDIUM findings are reported (but don't block)
-		 * @param acceptClean when {@code true}, clean text passes without blocking
+		 * @param blockHigh   when {@code true}, any HIGH finding causes {@link Report#blocked()} to be true
+		 * @param blockMedium when {@code true}, any MEDIUM finding (with no HIGH) causes blocking
+		 * @param blockClean  when {@code true}, text with no findings at all is blocked
 		 */
-		public static Policy of(boolean blockHigh, boolean markMedium, boolean acceptClean) {
-			return new Policy(blockHigh, markMedium, acceptClean);
+		public static Policy of(boolean blockHigh, boolean blockMedium, boolean blockClean) {
+			return new Policy(blockHigh, blockMedium, blockClean);
 		}
 
+		/** When {@code true}, a HIGH finding causes {@link Report#blocked()} to be true. */
 		boolean blockHigh() { return blockHigh; }
-		boolean markMedium() { return markMedium; }
-		boolean acceptClean() { return acceptClean; }
+		/** When {@code true}, a MEDIUM-only finding causes {@link Report#blocked()} to be true. */
+		boolean blockMedium() { return blockMedium; }
+		/** When {@code true}, clean text (no findings) causes {@link Report#blocked()} to be true. */
+		boolean blockClean() { return blockClean; }
 	}
 
 	/**
-	 * Custom content-cap configuration.
-	 * Override {@link ContentKind#defaultMaxChars()} per kind.
+	 * Immutable content-cap configuration.
+	 * Each {@link ContentKind} has an independent character limit.
+	 *
+	 * <p>Usage:
+	 * <pre>
+	 * Caps.defaults()
+	 *     .with(ContentKind.GOAL, 100)
+	 *     .with(ContentKind.EVIDENCE, 500)
+	 * </pre>
+	 * Each {@code with(...)} call returns a new {@code Caps} instance;
+	 * the original is never mutated.
 	 */
 	public static final class Caps {
 		private final int[] limits;
 
 		private Caps(int[] limits) {
 			this.limits = limits.clone();
-		}
-
-		/**
-		 * Caps with per-kind overrides; omitted kinds use their defaults.
-		 */
-		public static Caps of(ContentKind kind, int maxChars, ContentKind... more) {
-			int[] limits = new int[ContentKind.values().length];
-			for (ContentKind k : ContentKind.values()) {
-				limits[k.ordinal()] = k.defaultMaxChars();
-			}
-			setLimit(limits, kind, maxChars);
-			for (ContentKind k : more) {
-				setLimit(limits, k, k.defaultMaxChars());
-			}
-			return new Caps(limits);
-		}
-
-		private static void setLimit(int[] limits, ContentKind kind, int max) {
-			limits[kind.ordinal()] = Math.max(0, max);
 		}
 
 		/** Caps with all defaults. */
@@ -227,6 +236,28 @@ public final class GsdContentSecurity {
 				limits[k.ordinal()] = k.defaultMaxChars();
 			}
 			return new Caps(limits);
+		}
+
+		/**
+		 * Convenience factory: caps with a single override.
+		 * Equivalent to {@code defaults().with(kind, maxChars)}.
+		 */
+		public static Caps of(ContentKind kind, int maxChars) {
+			return defaults().with(kind, maxChars);
+		}
+
+		/**
+		 * Returns a new {@code Caps} with the limit for {@code kind} overridden to
+		 * {@code maxChars}. This instance is not modified.
+		 *
+		 * @param kind     the content kind to override
+		 * @param maxChars the new limit (negative values are treated as 0)
+		 * @return a new immutable {@code Caps} with the override applied
+		 */
+		public Caps with(ContentKind kind, int maxChars) {
+			int[] copy = this.limits.clone();
+			copy[kind.ordinal()] = Math.max(0, maxChars);
+			return new Caps(copy);
 		}
 
 		int forKind(ContentKind kind) {
@@ -375,8 +406,11 @@ public final class GsdContentSecurity {
 				"Encoded exfiltration attempt detected"), //$NON-NLS-1$
 
 		// Character-spacing obfuscation — MEDIUM
+		// Only triggers when de-spaced text matches known dangerous keywords/phrases.
+		// Does NOT fire on innocent spaced sequences like "a b c d e".
+		// See {@code OBFUSCATED_KEYWORDS} below.
 		new InjectionPattern(
-				"\\b(\\w\\s){4,}\\w\\b", //$NON-NLS-1$
+				"\\b(\\w\\s){5,}\\w\\b", //$NON-NLS-1$
 				Severity.MEDIUM, "INJECT-CHAR-SPACING", //$NON-NLS-1$
 				"Character-spacing obfuscation detected"), //$NON-NLS-1$
 
@@ -397,6 +431,21 @@ public final class GsdContentSecurity {
 
 	private final Caps caps;
 	private final Policy policy;
+
+	/**
+	 * Keywords that, when found after removing spaces from a CHAR-SPACING match,
+	 * indicate a deliberate obfuscation attempt. Innocent spaced text like
+	 * "a b c d e" will not match any of these and therefore won't be flagged.
+	 */
+	private static final Set<String> OBFUSCATED_KEYWORDS = Set.of(
+			"ignore", "disregard", "forget", "override", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"system", "prompt", "instructions", "rules", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"previous", "above", "prior", "directives", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"secret", "password", "token", "apikey", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"admin", "root", "sudo", "execute", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"bash", "shell", "eval", "curl", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			"bearer", "privatekey", "exfil", "encode" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+	);
 
 	private GsdContentSecurity(Caps caps, Policy policy) {
 		this.caps = (caps != null) ? caps : Caps.defaults();
@@ -586,13 +635,37 @@ public final class GsdContentSecurity {
 
 	private static void scanInjection(String text, List<Finding> findings) {
 		for (InjectionPattern ip : INJECTION_PATTERNS) {
-			if (ip.regex.matcher(text).find()) {
+			Matcher m = ip.regex.matcher(text);
+			if ("INJECT-CHAR-SPACING".equals(ip.ruleId)) { //$NON-NLS-1$
+				// Must iterate ALL matches: a benign spaced sequence ("a b c d e")
+				// may match first while a dangerous one ("i g n o r e …") follows.
+				while (m.find()) {
+					if (matchesObfuscatedKeyword(m)) {
+						findings.add(new Finding(
+								ip.ruleId, ip.severity, ip.reason));
+						break; // one finding per pattern is sufficient
+					}
+				}
+			} else if (m.find()) {
 				findings.add(new Finding(
-						ip.ruleId,
-						ip.severity,
-						ip.reason));
+						ip.ruleId, ip.severity, ip.reason));
 			}
 		}
+	}
+
+	/**
+	 * Checks whether the regex match, after removing spaces, contains any
+	 * known dangerous keyword from {@link #OBFUSCATED_KEYWORDS}.
+	 */
+	private static boolean matchesObfuscatedKeyword(Matcher m) {
+		String matched = m.group();
+		String deSpaced = matched.replaceAll("\\s+", "").toLowerCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$
+		for (String keyword : OBFUSCATED_KEYWORDS) {
+			if (deSpaced.contains(keyword)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// ─── internal: policy ────────────────────────────────────────────────
@@ -608,9 +681,12 @@ public final class GsdContentSecurity {
 			}
 		}
 
+		// Block if HIGH and policy blocks HIGH.
 		if (hasHigh && policy.blockHigh())   return true;
-		if (hasMedium && !policy.markMedium()) return true; // not marking medium → treat as blocked
-		if (findings.isEmpty() && !policy.acceptClean()) return true;
+		// Block if MEDIUM-only and policy blocks MEDIUM.
+		if (hasMedium && !hasHigh && policy.blockMedium()) return true;
+		// Block if clean and policy blocks clean.
+		if (findings.isEmpty() && policy.blockClean()) return true;
 		return false;
 	}
 
