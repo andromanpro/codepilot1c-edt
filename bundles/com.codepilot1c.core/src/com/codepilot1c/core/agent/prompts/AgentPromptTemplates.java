@@ -481,13 +481,16 @@ public final class AgentPromptTemplates {
         sb.append("## Цель\n"); //$NON-NLS-1$
         sb.append("Реализовать задачи плана минимальными обратимыми изменениями и обновить статус в GSD.\n\n"); //$NON-NLS-1$
         sb.append("## Операционный контракт\n"); //$NON-NLS-1$
-        sb.append("1. Следуй плану задач; при необходимости вернись в Plan-фазу через gsd_transition.\n"); //$NON-NLS-1$
+        sb.append("1. Следуй плану задач; если задача заблокирована или требует пересмотра плана,\n"); //$NON-NLS-1$
+        sb.append("   переходи в VERIFYING через gsd_transition для оценки и возможного rollback в EXECUTING с указанием причины.\n"); //$NON-NLS-1$
+        sb.append("   (EXECUTING->PLANNING запрещён state-machine).\n"); //$NON-NLS-1$
         sb.append("2. Для каждой задачи сначала собери контекст, затем примени подходящий инструмент.\n"); //$NON-NLS-1$
         sb.append("3. Flow EDT-мутаций: edt_validate_request -> передай полученный validation_token без изменений -> "); //$NON-NLS-1$
         sb.append("create_metadata/create_form/add_metadata_child/update_metadata/mutate_form_model/delete_metadata -> get_diagnostics.\n"); //$NON-NLS-1$
         sb.append("4. Не обходи validation_token контракт: без токена не вызывай мутации EDT.\n"); //$NON-NLS-1$
         sb.append("5. Явно запрещено write_file для *.mdo/Configuration.mdo; метаданные изменяй только через семантические EDT mutation tools с validation_token.\n"); //$NON-NLS-1$
-        sb.append("6. Обновляй статус задач через gsd_update_task по завершении шага.\n"); //$NON-NLS-1$
+        sb.append("6. По завершении задачи сначала зафиксируй evidence через gsd_record_evidence (OBSERVED/TESTED/USER_ACCEPTED),\n"); //$NON-NLS-1$
+        sb.append("   затем переведи задачу в DONE через gsd_update_task. DONE без не-INFERRED evidence заблокирован GsdGuard.\n"); //$NON-NLS-1$
         sb.append("7. После изменений запускай get_diagnostics и устраняй errors/warnings.\n\n"); //$NON-NLS-1$
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
@@ -498,16 +501,17 @@ public final class AgentPromptTemplates {
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
         sb.append("inspect_platform_reference, skill, discover_tools, "); //$NON-NLS-1$
-        sb.append("gsd_get_state, gsd_update_task, gsd_transition, "); //$NON-NLS-1$
+        sb.append("gsd_get_state, gsd_update_task, gsd_record_evidence, gsd_transition, "); //$NON-NLS-1$
         sb.append("edt_validate_request, "); //$NON-NLS-1$
         sb.append("edit_file, write_file, ensure_module_artifact, "); //$NON-NLS-1$
         sb.append("create_metadata, create_form, add_metadata_child, update_metadata, mutate_form_model, delete_metadata, "); //$NON-NLS-1$
         sb.append("remember_fact.\n\n"); //$NON-NLS-1$
         sb.append("## Формат результата\n"); //$NON-NLS-1$
         sb.append("1. Что реализовано и какие файлы/объекты затронуты.\n"); //$NON-NLS-1$
-        sb.append("2. gsd_update_task с новым статусом и evidence-комментарием.\n"); //$NON-NLS-1$
-        sb.append("3. Результаты get_diagnostics и исправленные замечания.\n"); //$NON-NLS-1$
-        sb.append("4. Остаточные риски и рекомендации.\n"); //$NON-NLS-1$
+        sb.append("2. gsd_record_evidence с фиксацией результата (OBSERVED/TESTED).\n"); //$NON-NLS-1$
+        sb.append("3. gsd_update_task с новым статусом (DONE после evidence).\n"); //$NON-NLS-1$
+        sb.append("4. Результаты get_diagnostics и исправленные замечания.\n"); //$NON-NLS-1$
+        sb.append("5. Остаточные риски и рекомендации.\n"); //$NON-NLS-1$
         return PromptQualityAssurance.verify(
                 "gsd-execute", //$NON-NLS-1$
                 sb.toString(),
@@ -554,10 +558,13 @@ public final class AgentPromptTemplates {
         sb.append("Подготовить изменения к доставке: зафиксировать версию, создать необходимые release-артефакты, "); //$NON-NLS-1$
         sb.append("выполнить минимальные git-операции.\n\n"); //$NON-NLS-1$
         sb.append("## Операционный контракт\n"); //$NON-NLS-1$
-        sb.append("1. Проверь через gsd_get_state, что Verify-фаза завершена успешно.\n"); //$NON-NLS-1$
-        sb.append("2. Допускаются только git-мутации и запись release-артефактов; не изменяй код, метаданные и формы EDT.\n"); //$NON-NLS-1$
-        sb.append("3. Используй git_inspect перед git_mutate для проверки состояния.\n"); //$NON-NLS-1$
-        sb.append("4. Заверши фазу через gsd_transition только по guard state-machine.\n\n"); //$NON-NLS-1$
+        sb.append("1. Проверь через gsd_get_state, что все задачи DONE и фаза VERIFYING завершена.\n"); //$NON-NLS-1$
+        sb.append("2. Переход из CLOSED в любую другую фазу запрещён state-machine. Если нужны изменения,\n"); //$NON-NLS-1$
+        sb.append("   создай новую GSD-сессию.\n"); //$NON-NLS-1$
+        sb.append("3. Переход в CLOSED через gsd_transition только при all DONE + non-INFERRED evidence (GsdGuard).\n"); //$NON-NLS-1$
+        sb.append("4. Допускаются только git-мутации и запись release-артефактов; не изменяй код, метаданные и формы EDT.\n"); //$NON-NLS-1$
+        sb.append("5. Используй git_inspect перед git_mutate для проверки состояния.\n"); //$NON-NLS-1$
+        sb.append("6. Заверши фазу через gsd_transition (VERIFYING->CLOSED) только по guard state-machine.\n\n"); //$NON-NLS-1$
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$

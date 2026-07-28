@@ -46,6 +46,7 @@ import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
 import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
 import com.codepilot1c.core.tools.meta.ToolDescriptorRegistry;
 import com.codepilot1c.core.tools.workspace.*;
+import com.codepilot1c.core.tools.gsd.*;
 
 /**
  * Registry for AI tools.
@@ -190,6 +191,14 @@ public class ToolRegistry {
         register(new TaskTool(this));
         register(new DiscoverToolsTool(this));
         register(new com.codepilot1c.core.tools.memory.RememberFactTool());
+
+        // GSD workflow tools
+        register(new GsdGetStateTool());
+        register(new GsdRecordDecisionTool());
+        register(new GsdCreatePlanTool());
+        register(new GsdUpdateTaskTool());
+        register(new GsdRecordEvidenceTool());
+        register(new GsdTransitionTool());
 
         // Extra tools may be contributed by an overlay (e.g. Pro) via extension point.
         loadToolsFromExtensionPoint();

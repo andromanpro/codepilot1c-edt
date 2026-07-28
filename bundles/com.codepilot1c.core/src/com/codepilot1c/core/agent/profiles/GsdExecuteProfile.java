@@ -28,6 +28,7 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
     private static final Set<String> ALLOWED_TOOLS = extendTools(
             "gsd_get_state", //$NON-NLS-1$
             "gsd_update_task", //$NON-NLS-1$
+            "gsd_record_evidence", //$NON-NLS-1$
             "gsd_transition", //$NON-NLS-1$
             "edt_validate_request", //$NON-NLS-1$
             "edit_file", //$NON-NLS-1$
@@ -45,6 +46,7 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
     private static final List<PermissionRule> DEFAULT_PERMISSIONS = extendPermissions(
             PermissionRule.allow("gsd_get_state").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("gsd_update_task").forAllResources(), //$NON-NLS-1$
+            PermissionRule.allow("gsd_record_evidence").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("gsd_transition").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("edt_validate_request").forAllResources(), //$NON-NLS-1$
             PermissionRule.allow("remember_fact").forAllResources(), //$NON-NLS-1$

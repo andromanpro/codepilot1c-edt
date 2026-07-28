@@ -7,6 +7,7 @@
  */
 package com.codepilot1c.core.tools;
 
+import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,103 @@ public class ToolParameters {
                     String.format("Required parameter '%s' must not be blank", name)); //$NON-NLS-1$
         }
         return str;
+    }
+
+    /**
+     * Gets a required long parameter.
+     *
+     * <p>Strict: rejects fractional values, NaN, Infinity, and out-of-range numbers.
+     * The value must represent an exact integer within {@code long} range.</p>
+     *
+     * @param name parameter name
+     * @return long value
+     * @throws ToolParameterException if missing, not a number, or not an exact long
+     */
+    public long requireLong(String name) {
+        Object value = raw.get(name);
+        if (value == null) {
+            throw new ToolParameterException(
+                    String.format("Required parameter '%s' is missing", name)); //$NON-NLS-1$
+        }
+        if (value instanceof Number num) {
+            return toExactLong(num, name);
+        }
+        if (value instanceof String str) {
+            try {
+                return Long.parseLong(str.trim());
+            } catch (NumberFormatException e) {
+                throw new ToolParameterException(
+                        String.format("Parameter '%s' must be an integer, got '%s'", name, str)); //$NON-NLS-1$
+            }
+        }
+        throw new ToolParameterException(
+                String.format("Parameter '%s' must be an integer, got %s", //$NON-NLS-1$
+                        name, value.getClass().getSimpleName()));
+    }
+
+    /**
+     * Converts a {@link Number} to a {@code long}, rejecting fractional, NaN,
+     * Infinity, and out-of-range values.
+     */
+    private static long toExactLong(Number num, String name) {
+        if (num instanceof Long l) {
+            return l;
+        }
+        if (num instanceof Integer i) {
+            return i.longValue();
+        }
+        // Use BigDecimal for strict validation.
+        String s = num.toString();
+        try {
+            BigDecimal bd = new BigDecimal(s);
+            return bd.longValueExact();
+        } catch (ArithmeticException e) {
+            throw new ToolParameterException(
+                    String.format("Parameter '%s' is out of long range: %s", name, s)); //$NON-NLS-1$
+        } catch (NumberFormatException e) {
+            throw new ToolParameterException(
+                    String.format("Parameter '%s' must be an integer, got %s (NaN/Infinity/fractional)", name, s)); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Gets an optional long parameter with fallback semantics.
+     *
+     * <p>Non-strict: returns {@code defaultValue} on any parse failure rather
+     * than throwing. For strict validation use {@link #requireLong}.</p>
+     *
+     * @param name parameter name
+     * @param defaultValue value if missing
+     * @return long value or default
+     */
+    public long optLong(String name, long defaultValue) {
+        Object value = raw.get(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number num) {
+            // Best-effort: avoid truncation surprises, but don't throw.
+            if (num instanceof Double || num instanceof Float) {
+                double d = num.doubleValue();
+                if (Double.isNaN(d) || Double.isInfinite(d)) {
+                    return defaultValue;
+                }
+                long lv = num.longValue();
+                if (lv != d) {
+                    return defaultValue;
+                }
+                return lv;
+            }
+            return num.longValue();
+        }
+        if (value instanceof String str) {
+            try {
+                return Long.parseLong(str.trim());
+            } catch (NumberFormatException e) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
     }
 
     /**

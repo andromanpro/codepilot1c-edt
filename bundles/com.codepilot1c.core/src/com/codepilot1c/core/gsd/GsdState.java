@@ -8,6 +8,7 @@
 package com.codepilot1c.core.gsd;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Typed model of GSD project-level state. {@code state.json} is the single source of truth;
@@ -90,6 +91,25 @@ public record GsdState(
                 schemaVersion,
                 newRevision,
                 phase,
+                goal,
+                decisions,
+                tasks,
+                waves,
+                evidence,
+                sessionPointer);
+    }
+
+    /**
+     * Returns a copy of this state with the given phase.
+     *
+     * @param newPhase the new phase
+     * @return a copy with the new phase
+     */
+    public GsdState withPhase(GsdPhase newPhase) {
+        return new GsdState(
+                schemaVersion,
+                revision,
+                Objects.requireNonNull(newPhase, "newPhase"), //$NON-NLS-1$
                 goal,
                 decisions,
                 tasks,
