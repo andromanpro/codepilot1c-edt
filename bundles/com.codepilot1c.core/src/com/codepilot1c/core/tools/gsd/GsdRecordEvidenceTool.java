@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import com.codepilot1c.core.gsd.GsdContentRejectedException;
 import com.codepilot1c.core.gsd.GsdProvenance;
 import com.codepilot1c.core.gsd.GsdState;
 import com.codepilot1c.core.gsd.GsdWorkflowService;
@@ -93,6 +94,9 @@ public class GsdRecordEvidenceTool extends AbstractTool {
             } catch (IllegalArgumentException e) {
                 return ToolResult.failure("Invalid parameter: " + e.getMessage(), //$NON-NLS-1$
                         GsdWorkflowService.buildResult(false, "gsd_record_evidence", 0, null, GsdWorkflowService.ERR_INVALID)); //$NON-NLS-1$
+            } catch (GsdContentRejectedException e) {
+                return ToolResult.failure("Content rejected: " + e.getMessage(), //$NON-NLS-1$
+                        GsdWorkflowService.buildResult(false, "gsd_record_evidence", 0, null, GsdWorkflowService.ERR_SECURITY)); //$NON-NLS-1$
             } catch (com.codepilot1c.core.gsd.GsdStaleRevisionException e) {
                 return ToolResult.failure("Stale revision: expected " + e.getExpectedRevision() //$NON-NLS-1$
                                 + ", current " + e.getActualRevision(), //$NON-NLS-1$

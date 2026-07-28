@@ -15,6 +15,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
+import com.codepilot1c.core.gsd.GsdContentSecurity.ContentKind;
+import com.codepilot1c.core.gsd.GsdContentSecurity.Finding;
+import com.codepilot1c.core.gsd.GsdContentSecurity.Report;
 import com.google.gson.JsonObject;
 
 /**
@@ -85,9 +88,12 @@ public final class GsdWorkflowService {
     public static GsdState transitionPhase(String projectRoot, long expectedRevision,
             GsdPhase targetPhase, String reason) throws IOException {
         Objects.requireNonNull(targetPhase, "targetPhase"); //$NON-NLS-1$
+        // Sanitize rollback reason before any state store access.
+        String safeReason = (reason != null && !reason.isEmpty())
+                ? secureField(reason, "reason", ContentKind.DECISION) : reason; //$NON-NLS-1$
         GsdStateStore store = new GsdStateStore(projectRoot);
         GsdState current = store.load();
-        validateTransition(current.phase(), targetPhase, reason);
+        validateTransition(current.phase(), targetPhase, safeReason);
         checkRevision(current, expectedRevision);
 
         // Entry guard for EXECUTING: goal+tasks+waves required.
@@ -105,7 +111,7 @@ public final class GsdWorkflowService {
             next = current.withPhase(targetPhase);
             String auditId = "rollback-r" + current.revision(); //$NON-NLS-1$
             List<GsdDecision> decisions = new ArrayList<>(current.decisions());
-            decisions.add(new GsdDecision(auditId, "Verification rollback", reason, List.of())); //$NON-NLS-1$
+            decisions.add(new GsdDecision(auditId, "Verification rollback", safeReason, List.of())); //$NON-NLS-1$
             next = new GsdState(
                     next.schemaVersion(),
                     next.revision(),
@@ -207,17 +213,59 @@ public final class GsdWorkflowService {
         throw new IllegalStateException(sb.toString());
     }
 
+    // ---- Content security -------------------------------------------------
+
+    /** Shared content-security instance with default caps and default policy. */
+    private static final GsdContentSecurity CONTENT_SECURITY = GsdContentSecurity.create();
+
+    /**
+     * Validates and sanitizes a text field through {@link GsdContentSecurity}.
+     * Rejects blocked text, CAP-EXCEEDED findings, and any INJECT-* finding
+     * without exposing the raw input.
+     *
+     * @param text      the untrusted input text
+     * @param fieldName the logical field name (for error messages)
+     * @param kind      the content kind for cap enforcement
+     * @return the sanitized text (safe for persistence)
+     * @throws GsdContentRejectedException if the text is blocked or contains
+     *         injection / cap-exceeded findings
+     */
+    static String secureField(String text, String fieldName, ContentKind kind) {
+        if (text == null || text.isEmpty()) {
+            return text != null ? text : ""; //$NON-NLS-1$
+        }
+        Report report = CONTENT_SECURITY.secure(text, kind);
+
+        // Collect rejection reasons: blocked, CAP-EXCEEDED, or any INJECT-* finding.
+        List<String> rejectionReasons = new ArrayList<>();
+        for (Finding f : report.findings()) {
+            if ("CAP-EXCEEDED".equals(f.ruleId()) //$NON-NLS-1$
+                    || f.ruleId().startsWith("INJECT-")) { //$NON-NLS-1$
+                rejectionReasons.add(f.ruleId());
+            }
+        }
+        if (report.blocked() && rejectionReasons.isEmpty()) {
+            rejectionReasons.add("BLOCKED"); //$NON-NLS-1$
+        }
+        if (!rejectionReasons.isEmpty()) {
+            throw new GsdContentRejectedException(fieldName, rejectionReasons);
+        }
+        return report.sanitizedText();
+    }
+
     // ---- Get state --------------------------------------------------------
 
     /**
-     * Reads the current GSD state for a project.
+     * Reads the current GSD state for a project without any filesystem writes.
+     * Uses {@link GsdStateStore#loadReadOnly()} so no lock, projection regeneration,
+     * or backup recovery occurs.
      *
      * @param projectRoot the project root path
      * @return the current state
      * @throws IOException on I/O error
      */
     public static GsdState getState(String projectRoot) throws IOException {
-        return new GsdStateStore(projectRoot).load();
+        return new GsdStateStore(projectRoot).loadReadOnly();
     }
 
     // ---- Record decision --------------------------------------------------
@@ -240,12 +288,26 @@ public final class GsdWorkflowService {
      */
     public static GsdState recordDecision(String projectRoot, long expectedRevision,
             String id, String summary, String rationale, List<String> alternatives) throws IOException {
+        // Validate and sanitize all supplied text before any state store access.
+        String safeId = secureField(id, "id", ContentKind.DECISION); //$NON-NLS-1$
+        String safeSummary = secureField(summary, "summary", ContentKind.DECISION); //$NON-NLS-1$
+        String safeRationale = secureField(rationale, "rationale", ContentKind.DECISION); //$NON-NLS-1$
+        List<String> safeAlternatives;
+        if (alternatives != null) {
+            safeAlternatives = new ArrayList<>(alternatives.size());
+            for (int i = 0; i < alternatives.size(); i++) {
+                safeAlternatives.add(secureField(alternatives.get(i),
+                        "alternatives[" + i + "]", ContentKind.DECISION)); //$NON-NLS-1$
+            }
+        } else {
+            safeAlternatives = List.of();
+        }
+
         GsdStateStore store = new GsdStateStore(projectRoot);
         GsdState current = store.load();
         checkRevision(current, expectedRevision);
         requirePhase("recordDecision", current.phase(), GsdPhase.DISCOVERY); //$NON-NLS-1$
-        GsdDecision decision = new GsdDecision(id, summary, rationale,
-                alternatives != null ? alternatives : List.of());
+        GsdDecision decision = new GsdDecision(safeId, safeSummary, safeRationale, safeAlternatives);
         List<GsdDecision> decisions = new ArrayList<>(current.decisions());
         decisions.add(decision);
         GsdState next = new GsdState(
@@ -282,14 +344,11 @@ public final class GsdWorkflowService {
      */
     public static GsdState createPlan(String projectRoot, long expectedRevision,
             String goal, List<GsdTask> tasks, List<GsdWave> waves) throws IOException {
-        GsdStateStore store = new GsdStateStore(projectRoot);
-        GsdState current = store.load();
-        checkRevision(current, expectedRevision);
-        requirePhase("createPlan", current.phase(), GsdPhase.PLANNING); //$NON-NLS-1$
-        Objects.requireNonNull(goal, "goal"); //$NON-NLS-1$
+        // Validate and sanitize all supplied text before any state store access.
+        String safeGoal = secureField(goal, "goal", ContentKind.GOAL); //$NON-NLS-1$
         Objects.requireNonNull(tasks, "tasks"); //$NON-NLS-1$
         Objects.requireNonNull(waves, "waves"); //$NON-NLS-1$
-        if (goal.isBlank()) {
+        if (safeGoal.isBlank()) {
             throw new IllegalArgumentException("goal must not be blank"); //$NON-NLS-1$
         }
         if (tasks.isEmpty()) {
@@ -298,15 +357,71 @@ public final class GsdWorkflowService {
         if (waves.isEmpty()) {
             throw new IllegalArgumentException("waves must not be empty"); //$NON-NLS-1$
         }
+        // Enforce new-plan contract: all tasks must be PENDING with empty evidenceIds.
+        for (int i = 0; i < tasks.size(); i++) {
+            GsdTask t = tasks.get(i);
+            if (t.status() != GsdTaskStatus.PENDING) {
+                throw new IllegalArgumentException(
+                        "tasks[" + i + "].status must be PENDING for a new plan"); //$NON-NLS-1$
+            }
+            if (!t.evidenceIds().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "tasks[" + i + "].evidence_ids must be empty for a new plan"); //$NON-NLS-1$
+            }
+        }
+        // Rebuild tasks and waves with every String field sanitized.
+        List<GsdTask> safeTasks = new ArrayList<>(tasks.size());
+        for (int i = 0; i < tasks.size(); i++) {
+            GsdTask t = tasks.get(i);
+            String prefix = "tasks[" + i + "]."; //$NON-NLS-1$
+            List<String> safeDeps = new ArrayList<>(t.dependsOn().size());
+            for (int j = 0; j < t.dependsOn().size(); j++) {
+                safeDeps.add(secureField(t.dependsOn().get(j),
+                        prefix + "depends_on[" + j + "]", ContentKind.DECISION)); //$NON-NLS-1$
+            }
+            List<String> safeEvIds = new ArrayList<>(t.evidenceIds().size());
+            for (int j = 0; j < t.evidenceIds().size(); j++) {
+                safeEvIds.add(secureField(t.evidenceIds().get(j),
+                        prefix + "evidence_ids[" + j + "]", ContentKind.DECISION)); //$NON-NLS-1$
+            }
+            safeTasks.add(new GsdTask(
+                    secureField(t.id(), prefix + "id", ContentKind.DECISION), //$NON-NLS-1$
+                    secureField(t.title(), prefix + "title", ContentKind.GOAL), //$NON-NLS-1$
+                    t.status(),
+                    secureField(t.waveId(), prefix + "wave_id", ContentKind.DECISION), //$NON-NLS-1$
+                    safeDeps,
+                    safeEvIds,
+                    t.executionKind()));
+        }
+        List<GsdWave> safeWaves = new ArrayList<>(waves.size());
+        for (int i = 0; i < waves.size(); i++) {
+            GsdWave w = waves.get(i);
+            String prefix = "waves[" + i + "]."; //$NON-NLS-1$
+            List<String> safeTids = new ArrayList<>(w.taskIds().size());
+            for (int j = 0; j < w.taskIds().size(); j++) {
+                safeTids.add(secureField(w.taskIds().get(j),
+                        prefix + "task_ids[" + j + "]", ContentKind.DECISION)); //$NON-NLS-1$
+            }
+            safeWaves.add(new GsdWave(
+                    secureField(w.id(), prefix + "id", ContentKind.DECISION), //$NON-NLS-1$
+                    secureField(w.name(), prefix + "name", ContentKind.GOAL), //$NON-NLS-1$
+                    secureField(w.goal(), prefix + "goal", ContentKind.GOAL), //$NON-NLS-1$
+                    safeTids));
+        }
+
+        GsdStateStore store = new GsdStateStore(projectRoot);
+        GsdState current = store.load();
+        checkRevision(current, expectedRevision);
+        requirePhase("createPlan", current.phase(), GsdPhase.PLANNING); //$NON-NLS-1$
 
         GsdState next = new GsdState(
                 current.schemaVersion(),
                 current.revision(),
                 current.phase(),
-                goal,
+                safeGoal,
                 current.decisions(),
-                tasks,
-                waves,
+                safeTasks,
+                safeWaves,
                 current.evidence(),
                 current.sessionPointer());
         return store.save(next);
@@ -378,7 +493,8 @@ public final class GsdWorkflowService {
                 newStatus,
                 existing.waveId(),
                 existing.dependsOn(),
-                existing.evidenceIds());
+                existing.evidenceIds(),
+                existing.executionKind());
         tasks.set(idx, updated);
 
         GsdState next = new GsdState(
@@ -423,28 +539,43 @@ public final class GsdWorkflowService {
      */
     public static GsdState recordEvidence(String projectRoot, long expectedRevision,
             String id, String description, GsdProvenance provenance, List<String> taskIds) throws IOException {
+        // Validate and sanitize all supplied text before any state store access.
+        String safeId = secureField(id, "id", ContentKind.EVIDENCE); //$NON-NLS-1$
+        String safeDescription = secureField(description, "description", ContentKind.EVIDENCE); //$NON-NLS-1$
+        List<String> safeTaskIds;
+        if (taskIds != null) {
+            safeTaskIds = new ArrayList<>(taskIds.size());
+            for (int i = 0; i < taskIds.size(); i++) {
+                safeTaskIds.add(secureField(taskIds.get(i),
+                        "task_ids[" + i + "]", ContentKind.DECISION)); //$NON-NLS-1$
+            }
+        } else {
+            safeTaskIds = List.of();
+        }
+
         GsdStateStore store = new GsdStateStore(projectRoot);
         GsdState current = store.load();
         checkRevision(current, expectedRevision);
         requirePhase("recordEvidence", current.phase(), GsdPhase.EXECUTING, GsdPhase.VERIFYING); //$NON-NLS-1$
 
         Instant now = Instant.now();
-        GsdEvidence evidence = new GsdEvidence(id, description, provenance,
-                taskIds != null ? taskIds : List.of(), now);
+        // Record capturedPhase = current phase.
+        GsdEvidence evidence = new GsdEvidence(safeId, safeDescription, provenance,
+                safeTaskIds, now, current.phase());
         List<GsdEvidence> evidenceList = new ArrayList<>(current.evidence());
         evidenceList.add(evidence);
 
-        // Also link evidence to tasks.
+        // Also link evidence to tasks, preserving executionKind.
         List<GsdTask> tasks = new ArrayList<>(current.tasks());
-        Set<String> linkedTaskIds = taskIds != null ? Set.copyOf(taskIds) : Set.of();
+        Set<String> linkedTaskIds = Set.copyOf(safeTaskIds);
         for (int i = 0; i < tasks.size(); i++) {
             GsdTask task = tasks.get(i);
             if (linkedTaskIds.contains(task.id())) {
                 List<String> evIds = new ArrayList<>(task.evidenceIds());
-                evIds.add(id);
+                evIds.add(safeId);
                 tasks.set(i, new GsdTask(
                         task.id(), task.title(), task.status(), task.waveId(),
-                        task.dependsOn(), evIds));
+                        task.dependsOn(), evIds, task.executionKind()));
             }
         }
 
@@ -502,4 +633,6 @@ public final class GsdWorkflowService {
     public static final String ERR_IO = "io"; //$NON-NLS-1$
     /** Error code: invalid parameters / illegal transition. */
     public static final String ERR_INVALID = "invalid"; //$NON-NLS-1$
+    /** Error code: content-security rejection (injection, cap exceeded, blocked). */
+    public static final String ERR_SECURITY = "security"; //$NON-NLS-1$
 }

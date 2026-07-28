@@ -11,8 +11,11 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
+import com.codepilot1c.core.gsd.GsdContentRejectedException;
+import com.codepilot1c.core.gsd.GsdExecutionKind;
 import com.codepilot1c.core.gsd.GsdState;
 import com.codepilot1c.core.gsd.GsdTask;
 import com.codepilot1c.core.gsd.GsdTaskStatus;
@@ -67,11 +70,11 @@ public class GsdCreatePlanTool extends AbstractTool {
                     "properties": {
                       "id": {"type": "string"},
                       "title": {"type": "string"},
-                      "status": {"type": "string", "enum": ["PENDING", "IN_PROGRESS", "BLOCKED", "DONE"]},
+                      "execution_kind": {"type": "string", "enum": ["READ_ONLY", "FILE_MUTATION", "EDT_MUTATION", "GIT_MUTATION"]},
                       "wave_id": {"type": "string"},
                       "depends_on": {"type": "array", "items": {"type": "string"}}
                     },
-                    "required": ["id", "title"],
+                    "required": ["id", "title", "execution_kind"],
                     "additionalProperties": false
                   }
                 },
@@ -121,6 +124,9 @@ public class GsdCreatePlanTool extends AbstractTool {
             } catch (IllegalStateException e) {
                 return ToolResult.failure("Illegal state: " + e.getMessage(), //$NON-NLS-1$
                         GsdWorkflowService.buildResult(false, "gsd_create_plan", 0, null, GsdWorkflowService.ERR_INVALID)); //$NON-NLS-1$
+            } catch (GsdContentRejectedException e) {
+                return ToolResult.failure("Content rejected: " + e.getMessage(), //$NON-NLS-1$
+                        GsdWorkflowService.buildResult(false, "gsd_create_plan", 0, null, GsdWorkflowService.ERR_SECURITY)); //$NON-NLS-1$
             } catch (com.codepilot1c.core.gsd.GsdStaleRevisionException e) {
                 return ToolResult.failure("Stale revision: expected " + e.getExpectedRevision() //$NON-NLS-1$
                                 + ", current " + e.getActualRevision(), //$NON-NLS-1$
@@ -178,6 +184,11 @@ public class GsdCreatePlanTool extends AbstractTool {
                 structured);
     }
 
+    private static final Set<String> ALLOWED_TASK_KEYS = Set.of(
+            "id", "title", "execution_kind", "wave_id", "depends_on"); //$NON-NLS-1$
+    private static final Set<String> ALLOWED_WAVE_KEYS = Set.of(
+            "id", "name", "goal", "task_ids"); //$NON-NLS-1$
+
     @SuppressWarnings("unchecked")
     private List<GsdTask> parseTasks(List<?> rawTasks) {
         List<GsdTask> tasks = new ArrayList<>();
@@ -187,6 +198,13 @@ public class GsdCreatePlanTool extends AbstractTool {
                 throw new IllegalArgumentException("tasks[" + i + "] is not an object"); //$NON-NLS-1$
             }
             Map<String, Object> m = (Map<String, Object>) raw;
+            // Reject any key outside the allowlist.
+            for (String key : m.keySet()) {
+                if (!ALLOWED_TASK_KEYS.contains(key)) {
+                    throw new IllegalArgumentException(
+                            "tasks[" + i + "] has unexpected key '" + key + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                }
+            }
 
             Object idObj = m.get("id"); //$NON-NLS-1$
             if (!(idObj instanceof String) || ((String) idObj).isBlank()) {
@@ -200,21 +218,23 @@ public class GsdCreatePlanTool extends AbstractTool {
             }
             String title = (String) titleObj;
 
-            String statusStr = (String) m.get("status"); //$NON-NLS-1$
-            GsdTaskStatus status = GsdTaskStatus.PENDING;
-            if (statusStr != null) {
-                status = GsdTaskStatus.fromName(statusStr);
-                if (status == null) {
-                    throw new IllegalArgumentException("tasks[" + i + "].status: unknown '" + statusStr //$NON-NLS-1$
-                            + "'; must be PENDING, IN_PROGRESS, BLOCKED, or DONE"); //$NON-NLS-1$
-                }
+            Object ekObj = m.get("execution_kind"); //$NON-NLS-1$
+            if (!(ekObj instanceof String) || ((String) ekObj).isBlank()) {
+                throw new IllegalArgumentException("tasks[" + i + "].execution_kind is required"); //$NON-NLS-1$
             }
+            GsdExecutionKind executionKind = GsdExecutionKind.fromName((String) ekObj);
+            if (executionKind == null) {
+                throw new IllegalArgumentException("tasks[" + i + "].execution_kind: unknown '" + ekObj //$NON-NLS-1$
+                        + "'; must be READ_ONLY, FILE_MUTATION, EDT_MUTATION, or GIT_MUTATION"); //$NON-NLS-1$
+            }
+            // Status is always PENDING for newly created plan tasks.
+            GsdTaskStatus status = GsdTaskStatus.PENDING;
 
             String waveId = safeString(m.get("wave_id")); //$NON-NLS-1$
 
             List<String> dependsOn = safeStringList(m.get("depends_on"), i, "task.depends_on"); //$NON-NLS-1$ //$NON-NLS-2$
 
-            tasks.add(new GsdTask(id, title, status, waveId, dependsOn, List.of()));
+            tasks.add(new GsdTask(id, title, status, waveId, dependsOn, List.of(), executionKind));
         }
         return tasks;
     }
@@ -228,6 +248,13 @@ public class GsdCreatePlanTool extends AbstractTool {
                 throw new IllegalArgumentException("waves[" + i + "] is not an object"); //$NON-NLS-1$
             }
             Map<String, Object> m = (Map<String, Object>) raw;
+            // Reject any key outside the allowlist.
+            for (String key : m.keySet()) {
+                if (!ALLOWED_WAVE_KEYS.contains(key)) {
+                    throw new IllegalArgumentException(
+                            "waves[" + i + "] has unexpected key '" + key + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                }
+            }
 
             Object idObj = m.get("id"); //$NON-NLS-1$
             if (!(idObj instanceof String) || ((String) idObj).isBlank()) {

@@ -176,6 +176,7 @@ public class GsdGetStateTool extends AbstractTool {
                 evArr.add(ev);
             }
             o.add("evidence_ids", evArr); //$NON-NLS-1$
+            o.addProperty("execution_kind", t.executionKind().name()); //$NON-NLS-1$
             taskArr.add(o);
         }
         root.add("tasks", taskArr); //$NON-NLS-1$
@@ -209,6 +210,7 @@ public class GsdGetStateTool extends AbstractTool {
                 tidArr.add(tid);
             }
             o.add("task_ids", tidArr); //$NON-NLS-1$
+            o.addProperty("captured_phase", e.capturedPhase().name()); //$NON-NLS-1$
             evArr.add(o);
         }
         root.add("evidence", evArr); //$NON-NLS-1$

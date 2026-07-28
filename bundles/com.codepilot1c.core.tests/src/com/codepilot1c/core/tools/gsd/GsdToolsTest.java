@@ -322,8 +322,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "Ship it", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "task")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "wave 1")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "task", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "wave 1", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
         GsdGetStateTool tool = new GsdGetStateTool();
         ToolResult result = tool.execute(Map.of("project_path", projectPath)).get(); //$NON-NLS-1$
@@ -332,6 +332,9 @@ public class GsdToolsTest {
         assertEquals("Ship it", result.getStructuredString("goal")); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals(1, result.getStructuredData().getAsJsonArray("tasks").size()); //$NON-NLS-1$
         assertEquals(1, result.getStructuredData().getAsJsonArray("waves").size()); //$NON-NLS-1$
+        // execution_kind and captured_phase must appear in structured output.
+        assertEquals("READ_ONLY", result.getStructuredData().getAsJsonArray("tasks") //$NON-NLS-1$
+                .get(0).getAsJsonObject().get("execution_kind").getAsString()); //$NON-NLS-1$
     }
 
     // ---- gsd_record_decision execution -----------------------------------
@@ -403,8 +406,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", rev, //$NON-NLS-1$
                 "goal", "Ship it", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "implement")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "wave 1")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "implement", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "wave 1", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertTrue(result.isSuccess());
         assertEquals("success", result.getStructuredString("status")); //$NON-NLS-1$ //$NON-NLS-2$
         // Phase remains PLANNING — create_plan never advances the phase.
@@ -454,14 +457,28 @@ public class GsdToolsTest {
     }
 
     @Test
-    public void createPlanUnknownTaskStatusFails() throws ExecutionException, InterruptedException {
+    public void createPlanMissingExecutionKindFails() throws ExecutionException, InterruptedException {
         transitionToPlanning();
         GsdCreatePlanTool tool = new GsdCreatePlanTool();
         ToolResult result = tool.execute(Map.of(
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t", "status", "BOGUS")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertFalse(result.isSuccess());
+        assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void createPlanUnknownExecutionKindFails() throws ExecutionException, InterruptedException {
+        transitionToPlanning();
+        GsdCreatePlanTool tool = new GsdCreatePlanTool();
+        ToolResult result = tool.execute(Map.of(
+                "project_path", projectPath, //$NON-NLS-1$
+                "expected_revision", 1, //$NON-NLS-1$
+                "goal", "g", //$NON-NLS-1$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "BOGUS")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertFalse(result.isSuccess());
         assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -475,7 +492,7 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 "waves", List.of(Map.of("name", "no-id")))).get(); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse(result.isSuccess());
         assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -489,7 +506,7 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t", "depends_on", List.of(42))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "depends_on", List.of(42))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertFalse(result.isSuccess());
         assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -503,11 +520,39 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", rev, //$NON-NLS-1$
                 "goal", "Ship it", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertTrue(result.isSuccess());
         // Phase must remain PLANNING (not auto-advance to EXECUTING).
         assertEquals("PLANNING", result.getStructuredString("phase")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void createPlanNestedExtraTaskKeyReturnsInvalid() throws ExecutionException, InterruptedException {
+        long rev = transitionToPlanning();
+        GsdCreatePlanTool tool = new GsdCreatePlanTool();
+        ToolResult result = tool.execute(Map.of(
+                "project_path", projectPath, //$NON-NLS-1$
+                "expected_revision", rev, //$NON-NLS-1$
+                "goal", "g", //$NON-NLS-1$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "bogus", "extra")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertFalse(result.isSuccess());
+        assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void createPlanNestedExtraWaveKeyReturnsInvalid() throws ExecutionException, InterruptedException {
+        long rev = transitionToPlanning();
+        GsdCreatePlanTool tool = new GsdCreatePlanTool();
+        ToolResult result = tool.execute(Map.of(
+                "project_path", projectPath, //$NON-NLS-1$
+                "expected_revision", rev, //$NON-NLS-1$
+                "goal", "g", //$NON-NLS-1$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "sneaky", true)))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertFalse(result.isSuccess());
+        assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -518,8 +563,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 0, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertFalse(result.isSuccess());
         assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
     }
@@ -533,8 +578,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         // Transition PLANNING -> EXECUTING (rev 2).
         GsdTransitionTool tt = new GsdTransitionTool();
         tt.execute(Map.of("project_path", projectPath, "expected_revision", 2, "target_phase", "EXECUTING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
@@ -543,8 +588,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 3, //$NON-NLS-1$
                 "goal", "g2", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "t")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "t", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertFalse(result.isSuccess());
     }
 
@@ -559,8 +604,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "Ship it", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "task")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "task", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         GsdTransitionTool tt = new GsdTransitionTool();
         tt.execute(Map.of("project_path", projectPath, "expected_revision", 2, "target_phase", "EXECUTING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
 
@@ -632,8 +677,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "task")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "task", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         GsdTransitionTool tt = new GsdTransitionTool();
         tt.execute(Map.of("project_path", projectPath, "expected_revision", 2, "target_phase", "EXECUTING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         return 3;
@@ -711,8 +756,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "task")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "task", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         GsdTransitionTool tool = new GsdTransitionTool();
         tool.execute(Map.of("project_path", projectPath, "expected_revision", 2, "target_phase", "EXECUTING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         ToolResult verifying = tool.execute(Map.of("project_path", projectPath, "expected_revision", 3, "target_phase", "VERIFYING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
@@ -758,8 +803,8 @@ public class GsdToolsTest {
                 "project_path", projectPath, //$NON-NLS-1$
                 "expected_revision", 1, //$NON-NLS-1$
                 "goal", "g", //$NON-NLS-1$
-                "tasks", List.of(Map.of("id", "t1", "title", "task")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "waves", List.of(Map.of("id", "w1", "name", "w")))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "tasks", List.of(Map.of("id", "t1", "title", "task", "execution_kind", "READ_ONLY", "wave_id", "w1")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "waves", List.of(Map.of("id", "w1", "name", "w", "task_ids", List.of("t1"))))).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         GsdTransitionTool tool = new GsdTransitionTool();
         tool.execute(Map.of("project_path", projectPath, "expected_revision", 2, "target_phase", "EXECUTING")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         // Record evidence + mark DONE so VERIFYING entry guard passes.
