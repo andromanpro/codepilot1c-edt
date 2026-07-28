@@ -385,6 +385,24 @@ public class GsdToolsTest {
         assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    @Test
+    public void recordDecisionFromWrongPhaseReturnsInvalid() throws ExecutionException, InterruptedException {
+        // recordDecision requires DISCOVERY; transition to PLANNING first.
+        transitionToPlanning();
+        GsdRecordDecisionTool tool = new GsdRecordDecisionTool();
+        ToolResult result = tool.execute(Map.of(
+                "project_path", projectPath, //$NON-NLS-1$
+                "expected_revision", 1, //$NON-NLS-1$
+                "id", "d1", //$NON-NLS-1$
+                "summary", "s", //$NON-NLS-1$
+                "rationale", "r")).get(); //$NON-NLS-1$
+        assertFalse("must not succeed in PLANNING phase", result.isSuccess()); //$NON-NLS-1$
+        assertEquals("invalid", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("error message should mention illegal state", //$NON-NLS-1$
+                result.getErrorMessage().toLowerCase().contains("illegal state") //$NON-NLS-1$
+                        || result.getErrorMessage().toLowerCase().contains("phase")); //$NON-NLS-1$
+    }
+
     // ---- gsd_create_plan execution ---------------------------------------
     // create_plan requires PLANNING phase; never changes the phase itself.
 

@@ -482,8 +482,10 @@ public final class AgentPromptTemplates {
         sb.append("Реализовать задачи плана минимальными обратимыми изменениями и обновить статус в GSD.\n\n"); //$NON-NLS-1$
         sb.append("## Операционный контракт\n"); //$NON-NLS-1$
         sb.append("1. Следуй плану задач; если задача заблокирована или требует пересмотра плана,\n"); //$NON-NLS-1$
-        sb.append("   переходи в VERIFYING через gsd_transition для оценки и возможного rollback в EXECUTING с указанием причины.\n"); //$NON-NLS-1$
-        sb.append("   (EXECUTING->PLANNING запрещён state-machine).\n"); //$NON-NLS-1$
+        sb.append("   оставь задачу в текущем статусе (не переводи в DONE), зафиксировав блок через gsd_record_evidence с описанием причины,\n"); //$NON-NLS-1$
+        sb.append("   и запроси решение или новый цикл планирования у пользователя.\n"); //$NON-NLS-1$
+        sb.append("   (EXECUTING->PLANNING запрещён state-machine; переход в VERIFYING требует all DONE — blocked-задача его не пройдёт.)\n"); //$NON-NLS-1$
+        sb.append("   Единственный допустимый rollback: VERIFYING->EXECUTING через gsd_transition с reason.\n"); //$NON-NLS-1$
         sb.append("2. Для каждой задачи сначала собери контекст, затем примени подходящий инструмент.\n"); //$NON-NLS-1$
         sb.append("3. Flow EDT-мутаций: edt_validate_request -> передай полученный validation_token без изменений -> "); //$NON-NLS-1$
         sb.append("create_metadata/create_form/add_metadata_child/update_metadata/mutate_form_model/delete_metadata -> get_diagnostics.\n"); //$NON-NLS-1$

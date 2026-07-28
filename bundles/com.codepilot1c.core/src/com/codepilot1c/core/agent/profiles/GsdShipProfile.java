@@ -38,6 +38,10 @@ public final class GsdShipProfile extends GsdPhaseProfile {
             PermissionRule.ask("git_mutate") //$NON-NLS-1$
                     .withDescription("Мутирующие git-операции") //$NON-NLS-1$
                     .forAllResources(),
+            PermissionRule.deny("write_file") //$NON-NLS-1$
+                    .withDescription("Прямая запись .mdo запрещена; используй EDT mutation tools") //$NON-NLS-1$
+                    .forResourcePattern("**/*.mdo") //$NON-NLS-1$
+                    .build(),
             PermissionRule.ask("write_file") //$NON-NLS-1$
                     .withDescription("Создание release-артефактов") //$NON-NLS-1$
                     .forAllResources()

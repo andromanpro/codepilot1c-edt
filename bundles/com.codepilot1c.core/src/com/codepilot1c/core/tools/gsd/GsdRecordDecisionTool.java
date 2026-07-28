@@ -111,6 +111,9 @@ public class GsdRecordDecisionTool extends AbstractTool {
             } catch (com.codepilot1c.core.gsd.GsdGuardException e) {
                 return ToolResult.failure("Guard violation: " + e.getMessage(), //$NON-NLS-1$
                         GsdWorkflowService.buildResult(false, "gsd_record_decision", 0, null, GsdWorkflowService.ERR_GUARD)); //$NON-NLS-1$
+            } catch (IllegalStateException e) {
+                return ToolResult.failure("Illegal state: " + e.getMessage(), //$NON-NLS-1$
+                        GsdWorkflowService.buildResult(false, "gsd_record_decision", 0, null, GsdWorkflowService.ERR_INVALID)); //$NON-NLS-1$
             } catch (com.codepilot1c.core.gsd.GsdCorruptException e) {
                 return ToolResult.failure("GSD state is corrupt: " + e.getMessage(), //$NON-NLS-1$
                         GsdWorkflowService.buildResult(false, "gsd_record_decision", 0, null, GsdWorkflowService.ERR_CORRUPT)); //$NON-NLS-1$
