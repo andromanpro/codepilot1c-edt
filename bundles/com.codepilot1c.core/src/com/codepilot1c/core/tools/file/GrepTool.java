@@ -54,6 +54,14 @@ public class GrepTool extends AbstractTool {
                         "type": "string",
                         "description": "Optional workspace directory scope. Use this to narrow text search, not semantic object scope."
                     },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional EDT project scope. Without it the search covers the WHOLE workspace, which usually holds several unrelated configurations — results from a foreign project are easy to mistake for your own. Extension projects named '<project>.<extension>' are included by default."
+                    },
+                    "include_extensions": {
+                        "type": "boolean",
+                        "description": "When 'project' is set, also search its extension projects '<project>.<extension>' (default: true). An extension overrides base code, so excluding it can turn a real hit into a silent miss."
+                    },
                     "file_pattern": {
                         "type": "string",
                         "description": "Optional file-name glob such as '*.bsl' or '*.xml'."
@@ -100,6 +108,8 @@ public class GrepTool extends AbstractTool {
             boolean useRegex = params.optBoolean("regex", false); //$NON-NLS-1$
             boolean caseSensitive = params.optBoolean("case_sensitive", false); //$NON-NLS-1$
             int contextLines = params.optInt("context_lines", 0); //$NON-NLS-1$
+            String project = params.optString("project", null); //$NON-NLS-1$
+            boolean includeExtensions = params.optBoolean("include_extensions", true); //$NON-NLS-1$
 
             Pattern searchPattern;
             try {
@@ -115,29 +125,73 @@ public class GrepTool extends AbstractTool {
 
             try {
                 IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-                IContainer searchRoot;
+                List<IContainer> searchRoots = new ArrayList<>();
 
                 if (path != null && !path.isEmpty()) {
                     // Normalize path for cross-platform compatibility
                     String normalizedPath = normalizePath(path);
                     IResource resource = findWorkspaceResource(normalizedPath);
                     if (resource instanceof IContainer) {
-                        searchRoot = (IContainer) resource;
+                        searchRoots.add((IContainer) resource);
                     } else {
                         return ToolResult.failure("Path not found or not a directory: " + path); //$NON-NLS-1$
                     }
+                } else if (project != null && !project.isEmpty()) {
+                    searchRoots.addAll(resolveProjectRoots(root, project, includeExtensions));
+                    if (searchRoots.isEmpty()) {
+                        return ToolResult.failure("Project not found: " + project //$NON-NLS-1$
+                                + ". Available projects: " + availableProjectNames(root)); //$NON-NLS-1$
+                    }
                 } else {
-                    searchRoot = root;
+                    searchRoots.add(root);
                 }
 
                 List<SearchMatch> matches = new ArrayList<>();
-                searchInContainer(searchRoot, searchPattern, filePattern, contextLines, matches);
+                for (IContainer searchRoot : searchRoots) {
+                    searchInContainer(searchRoot, searchPattern, filePattern, contextLines, matches);
+                }
 
                 return formatResults(patternStr, matches);
             } catch (CoreException e) {
                 return ToolResult.failure("Error searching: " + e.getMessage()); //$NON-NLS-1$
             }
         });
+    }
+
+    /**
+     * Resolves which projects to search when a project scope is given. An EDT extension lives in its
+     * OWN project named "{@code <base>.<extension>}", so scoping a search to a configuration must
+     * cover those too — otherwise code that overrides the base silently drops out of the results.
+     * Matching is case-insensitive because project names are typed by hand.
+     */
+    private List<IContainer> resolveProjectRoots(IWorkspaceRoot root, String projectName,
+            boolean includeExtensions) {
+        List<IContainer> found = new ArrayList<>();
+        String prefix = projectName + "."; //$NON-NLS-1$
+        for (IProject candidate : root.getProjects()) {
+            if (!candidate.isAccessible()) {
+                continue;
+            }
+            String name = candidate.getName();
+            boolean exact = name.equalsIgnoreCase(projectName);
+            boolean extension = includeExtensions
+                    && name.regionMatches(true, 0, prefix, 0, prefix.length());
+            if (exact || extension) {
+                found.add(candidate);
+            }
+        }
+        return found;
+    }
+
+    /** Open project names, listed in the error when the requested project scope does not resolve. */
+    private String availableProjectNames(IWorkspaceRoot root) {
+        List<String> names = new ArrayList<>();
+        for (IProject candidate : root.getProjects()) {
+            if (candidate.isAccessible()) {
+                names.add(candidate.getName());
+            }
+        }
+        return String.join(", ", names); //$NON-NLS-1$
     }
 
     /**
