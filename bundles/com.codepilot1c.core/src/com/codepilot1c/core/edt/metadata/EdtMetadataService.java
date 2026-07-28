@@ -2790,6 +2790,13 @@ public class EdtMetadataService {
         return new FormAttributePatch(patch, typeValue, asListOfMaps(columnsValue));
     }
 
+    /**
+     * Applies the requested value type to a form attribute or form attribute column. The requested
+     * type may be composite: 1C allows several types on one attribute, and rebuilding a composite
+     * type from a single component silently narrows it (a data-losing update, not a missing
+     * feature). Composite input is accepted either as a list or with the pipe separator used by the
+     * platform type chooser, e.g. {@code "CatalogRef.Партнеры|String|CatalogRef.Контрагенты"}.
+     */
     private void applyFormAttributeType(
             AbstractFormAttribute attribute,
             Object typeValue,
@@ -2800,6 +2807,56 @@ public class EdtMetadataService {
         if (attribute == null || typeValue == null) {
             return;
         }
+        List<Object> requestedTypes = splitCompositeTypeValue(typeValue);
+        if (requestedTypes.isEmpty()) {
+            return;
+        }
+        TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
+        TypeDescription existingType = extractTypeDescriptionFromEObject(attribute);
+        for (Object requestedType : requestedTypes) {
+            appendFormAttributeType(attribute, requestedType, typeDesc, existingType,
+                    transaction, preResolvedTypes, txConfiguration);
+        }
+        setTypeDescriptionOnEObject(attribute, typeDesc);
+    }
+
+    /**
+     * Splits a requested type into its components. A scalar type yields exactly one element, so the
+     * behaviour for non-composite input is unchanged.
+     */
+    private List<Object> splitCompositeTypeValue(Object typeValue) {
+        List<Object> parts = new ArrayList<>();
+        if (typeValue instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null) {
+                    parts.addAll(splitCompositeTypeValue(item));
+                }
+            }
+            return parts;
+        }
+        if (typeValue instanceof String text) {
+            for (String piece : text.split("\\|")) { //$NON-NLS-1$
+                String trimmed = piece.trim();
+                if (!trimmed.isEmpty()) {
+                    parts.add(trimmed);
+                }
+            }
+            return parts;
+        }
+        parts.add(typeValue);
+        return parts;
+    }
+
+    /** Resolves one component of a (possibly composite) type and appends it to {@code typeDesc}. */
+    private void appendFormAttributeType(
+            AbstractFormAttribute attribute,
+            Object typeValue,
+            TypeDescription typeDesc,
+            TypeDescription existingType,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
         validateFormAttributeType(typeValue);
         TypeSpec typeSpec = normalizeTypeSpec(typeValue);
         String typeQuery = typeSpec.typeQuery();
@@ -2852,12 +2909,10 @@ public class EdtMetadataService {
                             + ". " + FORM_ATTRIBUTE_TYPE_RECOVERY, false); //$NON-NLS-1$
         }
 
-        TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
         typeDesc.getTypes().add(txTypeItem);
 
         TypeItem resolvedForName = candidate != null ? candidate : txTypeItem;
         String typeName = resolveTypeNameForQualifiers(resolvedForName, typeSpec);
-        TypeDescription existingType = extractTypeDescriptionFromEObject(attribute);
         if (isNumberType(typeName)) {
             NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
             Integer precision = typeSpec.numberPrecision();
@@ -2891,8 +2946,6 @@ public class EdtMetadataService {
                             : DateFractions.DATE_TIME));
             typeDesc.setDateQualifiers(dq);
         }
-
-        setTypeDescriptionOnEObject(attribute, typeDesc);
     }
 
     /**
