@@ -319,10 +319,8 @@ public class GsdStatusPanel {
      * @param snapshot the snapshot to display; {@code null} is treated as empty
      */
     public void applySnapshot(GsdUiSnapshot snapshot) {
-        if (snapshot == null) {
-            snapshot = GsdUiSnapshot.empty();
-        }
-        this.currentSnapshot = snapshot;
+        final GsdUiSnapshot normalized = (snapshot != null) ? snapshot : GsdUiSnapshot.empty();
+        this.currentSnapshot = normalized;
 
         Display display = root.getDisplay();
         if (display == null || display.isDisposed()) {
@@ -331,9 +329,9 @@ public class GsdStatusPanel {
 
         // If already on the UI thread, apply directly; otherwise asyncExec
         if (display.getThread() == Thread.currentThread()) {
-            applySnapshotOnUiThread(snapshot);
+            applySnapshotOnUiThread(normalized);
         } else {
-            display.asyncExec(() -> applySnapshotOnUiThread(snapshot));
+            display.asyncExec(() -> applySnapshotOnUiThread(normalized));
         }
     }
 
