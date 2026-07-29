@@ -136,6 +136,7 @@ public class ToolRegistry {
         register(new EvaluateExpressionTool());
         register(new DebugStatusTool());
         register(new RunYaxunitTestsTool());
+        register(new RunBslSnippetTool());
         register(new DebugYaxunitTestsTool());
         register(new EdtFieldTypeCandidatesTool());
         register(new GetPlatformDocumentationTool());
