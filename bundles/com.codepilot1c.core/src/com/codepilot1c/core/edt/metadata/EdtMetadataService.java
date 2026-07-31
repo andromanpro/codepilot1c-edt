@@ -9931,6 +9931,18 @@ public class EdtMetadataService {
                             + reference.getName(),
                     false); //$NON-NLS-1$
         }
+        // Standard attributes (Number, Description, Code, …) are plain EObjects outside the MdObject
+        // tree, so resolveByFqn never reaches them and callers got a bare METADATA_NOT_FOUND.
+        // Known limitation: inputByString is EList<mcore.Field>, not EList<StandardAttribute>, so
+        // that particular reference still fails — now with an explicit incompatible-type message
+        // instead of "object not found". Resolving mcore.Field for an applied object needs the
+        // derived-data field model; tracked as a separate issue.
+        StandardAttributeTarget standardAttribute = resolveStandardAttributeTarget(configuration, fqn);
+        if (standardAttribute != null) {
+            ensureReferenceTypeCompatible(reference, standardAttribute.attribute(), fqn);
+            return standardAttribute.attribute();
+        }
+
         MdObject resolved = resolveByFqn(configuration, fqn);
         if (resolved == null) {
             throw new MetadataOperationException(
