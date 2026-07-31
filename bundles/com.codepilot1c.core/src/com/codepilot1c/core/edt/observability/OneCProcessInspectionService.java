@@ -18,6 +18,9 @@ import java.util.regex.Pattern;
 public class OneCProcessInspectionService {
 
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(3);
+
+    /** PowerShell start-up alone eats most of {@link #COMMAND_TIMEOUT}, so CIM gets its own budget. */
+    private static final Duration WINDOWS_PROCESS_TIMEOUT = Duration.ofSeconds(20);
     private static final Pattern PS_ROW = Pattern.compile("^\\s*(\\d+)\\s+(\\d+)\\s+(\\S+)\\s+(.*)$"); //$NON-NLS-1$
     private static final Pattern LSOF_PID = Pattern.compile("^\\S+\\s+(\\d+)\\s+\\S+\\s+.*$"); //$NON-NLS-1$
     private static final Pattern LISTEN_PORT = Pattern.compile(":(\\d+)\\s+\\(LISTEN\\)"); //$NON-NLS-1$
@@ -47,12 +50,25 @@ public class OneCProcessInspectionService {
                     .merge(value));
         }
 
-        CommandResult psResult = runner.run(List.of("ps", "-axo", "pid,ppid,user,command"), COMMAND_TIMEOUT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        if (!psResult.timedOut()) {
-            for (String line : psResult.stdout().lines().toList()) {
-                parsePsRow(line).filter(OneCProcessInspectionService::isRelevant).ifPresent(value -> builders
-                        .computeIfAbsent(Long.valueOf(value.pid()), ignored -> new SnapshotBuilder(value.pid()))
-                        .merge(value));
+        // Windows has no ps(1), and ProcessHandle hides command lines of other users' processes,
+        // so without CIM the inspector reports an empty list on Windows: a live 1cv8c holding the
+        // infobase stayed invisible to every caller (update_infobase, locks, smoke).
+        if (isWindows()) {
+            for (OneCProcessSnapshot value : collectWindowsProcesses()) {
+                if (!isRelevant(value)) {
+                    continue;
+                }
+                builders.computeIfAbsent(Long.valueOf(value.pid()), ignored -> new SnapshotBuilder(value.pid()))
+                        .merge(value);
+            }
+        } else {
+            CommandResult psResult = runner.run(List.of("ps", "-axo", "pid,ppid,user,command"), COMMAND_TIMEOUT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (!psResult.timedOut()) {
+                for (String line : psResult.stdout().lines().toList()) {
+                    parsePsRow(line).filter(OneCProcessInspectionService::isRelevant).ifPresent(value -> builders
+                            .computeIfAbsent(Long.valueOf(value.pid()), ignored -> new SnapshotBuilder(value.pid()))
+                            .merge(value));
+                }
             }
         }
 
@@ -74,6 +90,59 @@ public class OneCProcessInspectionService {
         String processType = classifyType(processName, command);
         return new OneCProcessSnapshot(pid, ppid, user, processName, command, processType,
                 extractInfobasePaths(command, processType), List.of(), List.of());
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    /**
+     * Collects 1C processes on Windows through CIM, the only source that exposes full command lines.
+     *
+     * @return snapshots parsed from CIM output; empty when the query fails or times out
+     */
+    private List<OneCProcessSnapshot> collectWindowsProcesses() {
+        CommandResult result = runner.run(List.of(
+                "powershell", //$NON-NLS-1$
+                "-NoProfile", //$NON-NLS-1$
+                "-NonInteractive", //$NON-NLS-1$
+                "-Command", //$NON-NLS-1$
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '1c*' -or $_.Name -like 'ragent*' "
+                        + "-or $_.Name -like 'rphost*' -or $_.Name -like 'rmngr*' } | "
+                        + "ForEach-Object { ($_.ProcessId, $_.ParentProcessId, $_.Name, $_.CommandLine) "
+                        + "-join [char]9 }"),
+                WINDOWS_PROCESS_TIMEOUT);
+        if (result.timedOut()) {
+            return List.of();
+        }
+        List<OneCProcessSnapshot> snapshots = new ArrayList<>();
+        for (String line : result.stdout().lines().toList()) {
+            parseWindowsRow(line).ifPresent(snapshots::add);
+        }
+        return snapshots;
+    }
+
+    /**
+     * Parses one tab-separated CIM row: {@code pid\tppid\tname\tcommandLine}.
+     *
+     * @param line row to parse, may be {@code null}
+     * @return snapshot or empty when the row is malformed
+     */
+    static Optional<OneCProcessSnapshot> parseWindowsRow(String line) {
+        if (line == null || line.isBlank()) {
+            return Optional.empty();
+        }
+        String[] parts = line.split("\t", 4); //$NON-NLS-1$
+        if (parts.length < 3) {
+            return Optional.empty();
+        }
+        long pid = parseLong(parts[0].strip(), -1L);
+        if (pid < 0) {
+            return Optional.empty();
+        }
+        long ppid = parseLong(parts[1].strip(), -1L);
+        String commandLine = parts.length > 3 && !parts[3].isBlank() ? parts[3].strip() : parts[2].strip();
+        return Optional.of(classify(pid, ppid, "", commandLine)); //$NON-NLS-1$
     }
 
     static Optional<OneCProcessSnapshot> parsePsRow(String line) {

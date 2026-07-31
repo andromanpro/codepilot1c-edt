@@ -5,6 +5,10 @@ import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
@@ -18,9 +22,12 @@ import com.codepilot1c.core.edt.runtime.EdtProjectResolver;
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
 import com.codepilot1c.core.edt.runtime.EdtToolException;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
+import com.codepilot1c.core.edt.observability.OneCProcessInspectionService;
+import com.codepilot1c.core.edt.observability.OneCProcessSnapshot;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 /**
@@ -155,6 +162,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     details.addProperty("infobase_connection",
                             infobase.getConnectionString().asConnectionString()); //$NON-NLS-1$
                 }
+                addInfobaseHolders(details, infobase);
                 result.add("details", details); //$NON-NLS-1$
                 if (dryRun) {
                     result.addProperty("updated", false); //$NON-NLS-1$
@@ -201,6 +209,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 details.addProperty("infobase_connection", //$NON-NLS-1$
                         infobase.getConnectionString().asConnectionString());
             }
+            addInfobaseHolders(details, infobase);
             result.add("details", details); //$NON-NLS-1$
             boolean updated = runtimeService.updateInfobase(projectName, keepConnected, new NullProgressMonitor());
             result.addProperty("updated", updated); //$NON-NLS-1$
@@ -235,6 +244,99 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * then the only surviving evidence that the job finished — and how long it
      * actually took.
      */
+    /**
+     * Reports the 1C sessions holding the target infobase.
+     *
+     * <p>EDT applies configuration changes to a file infobase only when nobody else keeps it open.
+     * A live test client (Vanessa, a forgotten thin client) makes the update a silent no-op: EDT
+     * shows a modal dialog in the workbench, while the tool call still answers {@code updated=true}
+     * and the caller keeps working against a stale infobase. The holders are surfaced in the payload
+     * so the no-op is visible without looking at the interactive layer.</p>
+     *
+     * @param details payload node to enrich, not {@code null}
+     * @param infobase resolved infobase reference, may be {@code null}
+     */
+    private void addInfobaseHolders(JsonObject details, InfobaseReference infobase) {
+        String connection = infobase != null && infobase.getConnectionString() != null
+                ? infobase.getConnectionString().asConnectionString()
+                : null;
+        if (connection == null || connection.isBlank()) {
+            return;
+        }
+        String infobasePath = extractFileInfobasePath(connection);
+        if (infobasePath == null) {
+            return;
+        }
+        try {
+            List<OneCProcessSnapshot> processes =
+                    new OneCProcessInspectionService().inspect(Path.of(infobasePath));
+            JsonArray holders = new JsonArray();
+            for (OneCProcessSnapshot process : processes) {
+                if (!isInfobaseHolder(process, infobasePath)) {
+                    continue;
+                }
+                JsonObject holder = new JsonObject();
+                holder.addProperty("pid", process.pid()); //$NON-NLS-1$
+                holder.addProperty("process_name", process.processName()); //$NON-NLS-1$
+                holder.addProperty("process_type", process.processType()); //$NON-NLS-1$
+                holders.add(holder);
+            }
+            if (holders.isEmpty()) {
+                return;
+            }
+            details.add("infobase_holders", holders); //$NON-NLS-1$
+            details.addProperty("infobase_holders_warning", //$NON-NLS-1$
+                    "Infobase is opened by other 1C sessions: EDT may skip applying changes "
+                            + "and show a modal dialog in the workbench. Close them and repeat."); //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            // Diagnostics must never break the update itself.
+            LOG.debug("infobase holders inspection failed: %s", e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private static boolean isInfobaseHolder(OneCProcessSnapshot process, String infobasePath) {
+        String type = process.processType().toLowerCase(Locale.ROOT);
+        if (type.contains("edt")) { //$NON-NLS-1$
+            return false;
+        }
+        // EDT's own designer agent holds the infobase by design and applies the update itself.
+        if (process.commandLine().toLowerCase(Locale.ROOT).contains("/agentmode")) { //$NON-NLS-1$
+            return false;
+        }
+        String normalizedTarget = infobasePath.toLowerCase(Locale.ROOT).replace('/', '\\');
+        List<String> paths = new ArrayList<>(process.infobasePaths());
+        for (String path : paths) {
+            if (path == null) {
+                continue;
+            }
+            if (path.toLowerCase(Locale.ROOT).replace('/', '\\').contains(normalizedTarget)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Extracts the directory of a file infobase connection string, e.g. {@code File="G:\Bases\x";}.
+     *
+     * @param connection connection string, not {@code null}
+     * @return infobase directory or {@code null} for non-file infobases
+     */
+    private static String extractFileInfobasePath(String connection) {
+        int fileMarker = connection.toLowerCase(Locale.ROOT).indexOf("file="); //$NON-NLS-1$
+        if (fileMarker < 0) {
+            return null;
+        }
+        String tail = connection.substring(fileMarker + "file=".length()).trim(); //$NON-NLS-1$
+        if (tail.startsWith("\"")) { //$NON-NLS-1$
+            int closing = tail.indexOf('"', 1);
+            return closing > 1 ? tail.substring(1, closing) : null;
+        }
+        int separator = tail.indexOf(';');
+        String value = separator >= 0 ? tail.substring(0, separator) : tail;
+        return value.isBlank() ? null : value;
+    }
+
     private static long elapsedMs(long startedNanos) {
         return (System.nanoTime() - startedNanos) / 1_000_000L;
     }
