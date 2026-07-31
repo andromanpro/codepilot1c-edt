@@ -6970,6 +6970,20 @@ public class EdtMetadataService {
             return;
         }
         Object requestedTypeValue = properties == null ? null : getMapValueIgnoreCase(properties, "type"); //$NON-NLS-1$
+        // Multi-type request on a freshly created feature: assemble the complete
+        // TypeDescription instead of narrowing to the first spec (same rationale as
+        // the BasicFeature branch of setFeatureValue).
+        if (requestedTypeValue != null) {
+            List<TypeSpec> requestedSpecs = normalizeTypeSpecs(requestedTypeValue);
+            if (requestedSpecs.size() > 1) {
+                EReference typeReference = resolveTypeReference(feature);
+                TypeDescription typeDescription = createTypeDescription(configuration, feature,
+                        typeReference, requestedTypeValue, transaction, preResolvedTypes);
+                feature.eSet(typeReference, typeDescription);
+                applyBasicFeatureCreateProperties(feature, properties);
+                return;
+            }
+        }
         TypeSpec requestedSpec = requestedTypeValue == null ? null : normalizeTypeSpec(requestedTypeValue);
         String requestedType = requestedSpec == null ? null : requestedSpec.typeQuery();
         String typeToApply = requestedType != null ? requestedType
@@ -7762,6 +7776,17 @@ public class EdtMetadataService {
         // which cannot be set via the generic applyReferenceValue path.
         // Instead, use dedicated TypeItem resolution from BM.
         if ("type".equalsIgnoreCase(fieldName) && target instanceof BasicFeature feature) { //$NON-NLS-1$
+            // Multi-type value (composite type, e.g. ["CatalogRef.Партнеры","CatalogRef.Контрагенты"]):
+            // the single-spec path below silently narrows it to the first element, so build the
+            // full TypeDescription through the same tract createTypeDescription uses elsewhere.
+            List<TypeSpec> typeSpecs = normalizeTypeSpecs(value);
+            if (typeSpecs.size() > 1) {
+                EReference typeReference = resolveTypeReference(feature);
+                TypeDescription typeDescription = createTypeDescription(configuration, feature,
+                        typeReference, value, transaction, preResolvedTypes);
+                feature.eSet(typeReference, typeDescription);
+                return;
+            }
             TypeSpec typeSpec = normalizeTypeSpec(value);
             String typeString = typeSpec.typeQuery();
             TypeItem typeItem = resolveTypeItemForFeature(feature, configuration, typeString, preResolvedTypes);
