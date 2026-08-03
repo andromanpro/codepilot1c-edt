@@ -106,6 +106,14 @@ final class ToolSurfaceSchemaNormalizer {
                           "type": "string",
                           "description": "Optional workspace-relative directory to search."
                         },
+                        "project": {
+                          "type": "string",
+                          "description": "Optional EDT project scope. Extension projects named '<project>.<extension>' are included by default."
+                        },
+                        "include_extensions": {
+                          "type": "boolean",
+                          "description": "When project is set, also search extension projects '<project>.<extension>'. Defaults to true."
+                        },
                         "file_pattern": {
                           "type": "string",
                           "description": "Optional file-name glob such as *.bsl."
