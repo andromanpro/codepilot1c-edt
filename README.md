@@ -79,17 +79,17 @@ tools/run-edt-e2e-local.sh
 Если нужно прогонять простые coding-задачи через внешний implementer, а затем автоматически отправлять diff на review в `codex` и возвращать найденные дефекты обратно в тот же session, используйте один из wrappers:
 
 ```bash
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-flow.sh /abs/path/to/task.md
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-flow.sh /abs/path/to/task.md
+bash tools/run-qwen-codex-flow.sh /abs/path/to/task.md
+bash tools/run-claude-codex-flow.sh /abs/path/to/task.md
 ```
 
 или через stdin:
 
 ```bash
 echo "Fix the failing test in MetadataSyncService and keep the scope minimal." \
-  | bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-flow.sh -
+  | bash tools/run-qwen-codex-flow.sh -
 echo "Fix the failing test in MetadataSyncService and keep the scope minimal." \
-  | bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-flow.sh -
+  | bash tools/run-claude-codex-flow.sh -
 ```
 
 Скрипт:
@@ -129,20 +129,20 @@ echo "Fix the failing test in MetadataSyncService and keep the scope minimal." \
 Если нужно гонять не одну, а пачку простых задач, используйте queue runner:
 
 ```bash
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-queue.sh
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-queue.sh
+bash tools/run-qwen-codex-queue.sh
+bash tools/run-claude-codex-queue.sh
 ```
 
 По умолчанию queue root:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.runs/qwen-codex-queue/queue/
+.runs/qwen-codex-queue/queue/
 ```
 
 Для Claude-wrapper queue root по умолчанию:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-queue/queue/
+.runs/claude-codex-queue/queue/
 ```
 
 Структура очереди:
@@ -176,7 +176,7 @@ Runner обрабатывает `todo/*.md` в лексикографическ�
 Versioned каталог шаблонов лежит в:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/
+tasks/qwen-codex-queue/
 ```
 
 Шаблоны:
@@ -189,8 +189,8 @@ Versioned каталог шаблонов лежит в:
 Быстро создать task в queue `todo/` можно так:
 
 ```bash
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/new-qwen-codex-task.sh --list
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/new-qwen-codex-task.sh bugfix-minimal "fix metadata sync null guard"
+bash tools/new-qwen-codex-task.sh --list
+bash tools/new-qwen-codex-task.sh bugfix-minimal "fix metadata sync null guard"
 ```
 
 Скрипт положит новый markdown-файл в `.runs/qwen-codex-queue/queue/todo/` с очередным числовым префиксом.
@@ -211,7 +211,7 @@ bash /Users/alexorlik/repo/codepilot1c-oss/tools/new-qwen-codex-task.sh bugfix-m
 Versioned prompt для automation лежит в:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/automation/codex-app-queue-run.prompt.md
+tasks/qwen-codex-queue/automation/codex-app-queue-run.prompt.md
 ```
 
 Он предназначен для периодического запуска очереди через Codex app внутри этого проекта.
@@ -221,16 +221,16 @@ Versioned prompt для automation лежит в:
 Если source of truth лежит в planning bundle, например:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
+.planning/local/qwen-runtime-surface
 ```
 
 используйте:
 
 ```bash
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-qwen-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
-bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
-  /Users/alexorlik/repo/codepilot1c-oss/.qwen-runtime-surface
+bash tools/run-qwen-codex-plan.sh \
+  .planning/local/qwen-runtime-surface
+bash tools/run-claude-codex-plan.sh \
+  .planning/local/qwen-runtime-surface
 ```
 
 Этот runner:
@@ -246,7 +246,7 @@ bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
 Готовый prompt для Codex app automation под background plan-run лежит в:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/tasks/qwen-codex-queue/automation/codex-app-plan-run.prompt.md
+tasks/qwen-codex-queue/automation/codex-app-plan-run.prompt.md
 ```
 
 Полезные env:
@@ -261,13 +261,13 @@ bash /Users/alexorlik/repo/codepilot1c-oss/tools/run-claude-codex-plan.sh \
 Артефакты этого режима пишутся в:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.runs/qwen-codex-plan/<plan-key>/
+.runs/qwen-codex-plan/<plan-key>/
 ```
 
 Для Claude-wrapper:
 
 ```text
-/Users/alexorlik/repo/codepilot1c-oss/.runs/claude-codex-plan/<plan-key>/
+.runs/claude-codex-plan/<plan-key>/
 ```
 
 ## Публикация p2 из локальной сборки
