@@ -420,8 +420,8 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
 
         @Override
-        public org.eclipse.wst.server.core.IServer createServer(org.eclipse.wst.server.core.IRuntime runtime,
-                IProgressMonitor monitor) {
+        public org.eclipse.wst.server.core.IServer createServer(String name,
+                org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
             throw new UnsupportedOperationException();
         }
 
@@ -460,9 +460,16 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
 
         @Override
-        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntime> //
-                getStandaloneServerRuntime(org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
+        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate> //
+                getStandaloneServerRuntimeDelegate(org.eclipse.wst.server.core.IRuntime runtime,
+                        IProgressMonitor monitor) {
             return Optional.empty();
+        }
+
+        @Override
+        public com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation toPlatformInstallation(
+                org.eclipse.wst.server.core.IRuntime runtime) {
+            return null;
         }
 
         @Override

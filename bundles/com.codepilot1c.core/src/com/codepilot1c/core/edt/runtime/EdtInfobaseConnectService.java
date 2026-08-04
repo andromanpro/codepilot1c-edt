@@ -511,7 +511,11 @@ public class EdtInfobaseConnectService {
                 access == InfobaseAccess.INFOBASE ? (password == null ? "" : password) : null, //$NON-NLS-1$
                 null);
         try {
-            accessManager.storeSettings(reference, settings);
+            // EDT 2025.2 (services.core 21.x) replaced storeSettings(ref, settings) with
+            // updateSettings(ref, settings) - same signature. storeSettings is gone from the 21.x
+            // API entirely, so the prior 20.x/21.x runtime fallback no longer compiles against this
+            // target; call updateSettings directly.
+            accessManager.updateSettings(reference, settings);
         } catch (Exception e) {
             String detail = e.getMessage() != null && !e.getMessage().isBlank()
                     ? e.getMessage() : e.getClass().getSimpleName();

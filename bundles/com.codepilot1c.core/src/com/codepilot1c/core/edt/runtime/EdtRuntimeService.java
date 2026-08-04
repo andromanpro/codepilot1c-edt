@@ -4,17 +4,28 @@ import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
 
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
+import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseAccessType;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.MatchingRuntimeNotFound;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ComponentExecutorInfo;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ILaunchableRuntimeComponent;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager.ThickClientInfo;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IThickClientLauncher;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.RuntimeExecutionException;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder.ThickClientMode;
+import com._1c.g5.v8.dt.platform.services.model.AppArch;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
+import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
@@ -27,6 +38,18 @@ import org.eclipse.wst.server.core.IServer;
 public class EdtRuntimeService {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtRuntimeService.class);
+
+    /**
+     * Runtime-type and component-type ids used to resolve the thick client launcher. EDT 2025.2
+     * (services.core 21.x) dropped the {@code IRuntimeComponentManager.getThickClientInfo(...)}
+     * convenience methods; their former bodies resolved an {@link IResolvableRuntimeInstallation}
+     * for these ids and delegated to {@code resolveExecutor(...)}. We inline that logic in
+     * {@link #resolveThickClient}.
+     */
+    private static final String RUNTIME_TYPE_ENTERPRISE_PLATFORM =
+            "com._1c.g5.v8.dt.platform.services.core.runtimeType.EnterprisePlatform"; //$NON-NLS-1$
+    private static final String COMPONENT_TYPE_THICK_CLIENT =
+            "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThickClient"; //$NON-NLS-1$
 
     private final EdtRuntimeGateway gateway;
 
@@ -371,7 +394,7 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.getSettings(infobase, InfobaseAccess.INFOBASE);
+            settings = accessManager.resolveSettings(infobase);
         } catch (Exception | NoSuchMethodError e) {
             return null;
         }
@@ -391,13 +414,18 @@ public class EdtRuntimeService {
 
     public ThickClientInfo resolveThickClientInfo(InfobaseReference infobase, String versionMask) {
         IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
+        IResolvableRuntimeInstallationManager installationManager =
+                gateway.getResolvableRuntimeInstallationManager();
         ThickClientInfo info;
         try {
+            IResolvableRuntimeInstallation resolvable;
             if (versionMask != null && !versionMask.isBlank()) {
-                info = runtimeComponentManager.getThickClientInfo(versionMask);
+                resolvable = installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
             } else {
-                info = runtimeComponentManager.getThickClientInfo(infobase);
+                resolvable = installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
+                        null, infobase, InfobaseAccessType.UPDATE);
             }
+            info = resolveThickClient(runtimeComponentManager, resolvable, infobase);
         } catch (Exception | NoSuchMethodError e) {
             LOG.warn("Failed to resolve thick client (possible EDT API incompatibility): " + e.getMessage(), e); //$NON-NLS-1$
             return null;
@@ -406,6 +434,26 @@ public class EdtRuntimeService {
             throw new IllegalStateException("Thick client runtime component not resolved for infobase"); //$NON-NLS-1$
         }
         return info;
+    }
+
+    /**
+     * Resolves the thick client launcher for a runtime installation, replacing the
+     * {@code IRuntimeComponentManager.getThickClientInfo(...)} methods removed in EDT 2025.2. This
+     * mirrors their former private {@code resolveThickClient} body: pick the app architecture from
+     * the infobase (or {@link AppArch#AUTO}), resolve the concrete {@link RuntimeInstallation} for
+     * the thick client component, then ask {@code resolveExecutor} for the launchable component and
+     * its launcher.
+     */
+    private static ThickClientInfo resolveThickClient(IRuntimeComponentManager runtimeComponentManager,
+            IResolvableRuntimeInstallation resolvable, InfobaseReference infobase)
+            throws MatchingRuntimeNotFound, RuntimeExecutionException {
+        AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+        RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THICK_CLIENT), appArch);
+        ComponentExecutorInfo<ILaunchableRuntimeComponent, IThickClientLauncher> executorInfo =
+                runtimeComponentManager.resolveExecutor(ILaunchableRuntimeComponent.class,
+                        IThickClientLauncher.class, installation, COMPONENT_TYPE_THICK_CLIENT);
+        return new ThickClientInfo(resolvable, executorInfo.getInstallation(), executorInfo.getComponent(),
+                executorInfo.getExecutor());
     }
 
     public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
@@ -523,7 +571,7 @@ public class EdtRuntimeService {
         }
         builder.forInfobase(infobase.getConnectionString(), false);
         applyAccessSettings(builder, infobase);
-        builder.updateInfobase();
+        builder.updateDatabaseConfiguration();
         builder.disableStartupDialogs();
         builder.disableStartupMessages();
         if (logFile != null) {
@@ -802,7 +850,7 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings = null;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.getSettings(infobase, InfobaseAccess.INFOBASE);
+            settings = accessManager.resolveSettings(infobase);
         } catch (Exception | NoSuchMethodError e) {
             LOG.warn("Failed to resolve access settings (possible EDT 2025.2 API change): " + e.getMessage(), e); //$NON-NLS-1$
             settings = null;
