@@ -13,6 +13,7 @@ import com.google.gson.JsonParser;
 
 import com.codepilot1c.core.edt.forms.FormRecipeResult;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
+import com.codepilot1c.core.edt.forms.HandlerStubReport;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.BmState;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.FailurePhase;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.RollbackStatus;
@@ -45,8 +46,9 @@ public class FormToolSchemaContractTest {
                 3,
                 4,
                 List.of(),
-                List.of("FormOnOpen"), //$NON-NLS-1$
-                List.of("ItemOnChange")); //$NON-NLS-1$
+                new HandlerStubReport(
+                        List.of("FormOnOpen"), //$NON-NLS-1$
+                        List.of("ItemOnChange"))); //$NON-NLS-1$
 
         JsonObject structured = ApplyFormRecipeTool.toStructuredResult(result);
 

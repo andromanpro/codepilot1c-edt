@@ -56,7 +56,6 @@ public class FormRecipeResultFormattingTest {
                 0,
                 1,
                 List.of("add_event_handler[1]: event=OnOpen, handler=FormOnOpen"), //$NON-NLS-1$
-                written,
-                skipped);
+                new HandlerStubReport(written, skipped));
     }
 }

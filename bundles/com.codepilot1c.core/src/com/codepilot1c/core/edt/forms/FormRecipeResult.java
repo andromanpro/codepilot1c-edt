@@ -20,17 +20,22 @@ public record FormRecipeResult(
         int attributesRemoved,
         int layoutOperationsApplied,
         List<String> layoutOperationSummaries,
-        List<String> handlerStubsWritten,
-        List<String> handlerStubsSkippedExisting
+        HandlerStubReport handlerStubs
 ) {
     public FormRecipeResult {
         layoutOperationSummaries = immutableList(layoutOperationSummaries);
-        handlerStubsWritten = immutableList(handlerStubsWritten);
-        handlerStubsSkippedExisting = immutableList(handlerStubsSkippedExisting);
+        handlerStubs = handlerStubs == null ? HandlerStubReport.empty() : handlerStubs;
+    }
+
+    public List<String> handlerStubsWritten() {
+        return handlerStubs.written();
+    }
+
+    public List<String> handlerStubsSkippedExisting() {
+        return handlerStubs.skippedExisting();
     }
 
     public String formatForLlm() {
-        boolean hasSkippedStubs = !handlerStubsSkippedExisting.isEmpty();
         StringBuilder summaries = new StringBuilder();
         for (String summary : layoutOperationSummaries) {
             if (summary.isBlank()) {
@@ -38,22 +43,9 @@ public record FormRecipeResult(
             }
             summaries.append("- ").append(summary).append('\n'); //$NON-NLS-1$
         }
-        StringBuilder writtenDetails = new StringBuilder();
-        for (String handlerName : handlerStubsWritten) {
-            writtenDetails.append("- ").append(safe(handlerName)).append('\n'); //$NON-NLS-1$
-        }
-        StringBuilder skippedDetails = new StringBuilder();
-        if (hasSkippedStubs) {
-            for (String handlerName : handlerStubsSkippedExisting) {
-                skippedDetails.append("- ").append(safe(handlerName)) //$NON-NLS-1$
-                        .append(": процедура с таким именем уже существует в модуле — тело не изменено\n"); //$NON-NLS-1$
-            }
-            skippedDetails.append(
-                    "Проверьте тело процедуры в Module.bsl и get_diagnostics (scope=file и scope=project).\n"); //$NON-NLS-1$
-        }
-        String header = hasSkippedStubs
-                ? "⚠️ Рецепт формы применен ЧАСТИЧНО: часть заглушек не записана (процедуры уже существуют)." //$NON-NLS-1$
-                : "✅ Рецепт формы применен."; //$NON-NLS-1$
+        String header = handlerStubs.header(
+                "✅ Рецепт формы применен.", //$NON-NLS-1$
+                "⚠️ Рецепт формы применен ЧАСТИЧНО: часть заглушек не записана (процедуры уже существуют)."); //$NON-NLS-1$
         return """
                 %s
                 Проект: %s
@@ -63,11 +55,7 @@ public record FormRecipeResult(
                 Удалено реквизитов формы: %d
                 Операций по макету: %d
                 %s
-                Записано заглушек обработчиков: %d
-                %s
-                Пропущено заглушек (уже существуют): %d
-                %s
-                Рекомендуется проверить get_diagnostics (scope=file и scope=project).
+                %sРекомендуется проверить get_diagnostics (scope=file и scope=project).
                 """.formatted(
                 header,
                 safe(projectName),
@@ -77,10 +65,7 @@ public record FormRecipeResult(
                 Integer.valueOf(attributesRemoved),
                 Integer.valueOf(layoutOperationsApplied),
                 summaries.toString(),
-                Integer.valueOf(handlerStubsWritten.size()),
-                writtenDetails.toString(),
-                Integer.valueOf(handlerStubsSkippedExisting.size()),
-                skippedDetails.toString());
+                handlerStubs.formatForLlm());
     }
 
     private static List<String> immutableList(List<String> values) {

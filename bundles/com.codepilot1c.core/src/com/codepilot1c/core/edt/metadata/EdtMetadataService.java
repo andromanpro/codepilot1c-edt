@@ -164,6 +164,7 @@ import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.Rollback
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.SerializedModelState;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeResult;
+import com.codepilot1c.core.edt.forms.HandlerStubReport;
 import com.codepilot1c.core.edt.forms.FormUsage;
 import com.codepilot1c.core.edt.forms.HandlerStubKind;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutRequest;
@@ -1088,8 +1089,7 @@ public class EdtMetadataService {
                     0,
                     0,
                     List.of(),
-                    List.of(),
-                    List.of());
+                    HandlerStubReport.empty());
         }
 
         Map<String, TypeItem> preResolvedTypes = preResolveFormAttributeTypes(project, request.attributes());
@@ -1178,8 +1178,7 @@ public class EdtMetadataService {
                 applyResult.stats().removed(),
                 applyResult.layoutSummaries().size(),
                 applyResult.layoutSummaries(),
-                stubOutcome.written(),
-                stubOutcome.skippedExisting());
+                new HandlerStubReport(stubOutcome.written(), stubOutcome.skippedExisting()));
     }
 
     static FormRecipePartialFailureException formRecipePartialFailure(
