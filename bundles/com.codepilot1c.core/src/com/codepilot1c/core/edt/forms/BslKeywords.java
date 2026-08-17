@@ -30,6 +30,9 @@ final class BslKeywords {
     private static final String DIRECTIVE_AT_SERVER_NO_CONTEXT_RU = "&НаСервереБезКонтекста"; //$NON-NLS-1$
     private static final String DIRECTIVE_AT_SERVER_NO_CONTEXT_EN = "&AtServerNoContext"; //$NON-NLS-1$
 
+    private static final String COMMAND_PARAMETER_RU = "Команда"; //$NON-NLS-1$
+    private static final String COMMAND_PARAMETER_EN = "Command"; //$NON-NLS-1$
+
     private static final String HANDLER_BODY_COMMENT_RU = "// Вставить содержимое обработчика."; //$NON-NLS-1$
     private static final String HANDLER_BODY_COMMENT_EN = "// Insert handler content."; //$NON-NLS-1$
 
@@ -59,6 +62,10 @@ final class BslKeywords {
 
     static String directiveAtServerNoContext(ScriptVariant variant) {
         return isRussian(variant) ? DIRECTIVE_AT_SERVER_NO_CONTEXT_RU : DIRECTIVE_AT_SERVER_NO_CONTEXT_EN;
+    }
+
+    static String commandParameter(ScriptVariant variant) {
+        return isRussian(variant) ? COMMAND_PARAMETER_RU : COMMAND_PARAMETER_EN;
     }
 
     static String handlerBodyComment(ScriptVariant variant) {

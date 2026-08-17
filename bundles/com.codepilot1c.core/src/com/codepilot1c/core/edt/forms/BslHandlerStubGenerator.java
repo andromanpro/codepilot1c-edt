@@ -21,6 +21,11 @@ import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
  * EMF-transaction, or OSGi-service dependency — every branch is unit-testable
  * against {@code McoreFactory} fakes (see {@code BslHandlerStubGeneratorTest}).</p>
  *
+ * <p>There are two supported stub kinds. {@link HandlerStubKind#EVENT_HANDLER} uses the
+ * resolved {@link Event} contract described below. {@link HandlerStubKind#COMMAND_ACTION}
+ * has no {@code Event}; a managed-form command is always a client procedure with the
+ * platform-defined command parameter, so its directive and signature are explicit.</p>
+ *
  * <p>The directive is derived ONLY from {@link Event#isServerCallWithContextNotAllowed()}
  * and {@link Event#environments()} — never from the event name or any name-suffix
  * heuristic (STUB-02). This class MUST NOT import any workbench-UI-tier event/directive
@@ -48,6 +53,28 @@ public class BslHandlerStubGenerator {
         Directive directive = resolveDirective(event);
         String directiveLiteral = directiveLiteral(directive, variant);
         String signatureText = buildParamList(event, variant);
+        String procedureText = buildProcedureText(directiveLiteral, handlerName, signatureText, variant);
+        return new StubText(directiveLiteral, signatureText, procedureText);
+    }
+
+    /**
+     * Generates the BSL stub for a form-command action handler
+     * ({@link HandlerStubKind#COMMAND_ACTION}).
+     *
+     * <p>The 1C platform invokes a managed-form command handler on the client and passes
+     * one command object. Omitting that parameter causes a too-many-actual-parameters
+     * runtime error. EDT's {@code CommandHandler} exposes neither an {@link Event} nor
+     * environments or parameter sets, so this contract must not use event directive
+     * inference. Stored-data modification does not change the directive; server work is
+     * invoked from the procedure body.</p>
+     *
+     * @param handlerName the already-validated handler procedure name
+     * @param variant the configuration's {@link ScriptVariant}
+     * @return the assembled client-side command-action stub
+     */
+    public StubText generateCommandAction(String handlerName, ScriptVariant variant) {
+        String directiveLiteral = BslKeywords.directiveAtClient(variant);
+        String signatureText = BslKeywords.commandParameter(variant);
         String procedureText = buildProcedureText(directiveLiteral, handlerName, signatureText, variant);
         return new StubText(directiveLiteral, signatureText, procedureText);
     }
