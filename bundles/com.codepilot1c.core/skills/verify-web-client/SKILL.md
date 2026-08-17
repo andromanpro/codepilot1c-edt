@@ -51,19 +51,25 @@ The web client serves the **published/updated** infobase, not your unsaved EDT m
    `ports`. If still stopped, ask the user to start the standalone server in EDT.
 3. Re-run `resolve_web_client_url` if the URL or state may have changed.
 
-## Step 3 — Obtain login credentials
+## Step 3 — Login strategy
 Call `get_infobase_credentials(projectName=<name>)`.
-- On success: use `user_name` + `password` for the web client login. If `auth_kind` is `os`, there is no
-  explicit login — the web client uses the OS session; skip the credential form.
-- On `CREDENTIALS_NOT_DEFINED`: ask the user for the web client login and password in chat. Do not invent them.
-- **Security:** the password is sensitive. Use it only to log in. NEVER echo it into the final report,
-  chat summary, screenshots you describe, or any persisted file.
+- The tool returns the login name and availability metadata, never the stored password.
+- `login_strategy=os_session` → use the OS-authenticated session; no explicit credential form is expected.
+- `login_strategy=no_password_required` → ask the user to sign in manually in the browser session; the
+  account has no stored password.
+- `login_strategy=ask_user` → tell the user that automatic password delivery is unavailable and ask them
+  to sign in manually in the open browser session. Continue only from the authenticated page.
+- On `CREDENTIALS_NOT_DEFINED`, use OS authentication if available or ask the user to sign in manually in
+  the browser session.
+- Never ask the user to put a password in chat, expose one to the model, guess one, or reuse one from
+  another source. If neither OS authentication nor manual browser login is available, stop and report
+  `FAIL: no login strategy available`; do not simulate verification.
 
 ## Step 4 — Drive the browser (maximum depth)
 Using the browser MCP:
 1. Navigate to `web_client_url`.
-2. If a login form appears, type `user_name` / `password` and submit. Confirm the desktop/home form loads
-   (no auth error).
+2. If a login form appears, follow Step 3 and wait for the user to complete login manually in the browser
+   session. Confirm the desktop/home form loads (no auth error).
 3. Navigate to the **specific changed feature** — fastest via deep-link `#e1cib/list/<Тип>.<Имя>`, else the
    sections panel or «Функции для технического специалиста». For tabular/ValueTable/ValueTree changes, add a
    row via the table's own «Добавить».

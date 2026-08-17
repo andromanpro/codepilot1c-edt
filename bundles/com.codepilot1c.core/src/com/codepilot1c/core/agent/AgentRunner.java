@@ -1178,13 +1178,7 @@ public class AgentRunner implements IAgentRunner {
             }
             case TOOL_RESULT -> {
                 ToolResultEvent toolResultEvent = (ToolResultEvent) event;
-                payload.put("tool_name", toolResultEvent.getToolName()); //$NON-NLS-1$
-                payload.put("call_id", toolResultEvent.getCallId()); //$NON-NLS-1$
-                payload.put("success", Boolean.valueOf(toolResultEvent.isSuccess())); //$NON-NLS-1$
-                payload.put("execution_time_ms", Long.valueOf(toolResultEvent.getExecutionTimeMs())); //$NON-NLS-1$
-                payload.put("result_type", toolResultEvent.getResult().getType().name()); //$NON-NLS-1$
-                payload.put("content", toolResultEvent.getResult().getContent()); //$NON-NLS-1$
-                payload.put("error_message", toolResultEvent.getResult().getErrorMessage()); //$NON-NLS-1$
+                payload.putAll(buildToolResultTracePayload(toolResultEvent));
                 parentEventId = toolTraceEventIds.get(toolResultEvent.getCallId());
                 if (parentEventId == null) {
                     parentEventId = stepTraceEventIds.get(Integer.valueOf(toolResultEvent.getStep()));
@@ -1231,5 +1225,27 @@ public class AgentRunner implements IAgentRunner {
                 return;
             }
         }
+    }
+
+    Map<String, Object> buildToolResultTracePayload(ToolResultEvent event) {
+        Map<String, Object> payload = new HashMap<>();
+        ToolResult result = event.getResult();
+        payload.put("tool_name", event.getToolName()); //$NON-NLS-1$
+        payload.put("call_id", event.getCallId()); //$NON-NLS-1$
+        payload.put("success", Boolean.valueOf(event.isSuccess())); //$NON-NLS-1$
+        payload.put("execution_time_ms", Long.valueOf(event.getExecutionTimeMs())); //$NON-NLS-1$
+        payload.put("result_type", result.getType().name()); //$NON-NLS-1$
+
+        ITool tool = toolRegistry.getTool(event.getToolName());
+        boolean sensitive = tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
+        if (sensitive) {
+            String resultText = result.isSuccess() ? result.getContent() : result.getErrorMessage();
+            payload.put("content_omitted", Boolean.TRUE); //$NON-NLS-1$
+            payload.put("content_length", Integer.valueOf(resultText == null ? 0 : resultText.length())); //$NON-NLS-1$
+        } else {
+            payload.put("content", result.getContent()); //$NON-NLS-1$
+            payload.put("error_message", result.getErrorMessage()); //$NON-NLS-1$
+        }
+        return payload;
     }
 }

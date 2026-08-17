@@ -14,14 +14,9 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.JsonObject;
 
 /**
- * Returns the EDT-stored infobase access credentials (user name and password) so an automated
- * browser/Playwright session can sign in to the 1C web client without asking the user to retype
- * them. Read-only against EDT's infobase access settings.
- *
- * <p><b>Sensitive:</b> the password is returned in plaintext by design (the caller needs it to log
- * in). It MUST be used only for the immediate login and never echoed back into the final report,
- * logs, or any persisted artifact. When EDT has no stored credentials, the caller should ask the
- * user to provide them in chat.</p>
+ * Returns non-secret metadata about EDT-stored infobase access settings. The stored password is
+ * never included in the model-facing result; callers may use OS authentication or ask the user to
+ * sign in manually in the browser session. Read-only against EDT's infobase access settings.
  */
 @ToolMeta(name = "get_infobase_credentials", category = "diagnostics",
         tags = {"read-only", "edt", "diagnostics", "sensitive"})
@@ -54,7 +49,8 @@ public class GetInfobaseCredentialsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Returns EDT-stored infobase login/password for automated 1C web client sign-in. Sensitive: use only to log in, never echo back."; //$NON-NLS-1$
+        return "Returns the EDT-stored infobase login name and authentication availability metadata, " //$NON-NLS-1$
+                + "never the stored password. Use OS authentication or manual user login in the browser session."; //$NON-NLS-1$
     }
 
     @Override
@@ -85,8 +81,8 @@ public class GetInfobaseCredentialsTool extends AbstractTool {
             if (settings == null) {
                 return ObservabilityToolSupport.failure(opId, TOOL_NAME, "CREDENTIALS_NOT_DEFINED", //$NON-NLS-1$
                         "No infobase access credentials are stored in EDT for project '" + projectName //$NON-NLS-1$
-                                + "'. Ask the user to provide the web client login and password in chat, " //$NON-NLS-1$
-                                + "or to set infobase access in EDT.", //$NON-NLS-1$
+                                + "'. Use OS authentication if available, configure infobase access in EDT, " //$NON-NLS-1$
+                                + "or ask the user to sign in manually in the browser session.", //$NON-NLS-1$
                         true);
             }
 
@@ -99,20 +95,52 @@ public class GetInfobaseCredentialsTool extends AbstractTool {
 
             JsonObject payload = ObservabilityToolSupport.successEnvelope(opId, TOOL_NAME);
             JsonObject data = payload.getAsJsonObject("data"); //$NON-NLS-1$
-            data.addProperty("project", projectName); //$NON-NLS-1$
-            data.addProperty("auth_kind", authKind); //$NON-NLS-1$
-            data.addProperty("user_name", nullToEmpty(settings.getUserName())); //$NON-NLS-1$
-            data.addProperty("password", nullToEmpty(settings.getPassword())); //$NON-NLS-1$
-            data.addProperty("additional_parameters", nullToEmpty(settings.getAdditionalParameters())); //$NON-NLS-1$
-            data.addProperty("security_note", //$NON-NLS-1$
-                    "Password is returned in plaintext for the immediate web client login only. " //$NON-NLS-1$
-                            + "Do not echo it into the final report, logs, or any persisted artifact."); //$NON-NLS-1$
-            if (settings.isOsAuthentication()) {
-                data.addProperty("note", //$NON-NLS-1$
-                        "OS authentication is configured: no explicit login/password — the web client uses the OS session."); //$NON-NLS-1$
-            }
+            boolean passwordAvailable = settings.getPassword() != null && !settings.getPassword().isBlank();
+            fillCredentialsData(data, projectName, authKind, settings.getUserName(), passwordAvailable,
+                    settings.getAdditionalParameters());
             return ObservabilityToolSupport.success(payload);
         });
+    }
+
+    static void fillCredentialsData(JsonObject data, String project, String authKind, String userName,
+            boolean passwordAvailable, String additionalParameters) {
+        String maskedAdditionalParameters = InfobaseAccessParameterMasking.mask(additionalParameters);
+        data.addProperty("project", project); //$NON-NLS-1$
+        data.addProperty("auth_kind", authKind); //$NON-NLS-1$
+        data.addProperty("user_name", nullToEmpty(userName)); //$NON-NLS-1$
+        data.addProperty("password_available", passwordAvailable); //$NON-NLS-1$
+        data.addProperty("password_delivery", "unavailable"); //$NON-NLS-1$ //$NON-NLS-2$
+        data.addProperty("password_delivery_reason", "plaintext_delivery_disabled"); //$NON-NLS-1$ //$NON-NLS-2$
+        data.addProperty("login_strategy", loginStrategy(authKind, passwordAvailable)); //$NON-NLS-1$
+        data.addProperty("additional_parameters", nullToEmpty(maskedAdditionalParameters)); //$NON-NLS-1$
+        data.addProperty("additional_parameters_masked", //$NON-NLS-1$
+                InfobaseAccessParameterMasking.isMasked(additionalParameters, maskedAdditionalParameters));
+        data.addProperty("next_action", //$NON-NLS-1$
+                "The stored password is never returned to the model. Use OS authentication if the " //$NON-NLS-1$
+                        + "infobase allows it, or ask the user to sign in manually in the browser session " //$NON-NLS-1$
+                        + "and continue from the authenticated page. Never ask the user to enter a password " //$NON-NLS-1$
+                        + "in chat, expose it to the model, guess it, or reuse one from elsewhere."); //$NON-NLS-1$
+        data.addProperty("security_note", //$NON-NLS-1$
+                "CodePilot1C does not expose stored infobase passwords to the model, to logs, " //$NON-NLS-1$
+                        + "or to conversation history."); //$NON-NLS-1$
+
+        if ("os".equals(authKind)) { //$NON-NLS-1$
+            data.addProperty("note", //$NON-NLS-1$
+                    "OS authentication is configured: no explicit login/password — the web client uses the OS session."); //$NON-NLS-1$
+        } else if (!passwordAvailable) {
+            data.addProperty("hint", //$NON-NLS-1$
+                    "Ask the user to sign in manually in the browser session; this account has no stored password."); //$NON-NLS-1$
+        }
+    }
+
+    private static String loginStrategy(String authKind, boolean passwordAvailable) {
+        if ("os".equals(authKind)) { //$NON-NLS-1$
+            return "os_session"; //$NON-NLS-1$
+        }
+        if (passwordAvailable) {
+            return "ask_user"; //$NON-NLS-1$
+        }
+        return "no_password_required"; //$NON-NLS-1$
     }
 
     private String resolveProjectName(ToolParameters params) {

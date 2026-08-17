@@ -71,13 +71,22 @@ Enumerate what the agent just developed and turn it into a concrete test plan.
    publish them (mutating command — asks for confirmation).
 3. `get_standalone_server_status()` — confirm `state=started`; if stopped, ask the user to start it.
 
-## Step 3 — Credentials
-`get_infobase_credentials(projectName=<name>)`. On `CREDENTIALS_NOT_DEFINED`, ask the user for the web
-client login/password in chat. `auth_kind=os` → no login form. **Never echo the password** into the
-report, chat, or any artifact.
+## Step 3 — Login strategy
+Call `get_infobase_credentials(projectName=<name>)`. It returns the login name and availability metadata,
+never the stored password.
+- `login_strategy=os_session` → use the OS-authenticated session; no explicit login form is expected.
+- `login_strategy=no_password_required` → ask the user to sign in manually in the browser session; the
+  account has no stored password.
+- `login_strategy=ask_user` → tell the user that automatic password delivery is unavailable and ask them
+  to sign in manually in the open browser session; continue only from the authenticated page.
+- On `CREDENTIALS_NOT_DEFINED`, use OS authentication if available or ask the user to sign in manually in
+  the browser session.
+- Never ask the user to put a password in chat, expose one to the model, guess one, or reuse one from
+  another source. If neither OS authentication nor manual browser login is available, stop and report
+  `FAIL: no login strategy available`; do not simulate verification.
 
 ## Step 4 — E2E run (maximum depth)
-Navigate to `web_client_url`, log in once, then for each planned object/flow (use deep-link
+Navigate to `web_client_url`, complete login according to Step 3, then for each planned object/flow (use deep-link
 `#e1cib/list/<Тип>.<Имя>`, the sections panel, or «Функции для технического специалиста» to reach it):
 1. Open the **list form** — confirm it loads, columns match what `inspect_form_layout` reported, data renders.
 2. **Create** via «Создать»: open the object form, confirm every new attribute/field/table is present and

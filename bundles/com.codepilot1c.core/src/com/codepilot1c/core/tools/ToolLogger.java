@@ -149,54 +149,78 @@ public class ToolLogger {
      * @param executionTimeMs время выполнения в мс
      */
     public void logToolCallResult(int callId, String toolName, ToolResult result, long executionTimeMs) {
+        logToolCallResult(callId, toolName, result, executionTimeMs, false);
+    }
+
+    /**
+     * Logs a tool result, omitting result content and error text for sensitive tools.
+     *
+     * @param callId ID вызова
+     * @param toolName имя инструмента
+     * @param result результат выполнения
+     * @param executionTimeMs время выполнения в мс
+     * @param sensitive whether result content must be omitted
+     */
+    public void logToolCallResult(int callId, String toolName, ToolResult result, long executionTimeMs,
+            boolean sensitive) {
         if (!enabled) return;
 
         totalExecutionTime.addAndGet(executionTimeMs);
-
-        StringBuilder sb = new StringBuilder();
-
         if (result.isSuccess()) {
             successCount.incrementAndGet();
-            sb.append("║ RESULT: SUCCESS\n");
-            sb.append(String.format("║ Execution time: %d ms\n", executionTimeMs));
-
-            String content = result.getContent();
-            if (content != null) {
-                sb.append(String.format("║ Content length: %d chars\n", content.length()));
-
-                if (verboseMode && content.length() <= 2000) {
-                    sb.append("║ Content:\n");
-                    sb.append("║ ────────────────────────────────────────────────────────────────────────\n");
-                    // Indent content
-                    for (String line : content.split("\n")) {
-                        sb.append("║   ").append(truncate(line, 100)).append("\n");
-                    }
-                } else if (content.length() > 2000) {
-                    sb.append("║ Content (truncated):\n");
-                    sb.append("║ ────────────────────────────────────────────────────────────────────────\n");
-                    sb.append("║   ").append(truncate(content, 500)).append("...\n");
-                }
-            }
         } else {
             failureCount.incrementAndGet();
-            sb.append("║ RESULT: FAILURE\n");
-            sb.append(String.format("║ Execution time: %d ms\n", executionTimeMs));
-            sb.append(String.format("║ Error: %s\n", result.getErrorMessage()));
         }
-
-        sb.append("╚══════════════════════════════════════════════════════════════════════════════\n");
-
-        String logEntry = sb.toString();
-        writeToLog(logEntry);
+        writeToLog(formatResultEntry(toolName, result, executionTimeMs, sensitive, verboseMode));
 
         if (result.isSuccess()) {
             LOG.debug("[TOOL #%d] END %s: SUCCESS in %d ms, %d chars",
                     callId, toolName, executionTimeMs,
                     result.getContent() != null ? result.getContent().length() : 0);
+        } else if (sensitive) {
+            LOG.warn("[TOOL #%d] END %s: FAILED in %d ms: [omitted: sensitive tool]",
+                    callId, toolName, executionTimeMs);
         } else {
             LOG.warn("[TOOL #%d] END %s: FAILED in %d ms: %s",
                     callId, toolName, executionTimeMs, result.getErrorMessage());
         }
+    }
+
+    static String formatResultEntry(String toolName, ToolResult result, long executionTimeMs,
+            boolean sensitive) {
+        return formatResultEntry(toolName, result, executionTimeMs, sensitive, true);
+    }
+
+    private static String formatResultEntry(String toolName, ToolResult result, long executionTimeMs,
+            boolean sensitive, boolean verbose) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(result.isSuccess() ? "║ RESULT: SUCCESS\n" : "║ RESULT: FAILURE\n");
+        sb.append(String.format("║ Tool: %s\n", toolName));
+        sb.append(String.format("║ Result type: %s\n", result.getType().name()));
+        sb.append(String.format("║ Execution time: %d ms\n", executionTimeMs));
+
+        String resultText = result.isSuccess() ? result.getContent() : result.getErrorMessage();
+        int resultLength = resultText == null ? 0 : resultText.length();
+        sb.append(String.format("║ Content length: %d chars\n", resultLength));
+        if (sensitive) {
+            sb.append("║ Content: [omitted: sensitive tool]\n");
+        } else if (result.isSuccess() && resultText != null) {
+            if (verbose && resultText.length() <= 2000) {
+                sb.append("║ Content:\n");
+                sb.append("║ ────────────────────────────────────────────────────────────────────────\n");
+                for (String line : resultText.split("\n")) {
+                    sb.append("║   ").append(truncate(line, 100)).append("\n");
+                }
+            } else if (resultText.length() > 2000) {
+                sb.append("║ Content (truncated):\n");
+                sb.append("║ ────────────────────────────────────────────────────────────────────────\n");
+                sb.append("║   ").append(truncate(resultText, 500)).append("...\n");
+            }
+        } else if (!result.isSuccess()) {
+            sb.append(String.format("║ Error: %s\n", resultText));
+        }
+        sb.append("╚══════════════════════════════════════════════════════════════════════════════\n");
+        return sb.toString();
     }
 
     /**
@@ -208,6 +232,14 @@ public class ToolLogger {
      * @param executionTimeMs время выполнения в мс
      */
     public void logToolCallError(int callId, String toolName, Throwable error, long executionTimeMs) {
+        logToolCallError(callId, toolName, error, executionTimeMs, false);
+    }
+
+    /**
+     * Logs a tool exception without its message or stack trace when the tool is sensitive.
+     */
+    void logToolCallError(int callId, String toolName, Throwable error, long executionTimeMs,
+            boolean sensitive) {
         if (!enabled) return;
 
         failureCount.incrementAndGet();
@@ -217,9 +249,13 @@ public class ToolLogger {
         sb.append("║ RESULT: EXCEPTION\n");
         sb.append(String.format("║ Execution time: %d ms\n", executionTimeMs));
         sb.append(String.format("║ Exception: %s\n", error.getClass().getSimpleName()));
-        sb.append(String.format("║ Message: %s\n", error.getMessage()));
+        if (sensitive) {
+            sb.append("║ Message: [omitted: sensitive tool]\n");
+        } else {
+            sb.append(String.format("║ Message: %s\n", error.getMessage()));
+        }
 
-        if (verboseMode) {
+        if (verboseMode && !sensitive) {
             sb.append("║ Stack trace:\n");
             for (StackTraceElement element : error.getStackTrace()) {
                 if (element.getClassName().startsWith("com.codepilot1c")) {
@@ -235,8 +271,13 @@ public class ToolLogger {
         String logEntry = sb.toString();
         writeToLog(logEntry);
 
-        LOG.error("[TOOL #%d] END %s: EXCEPTION in %d ms: %s",
-                callId, toolName, executionTimeMs, error.getMessage());
+        if (sensitive) {
+            LOG.error("[TOOL #%d] END %s: EXCEPTION in %d ms: [omitted: sensitive tool]",
+                    callId, toolName, executionTimeMs);
+        } else {
+            LOG.error("[TOOL #%d] END %s: EXCEPTION in %d ms: %s",
+                    callId, toolName, executionTimeMs, error.getMessage());
+        }
     }
 
     /**
@@ -362,7 +403,7 @@ public class ToolLogger {
         return sb.toString();
     }
 
-    private String truncate(String str, int maxLength) {
+    private static String truncate(String str, int maxLength) {
         if (str == null) return "";
         if (str.length() <= maxLength) return str;
         return str.substring(0, maxLength);
