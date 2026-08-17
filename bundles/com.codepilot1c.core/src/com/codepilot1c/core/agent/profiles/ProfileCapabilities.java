@@ -20,6 +20,11 @@ public final class ProfileCapabilities {
     /**
      * Derives what a profile can do directly.
      *
+     * <p>{@link AgentCapability#READ_ONLY} means that project/workspace state
+     * is not mutated. It does not imply that every implementation is
+     * process-free: a read-only tool may use a fixed local helper process, as
+     * long as user code is not executed and project state is untouched.</p>
+     *
      * @param profile profile to inspect
      * @return execution capability
      */

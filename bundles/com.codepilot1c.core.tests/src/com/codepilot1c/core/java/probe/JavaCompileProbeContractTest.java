@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.Test;
@@ -17,7 +18,17 @@ import org.junit.Assume;
 
 import com.codepilot1c.core.edt.observability.CommandResult;
 import com.codepilot1c.core.edt.observability.CommandRunner;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
+import com.codepilot1c.core.agent.profiles.PlanAgentProfile;
+import com.codepilot1c.core.agent.profiles.ProfileCapabilities;
+import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolRegistry;
+import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.java.JavaCompileProbeTool;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 public class JavaCompileProbeContractTest {
 
@@ -236,6 +247,96 @@ public class JavaCompileProbeContractTest {
         assertFalse(Path.of(directory.stdout().trim()).startsWith(Path.of("").toAbsolutePath().normalize())); //$NON-NLS-1$
     }
 
+    @Test
+    public void toolSchemaIsStrictAndFixed() {
+        JavaCompileProbeTool tool = toolWith(new RecordingRunner(new CommandResult(0, "", "", false)), true); //$NON-NLS-1$ //$NON-NLS-2$
+        JsonObject schema = JsonParser.parseString(tool.getParameterSchema()).getAsJsonObject();
+        JsonObject properties = schema.getAsJsonObject("properties"); //$NON-NLS-1$
+
+        assertEquals(Set.of("snippet", "snippet_kind"), properties.keySet()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(List.of("snippet"), //$NON-NLS-1$
+                schema.getAsJsonArray("required").asList().stream().map(value -> value.getAsString()).toList()); //$NON-NLS-1$
+        assertFalse(schema.get("additionalProperties").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(properties.has("classpath")); //$NON-NLS-1$
+        assertFalse(properties.has("jdk_home")); //$NON-NLS-1$
+        assertFalse(properties.has("timeout_ms")); //$NON-NLS-1$
+        assertFalse(properties.has("max_output")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void toolDeclaresNoMutatingCapability() {
+        ITool tool = new JavaCompileProbeTool();
+
+        assertEquals("java_compile_probe", tool.getName()); //$NON-NLS-1$
+        assertFalse(tool.isMutating());
+        assertFalse(tool.requiresConfirmation());
+        assertFalse(tool.isDestructive());
+        assertFalse(tool.requiresValidationToken());
+        assertEquals(Set.of("read-only", "local-exec", "java"), tool.getTags()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    @Test
+    public void toolIsRegisteredUnderHonestName() {
+        ITool tool = ToolRegistry.getInstance().getTool("java_compile_probe"); //$NON-NLS-1$
+        assertTrue(tool instanceof JavaCompileProbeTool);
+        assertEquals("java_compile_probe", tool.getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void toolIsNotTaggedSensitiveSoTraceKeepsContent() throws Exception {
+        JavaCompileProbeTool tool = toolWith(
+                new RecordingRunner(new CommandResult(0, "", "", false)), true); //$NON-NLS-1$ //$NON-NLS-2$
+
+        ToolResult result = tool.execute(Map.of("snippet", "1 + 1", "snippet_kind", "EXPRESSION")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+
+        assertFalse(tool.getTags().contains("sensitive")); //$NON-NLS-1$
+        assertTrue(result.isSuccess());
+        assertTrue(result.getContent().contains("код не исполнялся")); //$NON-NLS-1$
+        assertPayloadKeys(toOutcomeShape(result.getStructuredData()));
+    }
+
+    @Test
+    public void disabledByDefaultProducesDeterministicPayloadAndNoProcess() throws Exception {
+        RecordingRunner commands = new RecordingRunner(new CommandResult(0, "", "", false)); //$NON-NLS-1$ //$NON-NLS-2$
+        JavaCompileProbeTool tool = toolWith(commands, JavaCompileProbeTool.DEFAULT_ENABLED);
+
+        ToolResult result = tool.execute(Map.of("snippet", "1 + 1")).get(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(result.isSuccess());
+        assertEquals(0, commands.commands.size());
+        assertEquals("probe_disabled", result.getStructuredData().get("error_code").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(12, result.getStructuredData().size());
+    }
+
+    @Test
+    public void toolIsAbsentFromMutatingProfileAllowlists() {
+        AgentProfileRegistry.getInstance().getAllProfiles().stream()
+                .filter(profile -> !profile.isReadOnly())
+                .forEach(profile -> assertFalse(profile.getId(),
+                        profile.getAllowedTools().contains("java_compile_probe"))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void exploreAndPlanRemainReadOnlyWithProbeRegistered() {
+        var registry = AgentProfileRegistry.getInstance();
+        var explore = registry.getProfile(ExploreAgentProfile.ID).orElseThrow();
+        var plan = registry.getProfile(PlanAgentProfile.ID).orElseThrow();
+
+        assertTrue(explore.getAllowedTools().contains("java_compile_probe")); //$NON-NLS-1$
+        assertTrue(plan.getAllowedTools().contains("java_compile_probe")); //$NON-NLS-1$
+        assertEquals(AgentCapability.READ_ONLY, ProfileCapabilities.executionCapability(explore));
+        assertEquals(AgentCapability.READ_ONLY, ProfileCapabilities.executionCapability(plan));
+    }
+
+    @Test
+    public void toolContractIsProviderNeutral() {
+        JavaCompileProbeTool tool = new JavaCompileProbeTool();
+        String contract = (tool.getDescription() + tool.getParameterSchema()).toLowerCase();
+        for (String providerTerm : List.of("openai", "anthropic", "qwen", "gemini", "provider")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            assertFalse(providerTerm, contract.contains(providerTerm));
+        }
+    }
+
     private static List<String> command(Path javac, Path source, Path out) {
         return new JavacCommandBuilder(javac).build(source, out);
     }
@@ -256,6 +357,10 @@ public class JavaCompileProbeContractTest {
                 new JdkLocator(() -> home.toString(), () -> null, () -> null));
     }
 
+    private static JavaCompileProbeTool toolWith(CommandRunner commandRunner, boolean enabled) {
+        return new JavaCompileProbeTool(runnerWith(commandRunner), () -> enabled);
+    }
+
     private static Path runtimeJdkHome() {
         return Path.of(System.getProperty("java.home")); //$NON-NLS-1$
     }
@@ -270,6 +375,22 @@ public class JavaCompileProbeContractTest {
         assertEquals(12, json.size());
         assertEquals(PAYLOAD_KEYS, json.keySet());
         assertEquals("compile_only", json.get("probe_mode").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static ProbeOutcome toOutcomeShape(JsonObject json) {
+        return new ProbeOutcome(
+                json.get("probe_ok").getAsBoolean(), //$NON-NLS-1$
+                json.get("compiles").getAsBoolean(), //$NON-NLS-1$
+                json.get("error_code").getAsString(), //$NON-NLS-1$
+                json.get("snippet_kind").getAsString(), //$NON-NLS-1$
+                json.get("diagnostics").getAsString(), //$NON-NLS-1$
+                json.get("error_count").getAsInt(), //$NON-NLS-1$
+                json.get("warning_count").getAsInt(), //$NON-NLS-1$
+                json.get("truncated").getAsBoolean(), //$NON-NLS-1$
+                json.get("duration_ms").getAsLong(), //$NON-NLS-1$
+                json.get("exit_code").getAsInt(), //$NON-NLS-1$
+                json.get("jdk_source").getAsString(), //$NON-NLS-1$
+                json.get("probe_mode").getAsString()); //$NON-NLS-1$
     }
 
     private static final class RecordingRunner implements CommandRunner {

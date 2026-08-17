@@ -47,6 +47,7 @@ import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
 import com.codepilot1c.core.tools.meta.ToolDescriptorRegistry;
 import com.codepilot1c.core.tools.workspace.*;
 import com.codepilot1c.core.tools.gsd.*;
+import com.codepilot1c.core.tools.java.JavaCompileProbeTool;
 
 /**
  * Registry for AI tools.
@@ -124,6 +125,7 @@ public class ToolRegistry {
         register(new GetSymbolInfoTool());
         register(new GetBookmarksTool());
         register(new GetTasksTool());
+        register(new JavaCompileProbeTool());
 
         register(new com.codepilot1c.core.tools.profiling.StartProfilingTool());
         register(new com.codepilot1c.core.tools.profiling.GetProfilingResultsTool());

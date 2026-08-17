@@ -24,6 +24,7 @@ import com.codepilot1c.core.permissions.PermissionRule;
  *   <li>Быстрый поиск файлов (glob)</li>
  *   <li>Поиск по содержимому (grep)</li>
  *   <li>Чтение файлов</li>
+ *   <li>Compile-only проверка Java без изменения проекта</li>
  * </ul>
  *
  * <p>Особенности:</p>
@@ -79,6 +80,7 @@ public class ExploreAgentProfile implements AgentProfile {
             "bsl_module_context",
             "bsl_module_exports",
             "inspect_platform_reference",
+            "java_compile_probe",
             "skill",
             "task",
             "discover_tools"
@@ -140,6 +142,7 @@ public class ExploreAgentProfile implements AgentProfile {
                 PermissionRule.allow("bsl_module_context").forAllResources(),
                 PermissionRule.allow("bsl_module_exports").forAllResources(),
                 PermissionRule.allow("inspect_platform_reference").forAllResources(),
+                PermissionRule.allow("java_compile_probe").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
                 PermissionRule.allow("discover_tools").forAllResources()
