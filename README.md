@@ -345,6 +345,61 @@ pgrep -f '1cedt' | while read -r pid; do lsof -p "$pid" 2>/dev/null | grep codep
 mvn -DskipTests package
 ```
 
+## Публикация update site
+
+Публикует содержимое `repositories/com.codepilot1c.update/target/repository` в ветку `gh-pages`:
+
+```bash
+tools/publish-p2-local.sh
+```
+
+По умолчанию скрипт сначала собирает проект (`mvn clean verify`) и публикует свежий результат.
+
+**Важно про qualifier.** Tycho генерирует qualifier заново на каждой сборке, поэтому пересборка
+всегда даёт версию, отличную от той, которую вы проверяли на живой EDT. Публиковать пересобранный,
+непроверенный qualifier нельзя. Если приёмка проходила на конкретной локальной сборке — публикуйте
+именно её, без пересборки:
+
+```bash
+# один раз зафиксировать происхождение уже собранного артефакта (сборка не запускается)
+RECORD_PROVENANCE=1 tools/publish-p2-local.sh
+
+# сухой прогон: только проверки, без worktree, коммита и push
+DRY_RUN=1 SKIP_BUILD=1 \
+  EXPECT_QUALIFIER=1.3.0.20260817-1635 \
+  EXPECT_HEAD="$(git rev-parse HEAD)" \
+  tools/publish-p2-local.sh
+
+# публикация ровно этого артефакта
+SKIP_BUILD=1 \
+  EXPECT_QUALIFIER=1.3.0.20260817-1635 \
+  EXPECT_HEAD="$(git rev-parse HEAD)" \
+  tools/publish-p2-local.sh
+```
+
+`SKIP_BUILD=1` требует обеих переменных `EXPECT_QUALIFIER` и `EXPECT_HEAD` и падает до любых
+действий с git, если хотя бы одна проверка не прошла:
+
+- каталог p2-репозитория существует, содержит непустые `content.jar` и `artifacts.jar`;
+- в репозитории присутствуют feature, `com.codepilot1c.core` и `com.codepilot1c.ui`;
+- **ровно один** qualifier на все артефакты `com.codepilot1c.*`, и он равен `EXPECT_QUALIFIER`;
+- в `plugins/` нет `*.tests` бандлов;
+- рядом лежит файл происхождения `repositories/com.codepilot1c.update/target/repository.provenance`,
+  его qualifier и HEAD совпадают с ожидаемыми, а контрольная сумма артефакта не изменилась с момента
+  фиксации;
+- рабочее дерево чистое и `HEAD` совпадает с `EXPECT_HEAD`.
+
+`EXPECT_QUALIFIER` можно задавать и в режиме по умолчанию: тогда сборка выполняется, но публикация
+будет отклонена, если собранный qualifier не совпал с ожидаемым.
+
+Файл `repository.provenance` лежит **вне** публикуемого каталога и на update site не попадает.
+
+Перед публикацией имеет смысл прогнать тесты самого скрипта:
+
+```bash
+bash tools/tests/p2-publish-validate-test.sh
+```
+
 ## Локальный E2E workflow для EDT
 
 Для полного локального цикла `build -> p2 update -> relaunch EDT -> MCP smoke -> qa_inspect(command=status) -> qa_run`
