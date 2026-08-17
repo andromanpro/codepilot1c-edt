@@ -138,8 +138,9 @@ public class TaskTool extends AbstractTool {
             AgentProfileRegistry profileRegistry = AgentProfileRegistry.getInstance();
             AgentProfile resolvedProfile = profileRegistry.getProfile(resolvedProfileId).orElse(null);
 
-            // Legacy ChatView/MCP callers have no trusted profile scope. Preserve
-            // their previous fail-open profile fallback at the root call.
+            // ChatView (W6) и MCP host (W7) передают scoped-контекст и сюда не попадают.
+            // Ветка остаётся для оставшихся unscoped вызывающих (benchmark runner,
+            // прямые ITool.execute, тесты) и сохраняет для них прежний fail-open fallback.
             if (!context.isScoped()) {
                 AgentProfile legacyProfile = resolvedProfile != null
                         ? resolvedProfile
