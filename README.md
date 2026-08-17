@@ -58,8 +58,18 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 
 ### Путь B: замена через p2 director (рекомендуется)
 
-Полностью закройте EDT. Для установки 1C:EDT 2026.2.0 на macOS прямому native launcher нужен
-явный `-vm`:
+Полностью закройте EDT. Пути ниже — **пример для проверенной установки на macOS**, а не универсальные
+значения. Сначала найдите свою EDT и совместимую JVM (архитектура JVM должна совпадать с EDT):
+
+```bash
+find "$HOME/Library/Application Support/1C/1cedtstart/installations" \
+  -maxdepth 2 -type d -name '1cedt.app' -print
+find /Applications/1C/1CE/components \
+  -type f -path '*/lib/server/libjvm.dylib' -print
+```
+
+Подставьте выбранные пути вместо примеров. Для проверенной установки 1C:EDT 2026.2.0 прямому
+native launcher нужен явный `-vm`:
 
 ```bash
 EDT_APP="$HOME/Library/Application Support/1C/1cedtstart/installations/1C_EDT (Lite) 2026.2.0/1cedt.app"
@@ -71,19 +81,30 @@ SITE="https://ondysss.github.io/codepilot1c-edt/"
 # SITE="file:/абсолютный/путь/repositories/com.codepilot1c.update/target/repository"
 IU="com.codepilot1c.feature.feature.group"
 
-# 0. Резервная копия профиля
-cp -R "$EDT_HOME/p2" "$EDT_HOME/p2.bak-$(date +%Y%m%d-%H%M)"
-cp -R "$EDT_HOME/configuration" "$EDT_HOME/configuration.bak-$(date +%Y%m%d-%H%M)"
-
-# 1. Снять старую версию
+# Проверить активную версию и версии root IU, доступные на update site
+BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
+grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
 "$EDT_EXE" -vm "$EDT_VM" \
   -application org.eclipse.equinox.p2.director -noSplash \
-  -destination "$EDT_HOME" -uninstallIU "$IU" -consoleLog
+  -repository "$SITE" -list -consoleLog | grep "$IU"
 
-# 2. Поставить новую версию
+# Проверенные значения для замены 1.0.0.20260817-0605 на 1.3.0.20260817-1245.
+# Для другой установки подставьте версии из двух проверок выше.
+OLD_VERSION="1.0.0.20260817-0605"
+NEW_VERSION="1.3.0.20260817-1245"
+OLD_IU="$IU/$OLD_VERSION"
+NEW_IU="$IU/$NEW_VERSION"
+
+# Резервная копия профиля
+BACKUP_SUFFIX="$(date +%Y%m%d-%H%M)"
+cp -R "$EDT_HOME/p2" "$EDT_HOME/p2.bak-$BACKUP_SUFFIX"
+cp -R "$EDT_HOME/configuration" "$EDT_HOME/configuration.bak-$BACKUP_SUFFIX"
+
+# Одна p2-транзакция: удалить точную старую IU и установить точную новую IU
 "$EDT_EXE" -vm "$EDT_VM" \
   -application org.eclipse.equinox.p2.director -noSplash \
-  -repository "$SITE" -destination "$EDT_HOME" -installIU "$IU" -consoleLog
+  -repository "$SITE" -destination "$EDT_HOME" \
+  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" -consoleLog
 ```
 
 На headless Linux запускайте director под Xvfb, как в `tools/run-edt-e2e-local.sh`; на macOS Xvfb не нужен.
@@ -105,8 +126,10 @@ grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
 
 ### Диагностика и откат
 
-При отказе сохраните вывод `-consoleLog` и проверьте `$EDT_HOME/configuration/*.log`. При частичном
-отказе повторите шаги удаления и установки по одному, проверяя `bundles.info` между ними.
+При отказе сохраните вывод `-consoleLog` и проверьте `$EDT_HOME/configuration/*.log`. Снова сверьте
+точные версии в `bundles.info` и update site, затем повторите единую транзакцию. Не заменяйте
+versioned `OLD_IU`/`NEW_IU` двумя одинаковыми unversioned-значениями и не разделяйте команду на
+независимые uninstall/install вызовы.
 
 Откат через `Installation Details → Installation History → Revert` возможен, но может не разрешиться,
 поскольку артефакты 1.0.x удалены с публичного сайта. Надёжный путь — локально сохранённый update-site
