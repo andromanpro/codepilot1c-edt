@@ -29,6 +29,7 @@ import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.codepilot1c.core.mcp.host.McpHostConfigStore;
 import com.codepilot1c.core.mcp.host.McpHostManager;
+import com.codepilot1c.core.mcp.host.McpHostSessionProfileChoices;
 import com.codepilot1c.ui.internal.Messages;
 
 /**
@@ -136,15 +137,22 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
         sessionProfileCombo.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
         List<String> profileLabels = new ArrayList<>();
         sessionProfileIds.clear();
-        sessionProfileIds.add(""); //$NON-NLS-1$
-        profileLabels.add("(не задан — профильный гейт выключен)"); //$NON-NLS-1$
-        for (AgentProfile profile : AgentProfileRegistry.getInstance().getAllProfiles()) {
-            sessionProfileIds.add(profile.getId());
-            profileLabels.add(profile.getId());
+        McpHostSessionProfileChoices profileChoices = McpHostSessionProfileChoices.of(
+                config.getSessionProfileId(),
+                AgentProfileRegistry.getInstance().getAllProfiles().stream()
+                        .map(AgentProfile::getId)
+                        .toList());
+        for (McpHostSessionProfileChoices.Choice choice : profileChoices.choices()) {
+            sessionProfileIds.add(choice.id());
+            profileLabels.add(switch (choice.kind()) {
+                case UNSET -> "(не задан — профильный гейт выключен)"; //$NON-NLS-1$
+                case REGISTERED -> choice.id();
+                case UNKNOWN -> choice.id()
+                        + " (неизвестен — все вызовы отклоняются)"; //$NON-NLS-1$
+            });
         }
         sessionProfileCombo.setItems(profileLabels.toArray(String[]::new));
-        int selectedProfile = sessionProfileIds.indexOf(config.getSessionProfileId());
-        sessionProfileCombo.select(selectedProfile >= 0 ? selectedProfile : 0);
+        sessionProfileCombo.select(profileChoices.selectedIndex());
 
         createLabel(container, Messages.McpHostPreferencePage_ExposedTools);
         exposedToolsText = new Text(container, SWT.BORDER);
