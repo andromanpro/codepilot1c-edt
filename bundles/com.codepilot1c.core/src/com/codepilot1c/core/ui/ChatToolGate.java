@@ -20,6 +20,7 @@ import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.permissions.ProfilePermissionGate.GateDecision;
@@ -28,7 +29,6 @@ import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
-import com.google.gson.JsonObject;
 
 /**
  * Pure profile and permission policy for the ChatView tool loop.
@@ -178,7 +178,7 @@ public final class ChatToolGate {
         Set<String> allowed = profile.getAllowedTools();
         if (!isVisible(toolName, allowed, dynamicToolNamesSafe())) {
             String reasonCode = "tool_not_in_profile"; //$NON-NLS-1$
-            return deny(arguments, context, permissionDenied(
+            return deny(arguments, context, PermissionDenialPayload.denied(
                     toolName, profile.getId(), null, reasonCode, LAYER_PROFILE, null),
                     reasonCode, LAYER_PROFILE, null);
         }
@@ -188,7 +188,7 @@ public final class ChatToolGate {
         String ruleDescription = gate.rule() != null ? gate.rule().getDescription() : null;
         if (gate.isDenied()) {
             String reasonCode = "denied_by_" + gate.layer() + "_rule"; //$NON-NLS-1$ //$NON-NLS-2$
-            return deny(arguments, context, permissionDenied(
+            return deny(arguments, context, PermissionDenialPayload.denied(
                     toolName, profile.getId(), gate.resource(), reasonCode,
                     gate.layer(), ruleDescription),
                     reasonCode, gate.layer(), gate.resource());
@@ -213,7 +213,7 @@ public final class ChatToolGate {
         String unavailableLayer = gateAsk ? gate.layer() : LAYER_TOOL;
         String unavailableResource = gateAsk ? gate.resource() : null;
         String unavailableDescription = gateAsk ? ruleDescription : null;
-        ToolResult unavailable = permissionDenied(
+        ToolResult unavailable = PermissionDenialPayload.denied(
                 toolName, profile.getId(), unavailableResource, unavailableReason,
                 unavailableLayer, unavailableDescription);
         if (!confirmationSinkAvailable.getAsBoolean()) {
@@ -301,38 +301,4 @@ public final class ChatToolGate {
                 reasonCode, layer, resource);
     }
 
-    private ToolResult permissionDenied(
-            String toolName,
-            String profileId,
-            String resource,
-            String reasonCode,
-            String layer,
-            String ruleDescription) {
-        JsonObject data = new JsonObject();
-        data.addProperty("error", "permission_denied"); //$NON-NLS-1$ //$NON-NLS-2$
-        data.addProperty("tool", toolName); //$NON-NLS-1$
-        data.addProperty("profile", profileId); //$NON-NLS-1$
-        data.addProperty("reason", reasonCode); //$NON-NLS-1$
-        data.addProperty("reason_code", reasonCode); //$NON-NLS-1$
-        data.addProperty("layer", layer); //$NON-NLS-1$
-        data.addProperty("rule_description",
-                ruleDescription != null ? ruleDescription : ""); //$NON-NLS-1$ //$NON-NLS-2$
-        if (resource != null) {
-            data.addProperty("resource", resource); //$NON-NLS-1$
-        }
-
-        StringBuilder message = new StringBuilder()
-                .append("Инструмент запрещен политикой профиля: ").append(toolName) //$NON-NLS-1$
-                .append(" (profile=").append(profileId); //$NON-NLS-1$
-        if (resource != null) {
-            message.append(", resource=").append(resource); //$NON-NLS-1$
-        }
-        message.append(", reason_code=").append(reasonCode) //$NON-NLS-1$
-                .append(", layer=").append(layer); //$NON-NLS-1$
-        if (ruleDescription != null && !ruleDescription.isBlank()) {
-            message.append(", rule_description=").append(ruleDescription); //$NON-NLS-1$
-        }
-        message.append(')');
-        return ToolResult.failure(message.toString(), data);
-    }
 }

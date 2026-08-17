@@ -139,7 +139,7 @@ public class ChatViewPermissionGateTest {
     }
 
     @Test
-    public void denialPayloadIsIdenticalToAgentRunnerPayload() {
+    public void denialPayloadMatchesSharedPermissionContract() {
         AgentProfile contractProfile = profile(
                 "contract", Set.of("contract_tool"), List.of(), false); //$NON-NLS-1$ //$NON-NLS-2$
         CountingTool contractTool = new CountingTool("contract_tool"); //$NON-NLS-1$
