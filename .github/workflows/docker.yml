@@ -1,10 +1,6 @@
 name: Docker
 
 on:
-  push:
-    branches: [main]
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       edt_version:
@@ -25,6 +21,11 @@ jobs:
       packages: write
 
     steps:
+      - name: Reject unsupported GitHub-hosted runner
+        run: |
+          echo "::error file=targets/default/default.target,line=18::Docker build requires a self-hosted runner with a local 1C:EDT installation. The target platform contains a Directory location that is unavailable on GitHub-hosted runners."
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -40,7 +41,7 @@ jobs:
 
       - name: Copy plugin artifact to docker context
         run: |
-          cp releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
+          cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
           ls -lh docker/plugin.zip
 
       - name: Extract plugin version
