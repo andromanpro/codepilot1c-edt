@@ -36,7 +36,7 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 5. Выберите `1C Copilot`, нажмите `Next` и пройдите мастер установки.
 6. При необходимости подтвердите окна доверия и перезапустите EDT.
 
-## Обновление с 1.0.x на 1.3.0
+## Обновление установленной версии
 
 > **До начала обновления сохраните локальную копию прежнего update-site ZIP.** Публичный update site
 > хранит только последнюю версию, поэтому без локальной копии или
@@ -58,8 +58,20 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 
 ### Путь B: замена через p2 director (рекомендуется)
 
-Полностью закройте EDT. Пути ниже — **пример для проверенной установки на macOS**, а не универсальные
-значения. Сначала найдите свою EDT и совместимую JVM (архитектура JVM должна совпадать с EDT):
+Процедура версионно-нейтральна: конкретные версии определяются на месте, ничего не нужно
+подставлять из этого файла. Пути ниже — **пример для проверенной установки на macOS**.
+
+#### B0. Закрыть IDE и определить окружение
+
+Полностью закройте 1C:EDT **и** `1cedtstart`: на установках, развёрнутых через `1cedtstart`, оба
+процесса пишут в один разделяемый p2-реестр, и запущенный `1cedtstart` может перезаписать результат
+director'а. Завершайте штатно; `kill -9` может оставить реестр в несогласованном состоянии.
+
+```bash
+pgrep -fl '1cedtstart|1cedt' || echo 'процессы EDT не найдены — можно продолжать'
+```
+
+Найдите установку и совместимую JVM (архитектура JVM должна совпадать с EDT):
 
 ```bash
 find "$HOME/Library/Application Support/1C/1cedtstart/installations" \
@@ -76,64 +88,249 @@ EDT_APP="$HOME/Library/Application Support/1C/1cedtstart/installations/1C_EDT (L
 EDT_HOME="$EDT_APP/Contents/Eclipse"
 EDT_EXE="$EDT_APP/Contents/MacOS/1cedt"
 EDT_VM="/Applications/1C/1CE/components/axiom-jdk-full-25.0.2+12-x86_64/lib/server/libjvm.dylib"
-SITE="https://ondysss.github.io/codepilot1c-edt/"
-# Для локальной сборки вместо SITE используйте:
-# SITE="file:/абсолютный/путь/repositories/com.codepilot1c.update/target/repository"
 IU="com.codepilot1c.feature.feature.group"
-
-# Проверить активную версию и версии root IU, доступные на update site
-BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
-grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
-"$EDT_EXE" -vm "$EDT_VM" \
-  -application org.eclipse.equinox.p2.director -noSplash \
-  -repository "$SITE" -list -consoleLog | grep "$IU"
-
-# Проверенные значения для замены 1.0.0.20260817-0605 на 1.3.0.20260817-1245.
-# Для другой установки подставьте версии из двух проверок выше.
-OLD_VERSION="1.0.0.20260817-0605"
-NEW_VERSION="1.3.0.20260817-1245"
-OLD_IU="$IU/$OLD_VERSION"
-NEW_IU="$IU/$NEW_VERSION"
-
-# Резервная копия профиля
-BACKUP_SUFFIX="$(date +%Y%m%d-%H%M)"
-cp -R "$EDT_HOME/p2" "$EDT_HOME/p2.bak-$BACKUP_SUFFIX"
-cp -R "$EDT_HOME/configuration" "$EDT_HOME/configuration.bak-$BACKUP_SUFFIX"
-
-# Одна p2-транзакция: удалить точную старую IU и установить точную новую IU
-"$EDT_EXE" -vm "$EDT_VM" \
-  -application org.eclipse.equinox.p2.director -noSplash \
-  -repository "$SITE" -destination "$EDT_HOME" \
-  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" -consoleLog
+SITE="https://ondysss.github.io/codepilot1c-edt/"
+# Для локальной сборки вместо SITE используйте абсолютный путь к собранному сайту:
+# SITE="file:$(pwd)/repositories/com.codepilot1c.update/target/repository"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/codepilot1c-p2-backup-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$BACKUP_DIR"
 ```
 
-На headless Linux запускайте director под Xvfb, как в `tools/run-edt-e2e-local.sh`; на macOS Xvfb не нужен.
+#### B1. Определить, какой p2-агент использует установка
 
-### Проверка обновления
+Установки из `1cedtstart` (Oomph, разделяемый bundle pool) держат профиль **не** в каталоге
+установки, а в общем агенте из `config.ini`. Проверьте это до любых изменений:
 
-Активный набор бандлов задаёт `bundles.info`. Общий p2 pool может сохранять JAR предыдущих версий —
-это кеш, удалять их вручную не нужно.
+```bash
+CONFIG_INI="$EDT_HOME/configuration/config.ini"
+grep -E '^eclipse\.p2\.(data\.area|profile)=' "$CONFIG_INI" \
+  || echo 'ключей нет — установка самодостаточная, переходите к разделу B3'
+
+P2_DATA_AREA="$(sed -n 's/^eclipse\.p2\.data\.area=//p' "$CONFIG_INI" | head -n1 | tr -d '\\')"
+P2_DATA_AREA="${P2_DATA_AREA#file:}"
+P2_DATA_AREA="${P2_DATA_AREA%/}"
+P2_PROFILE="$(sed -n 's/^eclipse\.p2\.profile=//p' "$CONFIG_INI" | head -n1)"
+printf 'data.area=[%s]\nprofile=[%s]\n' "$P2_DATA_AREA" "$P2_PROFILE"
+```
+
+- Обе переменные непусты и `data.area` указывает **вне** `$EDT_HOME` → раздел **B2**.
+- Ключей нет (или `data.area` внутри `$EDT_HOME`) → раздел **B3**.
+- Значение начинается с `@config.dir`, `@user.home` и т. п. → подстановка таких токенов здесь не
+  выполняется; раскройте путь вручную и только потом продолжайте.
+
+Идентификатор профиля содержит пробелы — всюду ниже он должен оставаться в кавычках.
+
+#### B2. Разделяемый агент: обновление одной транзакцией
+
+**Шаг 1. Снять фактические версии (ничего не меняет).**
 
 ```bash
 BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
 grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
-# Ожидаются две строки: core и ui версии 1.3.0.20260817-1245.
+
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
+  -listInstalledRoots | grep "$IU"
+
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -repository "$SITE" -list | grep "$IU"
 ```
 
-Затем в `Installation Details → Installed Software` проверьте версию `1C Copilot
-1.3.0.20260817-1245`. Представление `1C Copilot` должно открываться, а раздел
+Первая команда обязана вывести **непустой** список root-IU с `$IU`. Если список пуст — остановитесь:
+агент определён неверно. Версию установленного root-IU берите из этого вывода (перекрёстная проверка —
+`bundles.info`), целевую — из вывода `-list`:
+
+```bash
+OLD_VERSION="<версия из -listInstalledRoots>"
+NEW_VERSION="<версия из -list>"
+OLD_IU="$IU/$OLD_VERSION"
+NEW_IU="$IU/$NEW_VERSION"
+```
+
+**Шаг 2. Резервные копии (вне каталога установки).**
+
+```bash
+tar -czf "$BACKUP_DIR/configuration.tar.gz" -C "$EDT_HOME" configuration
+[ -d "$EDT_HOME/p2" ] && tar -czf "$BACKUP_DIR/local-p2.tar.gz" -C "$EDT_HOME" p2
+tar -czf "$BACKUP_DIR/shared-profile.tar.gz" \
+  -C "$P2_DATA_AREA/org.eclipse.equinox.p2.engine/profileRegistry" "$P2_PROFILE.profile"
+ls -l "$BACKUP_DIR"
+```
+
+**Шаг 3. Сухой прогон (`-verifyOnly` ничего не записывает).**
+
+```bash
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
+  -repository "$SITE" \
+  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" -verifyOnly \
+  2>&1 | tee "$BACKUP_DIR/p2-verify.log"
+```
+
+Ожидаемый успех — три строки: `Общий запрос на установку выполнен`, `Remove запрос для … $OLD_VERSION
+выполнен`, `Add запрос для … $NEW_VERSION выполнен`. Если в плане появляются посторонние feature
+(например `org.eclipse.cdt.*`, `org.eclipse.tm.terminal.*`) — не применяйте, используйте Путь A.
+
+**Шаг 3a. Если сухой прогон сообщает `Копии профиля … не синхронизированы`.**
+
+Рядом с рабочим профилем лежит устаревшая локальная копия — обычно её создаёт неудачный запуск
+director'а с одним `-destination`. Сравните копии по числу установленных единиц:
+
+```bash
+LOCAL_PROFILE="$EDT_HOME/p2/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
+SHARED_PROFILE="$P2_DATA_AREA/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
+for d in "$LOCAL_PROFILE" "$SHARED_PROFILE"; do
+  f="$(ls -t "$d"/*.profile.gz 2>/dev/null | head -n1)"
+  [ -n "$f" ] && printf '%s: %s IU (%s)\n' "$d" "$(gunzip -c "$f" | grep -c '<unit ')" "${f##*/}"
+done
+```
+
+Если в локальной копии 0 (или на порядки меньше) единиц — **перенесите её в карантин, не удаляйте**,
+и повторите шаг 3:
+
+```bash
+mkdir -p "$BACKUP_DIR/stale-local-p2-profile"
+mv "$LOCAL_PROFILE" "$BACKUP_DIR/stale-local-p2-profile/"
+```
+
+Возврат карантина в любой момент:
+
+```bash
+mkdir -p "$(dirname "$LOCAL_PROFILE")"
+mv "$BACKUP_DIR/stale-local-p2-profile/$(basename "$LOCAL_PROFILE")" "$(dirname "$LOCAL_PROFILE")/"
+```
+
+Если число единиц сопоставимо — карантин **не** применяйте: копии разошлись по другой причине,
+безопаснее Путь A через интерфейс EDT.
+
+**Шаг 4. Применение — одна p2-транзакция.**
+
+Между шагами 3 и 4 не пересобирайте локальный сайт: qualifier генерируется заново при каждой сборке,
+и снятая версия перестанет существовать.
+
+```bash
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
+  -repository "$SITE" \
+  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" -tag "codepilot-$NEW_VERSION" \
+  2>&1 | tee "$BACKUP_DIR/p2-install.log"
+```
+
+`-uninstallIU` и `-installIU` в одном вызове дают один provisioning-план: промежуточного состояния
+«плагина нет» не возникает, а неразрешимый план отклоняется до записи. `-tag` создаёт именованную
+точку в истории профиля; если ваша сборка director'а её не поддерживает, снимок всё равно создаётся
+автоматически.
+
+#### B3. Самодостаточная установка (профиль в каталоге установки)
+
+Если `config.ini` не задаёт `eclipse.p2.data.area`, профиль живёт в `$EDT_HOME/p2` и агент задаётся
+через `-destination`. Порядок тот же: список root-IU → бэкап → `-verifyOnly` → применение.
+
+```bash
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -destination "$EDT_HOME" -listInstalledRoots | grep "$IU"
+
+tar -czf "$BACKUP_DIR/configuration.tar.gz" -C "$EDT_HOME" configuration
+tar -czf "$BACKUP_DIR/local-p2.tar.gz" -C "$EDT_HOME" p2
+
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -repository "$SITE" -destination "$EDT_HOME" \
+  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" -verifyOnly
+
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -repository "$SITE" -destination "$EDT_HOME" \
+  -uninstallIU "$OLD_IU" -installIU "$NEW_IU" \
+  2>&1 | tee "$BACKUP_DIR/p2-install.log"
+```
+
+На headless Linux запускайте director под Xvfb, как в `tools/run-edt-e2e-local.sh`; на macOS Xvfb
+не нужен. Сам `tools/run-edt-e2e-local.sh` рассчитан на выделенную самодостаточную test-инсталляцию
+и агент из `config.ini` не определяет — для рабочей установки из `1cedtstart` он не подходит.
+
+### Проверка обновления
+
+Активный набор бандлов задаёт `bundles.info`. Общий bundle pool может хранить JAR предыдущих версий —
+это кеш, удалять их вручную не нужно.
+
+```bash
+# 1) root IU в профиле (для B3 замените набор флагов на -destination "$EDT_HOME")
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash \
+  -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
+  -listInstalledRoots | grep "$IU"
+
+# 2) bundles.info переписан на новую версию
+grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
+
+# 3) JAR действительно лежат по путям из bundles.info
+awk -F, '/^com\.codepilot1c\./ {print $3}' "$BUNDLES_INFO" | while read -r rel; do
+  ( cd "$EDT_HOME" && ls -l "$rel" )
+done
+```
+
+Все три проверки должны показать `$NEW_VERSION` и ни одного `$OLD_VERSION`. При установке в
+разделяемый агент новые JAR попадают в `<data.area>/plugins` (а не в `<data.area>/pool`) — это
+нормально: что реально загружается, определяет `bundles.info`.
+
+Запустите EDT и убедитесь, что загружены именно новые JAR:
+
+```bash
+pgrep -f '1cedt' | while read -r pid; do lsof -p "$pid" 2>/dev/null | grep codepilot1c; done
+```
+
+Затем в `Installation Details → Installed Software` проверьте версию `1C Copilot` — она должна
+совпасть с `$NEW_VERSION`. Представление `1C Copilot` должно открываться, а раздел
 `Preferences → 1C Copilot` — быть доступен.
+
+Если обновление проверялось локальной сборкой и её нужно опубликовать, публикуйте **ровно этот**
+артефакт — см. «Публикация update site».
 
 ### Диагностика и откат
 
-При отказе сохраните вывод `-consoleLog` и проверьте `$EDT_HOME/configuration/*.log`. Снова сверьте
-точные версии в `bundles.info` и update site, затем повторите единую транзакцию. Не заменяйте
-versioned `OLD_IU`/`NEW_IU` двумя одинаковыми unversioned-значениями и не разделяйте команду на
-независимые uninstall/install вызовы.
+При отказе сохраните `-consoleLog` (в примерах он уже пишется в `$BACKUP_DIR`) и проверьте
+`$EDT_HOME/configuration/*.log`.
 
-Откат через `Installation Details → Installation History → Revert` возможен, но может не разрешиться,
-поскольку артефакты 1.0.x удалены с публичного сайта. Надёжный путь — локально сохранённый update-site
-ZIP: `Help → Install New Software… → Add… → Archive…`, после удаления текущей версии.
+| Сообщение | Причина | Действие |
+|---|---|---|
+| `Устанавливаемый модуль …/<версия> не найден` | версии нет в профиле либо director смотрит не в тот агент | повторить B1 и `-listInstalledRoots`; версию брать только из вывода |
+| `… требует 'osgi.bundle; org.eclipse.core.runtime …', но его не удалось найти` | director работает с пустым профилем | вернуться к B1; на shared-установке обязательны `-shared` и `-profile` |
+| `Копии профиля … не синхронизированы` | осталась устаревшая локальная копия профиля | шаг 3a: карантин и повтор сухого прогона |
+
+Откат, по возрастанию стоимости:
+
+1. `-revert` на снимок профиля (имена снимков — метки времени в каталоге профиля; при использовании
+   `-tag` можно указать созданный тег):
+
+   ```bash
+   ls -t "$SHARED_PROFILE" | head
+   "$EDT_EXE" -vm "$EDT_VM" \
+     -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+     -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
+     -revert <снимок-или-тег>
+   ```
+
+   JAR прежней версии остаются в bundle pool, поэтому откат не требует сети.
+2. `Installation Details → Installation History → Revert` — тот же механизм из интерфейса.
+3. Возврат карантина (шаг 3a) и распаковка резервных копий из `$BACKUP_DIR` при закрытой EDT.
+4. Локально сохранённый update-site ZIP: `Help → Install New Software… → Add… → Archive…`, после
+   удаления текущей версии. Для 1.0.x это единственный надёжный путь: артефакты 1.0.x удалены с
+   публичного сайта.
+
+Чего делать не надо:
+
+- редактировать вручную `bundles.info`, `config.ini`, `artifacts.xml`, `.profile.gz`;
+- удалять устаревшую локальную копию профиля вместо карантина;
+- очищать общий bundle pool — он используется всеми установками EDT на машине;
+- разделять транзакцию на независимые вызовы `-uninstallIU` и `-installIU` или заменять версионные
+  `OLD_IU`/`NEW_IU` значениями без версии;
+- запускать director при работающих EDT или `1cedtstart`.
 
 Сборка компилируется против target 1C:EDT `2025.2.3+30` (`targets/default/default.target`). Импорты
 `com._1c.g5.*` не имеют версионных диапазонов: OSGi resolver формально принимает более новую EDT, но
