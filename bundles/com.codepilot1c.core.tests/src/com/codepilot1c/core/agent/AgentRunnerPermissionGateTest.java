@@ -29,6 +29,7 @@ import org.junit.Test;
 import com.codepilot1c.core.agent.events.AgentEvent;
 import com.codepilot1c.core.agent.events.ToolCallEvent;
 import com.codepilot1c.core.agent.events.ToolResultEvent;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.model.LlmRequest;
 import com.codepilot1c.core.model.LlmResponse;
@@ -38,6 +39,7 @@ import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.surface.ToolSurfaceAugmentor;
 import com.google.gson.Gson;
 
@@ -226,7 +228,24 @@ public class AgentRunnerPermissionGateTest {
         assertEquals(results.get(0).getStructuredData(), results.get(1).getStructuredData());
     }
 
-    private static AgentRunner runnerWith(CountingTool tool) throws Exception {
+    @Test
+    public void runnerPassesTrustedProfileAndDepthToToolExecution() throws Exception {
+        ContextCapturingTool task = new ContextCapturingTool();
+        AgentRunner runner = runnerWith(task);
+        AgentConfig config = AgentConfig.builder()
+                .profileName("plan") //$NON-NLS-1$
+                .delegationDepth(2)
+                .build();
+
+        invokeExecute(runner, new ToolCall("call-1", "task", "{}"), config); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertNotNull(task.context.get());
+        assertEquals("plan", task.context.get().parentProfileId()); //$NON-NLS-1$
+        assertEquals(AgentCapability.READ_ONLY, task.context.get().delegationCeiling());
+        assertEquals(2, task.context.get().delegationDepth());
+    }
+
+    private static AgentRunner runnerWith(ITool tool) throws Exception {
         AgentRunner runner = new AgentRunner(new NoopProvider(),
                 isolatedRegistry(Map.of(tool.getName(), tool)), "system"); //$NON-NLS-1$
         Field field = AgentRunner.class.getDeclaredField("conversationHistory"); //$NON-NLS-1$
@@ -311,6 +330,37 @@ public class AgentRunnerPermissionGateTest {
         public CompletableFuture<ToolResult> execute(Map<String, Object> parameters) {
             lastParameters.set(parameters);
             executions.incrementAndGet();
+            return CompletableFuture.completedFuture(ToolResult.success("ok")); //$NON-NLS-1$
+        }
+    }
+
+    private static final class ContextCapturingTool implements ITool {
+        private final AtomicReference<ToolExecutionContext> context = new AtomicReference<>();
+
+        @Override
+        public String getName() {
+            return "task"; //$NON-NLS-1$
+        }
+
+        @Override
+        public String getDescription() {
+            return "Test task"; //$NON-NLS-1$
+        }
+
+        @Override
+        public String getParameterSchema() {
+            return "{\"type\":\"object\"}"; //$NON-NLS-1$
+        }
+
+        @Override
+        public CompletableFuture<ToolResult> execute(Map<String, Object> parameters) {
+            return CompletableFuture.completedFuture(ToolResult.success("legacy")); //$NON-NLS-1$
+        }
+
+        @Override
+        public CompletableFuture<ToolResult> execute(
+                Map<String, Object> parameters, ToolExecutionContext context) {
+            this.context.set(context);
             return CompletableFuture.completedFuture(ToolResult.success("ok")); //$NON-NLS-1$
         }
     }

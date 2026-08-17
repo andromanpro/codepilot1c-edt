@@ -3,6 +3,7 @@ package com.codepilot1c.core.tools;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 
 import com.codepilot1c.core.agent.profiles.AgentCapability;
+import com.codepilot1c.core.agent.profiles.PlanAgentProfile;
 import com.codepilot1c.core.model.ToolCall;
 import com.google.gson.Gson;
 
@@ -65,6 +67,22 @@ public class ToolExecutionContextPropagationTest {
 
         assertTrue(result.isSuccess());
         assertTrue(tool.executed);
+    }
+
+    @Test
+    public void blankProfileIdCannotBecomeUnscopedContext() {
+        PlanAgentProfile blankProfile = new PlanAgentProfile() {
+            @Override
+            public String getId() {
+                return "  "; //$NON-NLS-1$
+            }
+        };
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ToolExecutionContext.of(blankProfile, 0));
+
+        assertEquals("parent profile id must not be blank", error.getMessage()); //$NON-NLS-1$
     }
 
     private static ToolRegistry isolatedRegistry(Map<String, ITool> tools) throws Exception {

@@ -12,7 +12,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IStatus;
@@ -21,10 +20,16 @@ import org.eclipse.core.runtime.Status;
 
 import com.codepilot1c.core.agent.AgentConfig;
 import com.codepilot1c.core.agent.AgentResult;
-import com.codepilot1c.core.agent.langgraph.LangGraphAgentRunner;
 import com.codepilot1c.core.agent.AgentState;
+import com.codepilot1c.core.agent.langgraph.LangGraphAgentRunner;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.DelegationClamp;
+import com.codepilot1c.core.agent.profiles.DelegationClamp.Decision;
+import com.codepilot1c.core.agent.profiles.DelegationClamp.Outcome;
+import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
+import com.codepilot1c.core.agent.profiles.ProfileCapabilities;
 import com.codepilot1c.core.agent.profiles.ProfileRouter;
 import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.provider.ILlmProvider;
@@ -84,10 +89,6 @@ public class TaskTool extends AbstractTool {
 
     private static final int MAX_DEPTH = 3;
 
-    // Thread-local depth counter to prevent infinite recursion
-    private static final ThreadLocal<AtomicInteger> currentDepth =
-            ThreadLocal.withInitial(() -> new AtomicInteger(0));
-
     private final ToolRegistry toolRegistry;
     private final ProfileRouter profileRouter;
     private final SubagentExecutor subagentExecutor;
@@ -123,32 +124,84 @@ public class TaskTool extends AbstractTool {
 
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
+        return doExecute(params, ToolExecutionContext.unscoped());
+    }
+
+    @Override
+    protected CompletableFuture<ToolResult> doExecute(
+            ToolParameters params, ToolExecutionContext context) {
         return CompletableFuture.supplyAsync(() -> {
             String prompt = params.requireString("prompt"); //$NON-NLS-1$
             String requestedProfileId = profileRouter.normalizeProfileId(params.optString("profile", "auto")); //$NON-NLS-1$ //$NON-NLS-2$
-            String profileId = profileRouter.resolveRequestedProfile(prompt, requestedProfileId);
+            String resolvedProfileId = profileRouter.resolveRequestedProfile(prompt, requestedProfileId);
             String description = params.optString("description", "Подзадача"); //$NON-NLS-1$ //$NON-NLS-2$
+            AgentProfileRegistry profileRegistry = AgentProfileRegistry.getInstance();
+            AgentProfile resolvedProfile = profileRegistry.getProfile(resolvedProfileId).orElse(null);
 
-            // Check depth limit
-            AtomicInteger depth = currentDepth.get();
-            if (depth.get() >= MAX_DEPTH) {
-                return ToolResult.failure(
-                        "Достигнут лимит вложенности подагентов (" + MAX_DEPTH + ")");
+            // Legacy ChatView/MCP callers have no trusted profile scope. Preserve
+            // their previous fail-open profile fallback at the root call.
+            if (!context.isScoped()) {
+                AgentProfile legacyProfile = resolvedProfile != null
+                        ? resolvedProfile
+                        : profileRegistry.getExploreProfile();
+                return executeSubagent(
+                        prompt, resolvedProfileId, legacyProfile, description,
+                        context.delegationDepth() + 1, null, resolvedProfileId);
             }
 
-            try {
-                depth.incrementAndGet();
-                return executeSubagent(prompt, profileId, description);
-            } finally {
-                depth.decrementAndGet();
+            AgentCapability required = resolvedProfile != null
+                    ? ProfileCapabilities.requiredForChild(resolvedProfile)
+                    : AgentCapability.MUTATING;
+            if (context.delegationDepth() >= MAX_DEPTH) {
+                return delegationDenied(
+                        getName(), DelegationClamp.REASON_DEPTH_EXCEEDED,
+                        context, requestedProfileId, resolvedProfileId, required);
             }
+
+            boolean autoRequested = profileRouter.isAutoProfileId(requestedProfileId);
+            Decision decision = DelegationClamp.decide(
+                    context.delegationCeiling(),
+                    autoRequested,
+                    requestedProfileId,
+                    resolvedProfile,
+                    candidate -> profileRegistry.getProfile(candidate)
+                            .filter(profile -> context.delegationCeiling()
+                                    .covers(ProfileCapabilities.requiredForChild(profile)))
+                            .map(AgentProfile::getId)
+                            .orElse(null));
+            if (decision.outcome() == Outcome.DENIED) {
+                return delegationDenied(
+                        getName(), decision.reasonCode(), context,
+                        requestedProfileId, resolvedProfileId,
+                        decision.requiredCapability());
+            }
+
+            AgentProfile effectiveProfile = profileRegistry
+                    .getProfile(decision.effectiveProfileId())
+                    .orElse(null);
+            if (effectiveProfile == null) {
+                return delegationDenied(
+                        getName(), DelegationClamp.REASON_TARGET_UNRESOLVED,
+                        context, requestedProfileId, decision.effectiveProfileId(),
+                        decision.requiredCapability());
+            }
+            return executeSubagent(
+                    prompt, decision.effectiveProfileId(), effectiveProfile, description,
+                    context.delegationDepth() + 1, decision, resolvedProfileId);
         });
     }
 
     /**
      * Выполняет подагента.
      */
-    private ToolResult executeSubagent(String prompt, String profileId, String description) {
+    private ToolResult executeSubagent(
+            String prompt,
+            String profileId,
+            AgentProfile profile,
+            String description,
+            int childDepth,
+            Decision decision,
+            String routedProfileId) {
         logInfo("Запуск подагента [" + profileId + "]: " + description);
 
         // Get provider
@@ -159,27 +212,23 @@ public class TaskTool extends AbstractTool {
         // Sub-agents run through the active provider, so task/delegate_to_agent work on any
         // configured provider (not just the CodePilot Account backend).
 
-        // Get profile
-        AgentProfile profile = AgentProfileRegistry.getInstance()
-                .getProfile(profileId)
-                .orElse(AgentProfileRegistry.getInstance().getExploreProfile());
-
         // Create config from profile (applies user overrides via ProfileConfigStore)
         AgentConfig baseConfig = AgentProfileRegistry.getInstance().createConfig(profile);
         AgentConfig.Builder configBuilder = AgentConfig.builder().from(baseConfig)
                 .systemPromptAddition(buildSubagentSystemPrompt(profile, description))
-                .profileName(profileId);
+                .profileName(profileId)
+                .delegationDepth(childDepth);
 
-        // Don't allow nested task calls beyond depth 2
-        if (currentDepth.get().get() >= MAX_DEPTH - 1) {
+        if (childDepth >= MAX_DEPTH) {
             configBuilder.disableTool("task"); //$NON-NLS-1$
+            configBuilder.disableTool("delegate_to_agent"); //$NON-NLS-1$
         }
 
         AgentConfig config = configBuilder.build();
 
         try {
             AgentResult result = subagentExecutor.run(provider, toolRegistry, profile, prompt, config);
-            return formatResult(result, description, profileId);
+            return formatResult(result, description, profileId, decision, routedProfileId);
         } catch (Exception e) {
             Throwable root = unwrap(e);
             logError("Ошибка выполнения подагента", root);
@@ -187,6 +236,7 @@ public class TaskTool extends AbstractTool {
             structured.addProperty("profile", profileId); //$NON-NLS-1$
             structured.addProperty("error_type", root.getClass().getSimpleName()); //$NON-NLS-1$
             structured.addProperty("error_message", describe(root)); //$NON-NLS-1$
+            addClampMetadata(structured, decision, routedProfileId, profileId);
             return ToolResult.failure("Ошибка подагента: " + describe(root), structured); //$NON-NLS-1$
         }
     }
@@ -221,11 +271,21 @@ public class TaskTool extends AbstractTool {
     /**
      * Форматирует результат подагента.
      */
-    private ToolResult formatResult(AgentResult result, String description, String profileId) {
+    private ToolResult formatResult(
+            AgentResult result,
+            String description,
+            String profileId,
+            Decision decision,
+            String routedProfileId) {
         StringBuilder sb = new StringBuilder();
         sb.append("## Результат подагента\n\n");
         sb.append("**Задача:** ").append(description).append("\n");
         sb.append("**Профиль:** ").append(profileId).append("\n");
+        if (decision != null && decision.outcome() == Outcome.CLAMPED) {
+            sb.append("**Профиль ограничен политикой родителя:** ")
+                    .append(routedProfileId)
+                    .append(" → ").append(profileId).append("\n"); //$NON-NLS-1$
+        }
         sb.append("**Статус:** ").append(formatStatus(result.getFinalState())).append("\n");
         sb.append("**Шагов:** ").append(result.getStepsExecuted()).append("\n");
         sb.append("**Вызовов инструментов:** ").append(result.getToolCallsExecuted()).append("\n");
@@ -244,17 +304,70 @@ public class TaskTool extends AbstractTool {
         logInfo("Подагент завершен: " + result.getFinalState() +
                 ", шагов: " + result.getStepsExecuted());
 
+        JsonObject structured = new JsonObject();
+        structured.addProperty("profile", profileId); //$NON-NLS-1$
+        structured.addProperty("status", result.getFinalState().name()); //$NON-NLS-1$
+        structured.addProperty("steps", result.getStepsExecuted()); //$NON-NLS-1$
+        structured.addProperty("tool_calls", result.getToolCallsExecuted()); //$NON-NLS-1$
+        structured.addProperty("execution_time_ms", result.getExecutionTimeMs()); //$NON-NLS-1$
+        addClampMetadata(structured, decision, routedProfileId, profileId);
+
         if (result.isSuccess()) {
-            JsonObject structured = new JsonObject();
-            structured.addProperty("profile", profileId); //$NON-NLS-1$
-            structured.addProperty("status", result.getFinalState().name()); //$NON-NLS-1$
-            structured.addProperty("steps", result.getStepsExecuted()); //$NON-NLS-1$
-            structured.addProperty("tool_calls", result.getToolCallsExecuted()); //$NON-NLS-1$
-            structured.addProperty("execution_time_ms", result.getExecutionTimeMs()); //$NON-NLS-1$
             return ToolResult.success(sb.toString(), ToolResult.ToolResultType.TEXT, structured);
         } else {
-            return ToolResult.failure(sb.toString());
+            return ToolResult.failure(sb.toString(), structured);
         }
+    }
+
+    private void addClampMetadata(
+            JsonObject structured,
+            Decision decision,
+            String routedProfileId,
+            String effectiveProfileId) {
+        if (decision != null && decision.outcome() == Outcome.CLAMPED) {
+            structured.addProperty("clamped_from", routedProfileId); //$NON-NLS-1$
+            structured.addProperty("clamped_to", effectiveProfileId); //$NON-NLS-1$
+            structured.addProperty("reason_code", decision.reasonCode()); //$NON-NLS-1$
+        }
+    }
+
+    private ToolResult delegationDenied(
+            String toolName,
+            String reasonCode,
+            ToolExecutionContext context,
+            String requestedProfileId,
+            String resolvedProfileId,
+            AgentCapability requiredCapability) {
+        JsonObject structured = new JsonObject();
+        structured.addProperty("error", "delegation_denied"); //$NON-NLS-1$ //$NON-NLS-2$
+        structured.addProperty("tool", toolName); //$NON-NLS-1$
+        structured.addProperty("reason", reasonCode); //$NON-NLS-1$
+        structured.addProperty("reason_code", reasonCode); //$NON-NLS-1$
+        structured.addProperty("parent_profile", context.parentProfileId()); //$NON-NLS-1$
+        structured.addProperty("requested_profile", safeId(requestedProfileId)); //$NON-NLS-1$
+        structured.addProperty("resolved_profile", safeId(resolvedProfileId)); //$NON-NLS-1$
+        structured.addProperty("parent_ceiling", context.delegationCeiling().name()); //$NON-NLS-1$
+        structured.addProperty("required_capability", requiredCapability.name()); //$NON-NLS-1$
+
+        String message = String.format(
+                "Делегирование запрещено: tool=%s, parent=%s, requested=%s, resolved=%s, reason_code=%s", //$NON-NLS-1$
+                toolName,
+                context.parentProfileId(),
+                safeId(requestedProfileId),
+                safeId(resolvedProfileId),
+                reasonCode);
+        logWarning(String.format(
+                "delegation_denied tool=%s parent=%s requested=%s resolved=%s ceiling=%s", //$NON-NLS-1$
+                toolName,
+                context.parentProfileId(),
+                safeId(requestedProfileId),
+                safeId(resolvedProfileId),
+                context.delegationCeiling().name()));
+        return ToolResult.failure(message, structured);
+    }
+
+    private String safeId(String profileId) {
+        return profileId != null ? profileId : ""; //$NON-NLS-1$
     }
 
     /**
@@ -296,6 +409,13 @@ public class TaskTool extends AbstractTool {
         ILog log = safeLog();
         if (log != null) {
             log.log(new Status(IStatus.ERROR, PLUGIN_ID, message, error));
+        }
+    }
+
+    private void logWarning(String message) {
+        ILog log = safeLog();
+        if (log != null) {
+            log.log(new Status(IStatus.WARNING, PLUGIN_ID, message));
         }
     }
 

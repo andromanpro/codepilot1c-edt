@@ -15,6 +15,14 @@ public final class AgentPromptTemplates {
             "codepilot1c.prompt.rules.metadata.enabled"; //$NON-NLS-1$
     private static final String PROP_FORMS_RULES_ENABLED =
             "codepilot1c.prompt.rules.forms.enabled"; //$NON-NLS-1$
+    private static final String PLAN_READ_ONLY_DELEGATION_INSTRUCTION =
+            "8. Делегируй только read-only подзадачи через task(profile=auto|explore|plan): "
+            + "явные mutating-профили запрещены read-only clamp, а auto, выбравший mutating-цель, "
+            + "будет ограничен до explore.\n"; //$NON-NLS-1$
+    private static final String EXPLORE_READ_ONLY_DELEGATION_INSTRUCTION =
+            "8. Делегируй только read-only исследования через task(profile=auto|explore|plan): "
+            + "явные mutating-профили запрещены read-only clamp, а auto, выбравший mutating-цель, "
+            + "будет ограничен до explore.\n"; //$NON-NLS-1$
 
     private AgentPromptTemplates() {
         // Utility class.
@@ -31,12 +39,8 @@ public final class AgentPromptTemplates {
         adapted = adapted.replace(
                 "## Делегирование подагенту\nЕсли задача распадается на независимую подзадачу, можешь вызвать task с кратким description и profile=auto либо явным domain profile.\n\n", //$NON-NLS-1$
                 ""); //$NON-NLS-1$
-        adapted = adapted.replace(
-                "8. Для изолированной дополнительной подзадачи можешь использовать task(profile=auto|explore|plan|init|code|metadata|qa|dcs|extension|recovery).\n", //$NON-NLS-1$
-                ""); //$NON-NLS-1$
-        adapted = adapted.replace(
-                "8. Для изолированного дополнительного исследования можешь делегировать подзадачу через task(profile=auto|explore|plan|init|code|metadata|qa|dcs|extension|recovery).\n", //$NON-NLS-1$
-                ""); //$NON-NLS-1$
+        adapted = adapted.replace(PLAN_READ_ONLY_DELEGATION_INSTRUCTION, ""); //$NON-NLS-1$
+        adapted = adapted.replace(EXPLORE_READ_ONLY_DELEGATION_INSTRUCTION, ""); //$NON-NLS-1$
         adapted = adapted.replace(
                 "inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, skill, task.\n", //$NON-NLS-1$
                 "inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, skill.\n"); //$NON-NLS-1$
@@ -230,7 +234,7 @@ public final class AgentPromptTemplates {
         sb.append("6. Если inspect_platform_reference вернул EDT_SERVICE_UNAVAILABLE/TYPE_NOT_FOUND, "); //$NON-NLS-1$
         sb.append("не заменяй результат справкой \"из памяти\".\n"); //$NON-NLS-1$
         sb.append("7. Если инструмент вернул ошибку, зафиксируй её явно и не пытайся вызывать mutating recovery tools из этого read-only профиля.\n"); //$NON-NLS-1$
-        sb.append("8. Для изолированной дополнительной подзадачи можешь использовать task(profile=auto|explore|plan|init|code|metadata|qa|dcs|extension|recovery).\n"); //$NON-NLS-1$
+        sb.append(PLAN_READ_ONLY_DELEGATION_INSTRUCTION);
         sb.append("9. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n\n"); //$NON-NLS-1$
 
         sb.append("## Шаблон ответа\n"); //$NON-NLS-1$
@@ -270,7 +274,7 @@ public final class AgentPromptTemplates {
         sb.append("6. Если inspect_platform_reference вернул EDT_SERVICE_UNAVAILABLE/TYPE_NOT_FOUND, "); //$NON-NLS-1$
         sb.append("фиксируй ошибку инструмента, не пиши справку \"из общих знаний\".\n"); //$NON-NLS-1$
         sb.append("7. Если инструмент вернул ошибку, зафиксируй её явно и не пытайся вызывать mutating recovery tools из этого read-only профиля.\n"); //$NON-NLS-1$
-        sb.append("8. Для изолированного дополнительного исследования можешь делегировать подзадачу через task(profile=auto|explore|plan|init|code|metadata|qa|dcs|extension|recovery).\n"); //$NON-NLS-1$
+        sb.append(EXPLORE_READ_ONLY_DELEGATION_INSTRUCTION);
         sb.append("9. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n"); //$NON-NLS-1$
         sb.append("10. Не предлагай изменения, если пользователь не просил реализацию.\n\n"); //$NON-NLS-1$
 

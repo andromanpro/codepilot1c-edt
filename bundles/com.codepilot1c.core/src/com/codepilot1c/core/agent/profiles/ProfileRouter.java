@@ -159,10 +159,20 @@ public final class ProfileRouter {
      */
     public String resolveRequestedProfile(String prompt, String requestedProfileId) {
         String normalizedProfile = normalizeProfileId(requestedProfileId);
-        if (!AUTO_PROFILE_IDS.contains(normalizedProfile)) {
+        if (!isAutoProfileId(normalizedProfile)) {
             return normalizedProfile;
         }
         return route(prompt);
+    }
+
+    /**
+     * Returns whether a profile id requests automatic routing.
+     *
+     * @param profileId raw or normalized profile id
+     * @return {@code true} for the legacy auto aliases
+     */
+    public boolean isAutoProfileId(String profileId) {
+        return AUTO_PROFILE_IDS.contains(normalizeProfileId(profileId));
     }
 
     /**

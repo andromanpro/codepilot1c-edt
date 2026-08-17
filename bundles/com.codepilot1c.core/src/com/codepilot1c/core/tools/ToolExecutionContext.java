@@ -55,8 +55,12 @@ public record ToolExecutionContext(
      */
     public static ToolExecutionContext of(AgentProfile parentProfile, int delegationDepth) {
         Objects.requireNonNull(parentProfile, "parentProfile"); //$NON-NLS-1$
+        String parentProfileId = parentProfile.getId();
+        if (parentProfileId == null || parentProfileId.isBlank()) {
+            throw new IllegalArgumentException("parent profile id must not be blank"); //$NON-NLS-1$
+        }
         return new ToolExecutionContext(
-                parentProfile.getId(),
+                parentProfileId,
                 ProfileCapabilities.delegationCeiling(parentProfile),
                 delegationDepth);
     }

@@ -1,6 +1,8 @@
 package com.codepilot1c.core.agent.profiles;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -54,6 +56,17 @@ public class ProfileRouterTest {
     public void resolvesBuildToAutoRoutedDomain() {
         assertEquals(QABuildProfile.ID,
                 router.resolveRequestedProfile("Подготовь и запусти тесты YAxUnit", "build")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void recognizesEveryAutoProfileAliasThroughOneApi() {
+        assertTrue(router.isAutoProfileId(null));
+        assertTrue(router.isAutoProfileId("  ")); //$NON-NLS-1$
+        assertTrue(router.isAutoProfileId("AUTO")); //$NON-NLS-1$
+        assertTrue(router.isAutoProfileId("build")); //$NON-NLS-1$
+        assertTrue(router.isAutoProfileId("разработка")); //$NON-NLS-1$
+        assertFalse(router.isAutoProfileId("explore")); //$NON-NLS-1$
+        assertFalse(router.isAutoProfileId("code")); //$NON-NLS-1$
     }
 
     @Test
