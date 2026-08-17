@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -318,6 +319,15 @@ public class ToolRegistry {
         // Built-in tools override dynamic tools with same name
         allTools.putAll(tools);
         return Collections.unmodifiableList(new ArrayList<>(allTools.values()));
+    }
+
+    /**
+     * Returns the names of dynamically registered tools (MCP clients and UI contributions).
+     *
+     * @return immutable set of dynamic tool names
+     */
+    public Set<String> getDynamicToolNames() {
+        return Set.copyOf(dynamicTools.keySet());
     }
 
     /**
