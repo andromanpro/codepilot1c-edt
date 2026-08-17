@@ -222,9 +222,9 @@ public class EventHandlerStubIntegrationTest {
         assertTrue(sharedTail.contains("stubWriteFailure(")); //$NON-NLS-1$
         assertTrue(sharedTail.contains("NOT_ATTEMPTED_UNSAFE")); //$NON-NLS-1$
 
-        int resolveStart = source.indexOf("private Event resolveFreshEvent", sharedEnd); //$NON-NLS-1$
+        int resolveStart = source.indexOf("private FreshEventContext resolveFreshEventContext", sharedEnd); //$NON-NLS-1$
         int resolveEnd = source.indexOf("private RollbackMutationResult rollbackHandlerSlot", resolveStart); //$NON-NLS-1$
-        assertTrue("resolveFreshEvent end marker not found", resolveEnd > resolveStart); //$NON-NLS-1$
+        assertTrue("resolveFreshEventContext end marker not found", resolveEnd > resolveStart); //$NON-NLS-1$
         String resolve = source.substring(resolveStart, resolveEnd);
         assertTrue(resolve.contains("resolveObjectForTransaction(")); //$NON-NLS-1$
         assertFalse(resolve.contains("Cannot access configuration in BM read transaction")); //$NON-NLS-1$

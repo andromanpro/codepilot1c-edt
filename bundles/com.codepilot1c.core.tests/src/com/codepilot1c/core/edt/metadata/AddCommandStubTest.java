@@ -121,8 +121,8 @@ public class AddCommandStubTest {
         int eventStart = method.indexOf("} else {", commandStart); //$NON-NLS-1$
         assertTrue("command-action branch not found", commandStart >= 0 && eventStart > commandStart); //$NON-NLS-1$
 
-        assertFalse(method.substring(commandStart, eventStart).contains("resolveFreshEvent(")); //$NON-NLS-1$
-        assertTrue(method.substring(eventStart).contains("resolveFreshEvent(")); //$NON-NLS-1$
+        assertFalse(method.substring(commandStart, eventStart).contains("resolveFreshEventContext(")); //$NON-NLS-1$
+        assertTrue(method.substring(eventStart).contains("resolveFreshEventContext(")); //$NON-NLS-1$
     }
 
     @Test

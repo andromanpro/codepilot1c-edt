@@ -158,6 +158,127 @@ public class BslHandlerStubWriteTest {
         assertTrue(stored.contains("Процедура FormOnOpen(")); //$NON-NLS-1$
     }
 
+    @Test
+    public void regionAwareWriteCreatesExactRegionInRegionlessModule() {
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        writer.seed(MODULE_PATH, "Процедура Старая()\nКонецПроцедуры\n"); //$NON-NLS-1$
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(writer);
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.setEnvironments(Environments.ALL_CLIENTS);
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+
+        StubWriteOutcome outcome = stubWriter.write(
+                MODULE_PATH,
+                "FormOnOpen", //$NON-NLS-1$
+                stub,
+                ScriptVariant.RUSSIAN,
+                HandlerRegionTarget.of(FormModuleRegion.FORM_EVENT_HANDLERS));
+
+        assertEquals(StubWriteOutcome.WRITTEN, outcome);
+        String stored = writer.read(MODULE_PATH);
+        assertTrue(stored.contains("#Область ОбработчикиСобытийФормы")); //$NON-NLS-1$
+        assertTrue(stored.indexOf("Процедура FormOnOpen(") < stored.indexOf("#КонецОбласти")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void regionAwareWriteIsByteIdempotent() {
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        writer.seed(MODULE_PATH, ""); //$NON-NLS-1$
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(writer);
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.setEnvironments(Environments.ALL_CLIENTS);
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+        HandlerRegionTarget region = HandlerRegionTarget.of(FormModuleRegion.FORM_EVENT_HANDLERS);
+
+        StubWriteOutcome first = stubWriter.write(
+                MODULE_PATH, "FormOnOpen", stub, ScriptVariant.RUSSIAN, region); //$NON-NLS-1$
+        String afterFirst = writer.read(MODULE_PATH);
+        StubWriteOutcome second = stubWriter.write(
+                MODULE_PATH, "FormOnOpen", stub, ScriptVariant.RUSSIAN, region); //$NON-NLS-1$
+
+        assertEquals(StubWriteOutcome.WRITTEN, first);
+        assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, second);
+        assertEquals(afterFirst, writer.read(MODULE_PATH));
+        assertEquals(1, countOccurrences(afterFirst, "#Область ОбработчикиСобытийФормы")); //$NON-NLS-1$
+        assertEquals(1, countOccurrences(afterFirst, "Процедура FormOnOpen(")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void existingProcedureOutsideRegionShortCircuitsBeforePlacement() {
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        String existing = "Процедура FormOnOpen()\nКонецПроцедуры\n"; //$NON-NLS-1$
+        writer.seed(MODULE_PATH, existing);
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(writer);
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+
+        StubWriteOutcome outcome = stubWriter.write(
+                MODULE_PATH,
+                "FormOnOpen", //$NON-NLS-1$
+                stub,
+                ScriptVariant.RUSSIAN,
+                HandlerRegionTarget.of(FormModuleRegion.FORM_EVENT_HANDLERS));
+
+        assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, outcome);
+        assertEquals(existing, writer.read(MODULE_PATH));
+    }
+
+    @Test
+    public void unknownRegionTargetIsByteIdenticalToLegacyOverload() {
+        String initial = "Процедура Старая()\nКонецПроцедуры\n\n"; //$NON-NLS-1$
+        InMemoryModuleFileWriter legacyWriter = new InMemoryModuleFileWriter();
+        legacyWriter.seed(MODULE_PATH, initial);
+        InMemoryModuleFileWriter unknownWriter = new InMemoryModuleFileWriter();
+        unknownWriter.seed(MODULE_PATH, initial);
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+
+        StubWriteOutcome legacy = new BslHandlerStubWriter(legacyWriter)
+                .write(MODULE_PATH, "FormOnOpen", stub, ScriptVariant.RUSSIAN); //$NON-NLS-1$
+        StubWriteOutcome unknown = new BslHandlerStubWriter(unknownWriter)
+                .write(MODULE_PATH, "FormOnOpen", stub, ScriptVariant.RUSSIAN, HandlerRegionTarget.unknown()); //$NON-NLS-1$
+
+        assertEquals(legacy, unknown);
+        assertEquals(legacyWriter.read(MODULE_PATH), unknownWriter.read(MODULE_PATH));
+    }
+
+    @Test
+    public void regionAwareWriteFailureKeepsDocumentedOutcome() {
+        FailingModuleFileWriter writer = new FailingModuleFileWriter();
+        writer.seed(MODULE_PATH, ""); //$NON-NLS-1$
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+
+        StubWriteOutcome outcome = new BslHandlerStubWriter(writer).write(
+                MODULE_PATH,
+                "FormOnOpen", //$NON-NLS-1$
+                stub,
+                ScriptVariant.RUSSIAN,
+                HandlerRegionTarget.of(FormModuleRegion.FORM_EVENT_HANDLERS));
+
+        assertEquals(StubWriteOutcome.WRITE_FAILURE, outcome);
+    }
+
+    @Test
+    public void englishVariantWritesEnglishRegionAndRemainsWritten() {
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        writer.seed(MODULE_PATH, ""); //$NON-NLS-1$
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.setEnvironments(Environments.ALL_CLIENTS);
+        StubText stub = new BslHandlerStubGenerator().generate(event, "FormOnOpen", ScriptVariant.ENGLISH); //$NON-NLS-1$
+
+        StubWriteOutcome outcome = new BslHandlerStubWriter(writer).write(
+                MODULE_PATH,
+                "FormOnOpen", //$NON-NLS-1$
+                stub,
+                ScriptVariant.ENGLISH,
+                HandlerRegionTarget.of(FormModuleRegion.FORM_EVENT_HANDLERS));
+
+        assertEquals(StubWriteOutcome.WRITTEN, outcome);
+        assertTrue(writer.read(MODULE_PATH).startsWith("#Region FormEventHandlers\n")); //$NON-NLS-1$
+        assertTrue(writer.read(MODULE_PATH).endsWith("#EndRegion\n")); //$NON-NLS-1$
+    }
+
     private static int countOccurrences(String haystack, String needle) {
         Pattern pattern = Pattern.compile(Pattern.quote(needle));
         Matcher matcher = pattern.matcher(haystack);

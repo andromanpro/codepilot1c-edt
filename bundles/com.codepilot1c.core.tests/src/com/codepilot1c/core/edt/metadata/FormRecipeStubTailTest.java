@@ -248,9 +248,9 @@ public class FormRecipeStubTailTest {
     @Test
     public void freshEventResolutionUsesExternalAwarePathWithoutConfigurationGuard() throws Exception {
         String text = Files.readString(locateServiceSource());
-        int methodStart = text.indexOf("private Event resolveFreshEvent"); //$NON-NLS-1$
+        int methodStart = text.indexOf("private FreshEventContext resolveFreshEventContext"); //$NON-NLS-1$
         int methodEnd = text.indexOf("private RollbackMutationResult rollbackHandlerSlot", methodStart); //$NON-NLS-1$
-        assertTrue("resolveFreshEvent end marker not found", methodEnd > methodStart); //$NON-NLS-1$
+        assertTrue("resolveFreshEventContext end marker not found", methodEnd > methodStart); //$NON-NLS-1$
         String method = text.substring(methodStart, methodEnd);
 
         assertTrue(method.contains("resolveObjectForTransaction(")); //$NON-NLS-1$
