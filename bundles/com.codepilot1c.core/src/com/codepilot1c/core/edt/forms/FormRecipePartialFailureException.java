@@ -14,8 +14,11 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
- * Deterministic partial-state failure raised after a form recipe's BM mutation
- * and initial export were already committed and verified.
+ * Deterministic partial-state failure raised after a form mutation's BM changes
+ * and initial export were already committed and verified. This is the shared
+ * partial contract for {@code apply_form_recipe} and {@code mutate_form_model};
+ * mutate results report measured zeroes for the attribute counters because that
+ * tool does not create form attributes.
  */
 public final class FormRecipePartialFailureException extends MetadataOperationException {
 

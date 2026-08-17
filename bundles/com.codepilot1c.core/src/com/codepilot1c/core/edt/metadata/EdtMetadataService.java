@@ -539,8 +539,30 @@ public class EdtMetadataService {
         // committed the model slot.
         StubPhaseOutcome stubOutcome = StubPhaseOutcome.empty();
         if (!pendingStubs.isEmpty()) {
-            stubOutcome = writeHandlerStubsDetailed(
-                    project, configuration, request.formFqn(), topLevelFqn, pendingStubs, opId);
+            try {
+                stubOutcome = writeHandlerStubsDetailed(
+                        project, configuration, request.formFqn(), topLevelFqn, pendingStubs, opId);
+            } catch (MetadataOperationException e) {
+                StubPhaseFailureException failure = e instanceof StubPhaseFailureException stubFailure
+                        ? stubFailure
+                        : StubPhaseFailureException.unknown(e);
+                // mutate_form_model does not create attributes: zeroes are measured facts,
+                // not placeholder values.
+                throw formRecipePartialFailure(
+                        e,
+                        request.formFqn(),
+                        externalProject,
+                        0, 0, 0,
+                        operationSummaries.size(),
+                        pendingStubs.stream().map(PendingStub::handlerName).toList(),
+                        failure.written(),
+                        failure.skippedExisting(),
+                        failure.phase(),
+                        failure.failedHandler(),
+                        failure.rollback().status(),
+                        failure.rollback().bmState(),
+                        failure.rollback().serializedModelState());
+            }
         }
 
         refreshProjectSafely(project);
@@ -1166,6 +1188,10 @@ public class EdtMetadataService {
                 stubOutcome.toReport());
     }
 
+    /**
+     * Builds the shared partial stub-tail contract for both form mutation tools.
+     * For {@code mutate_form_model}, the three attribute counters are measured zeroes.
+     */
     static FormRecipePartialFailureException formRecipePartialFailure(
             MetadataOperationException cause,
             String formFqn,
