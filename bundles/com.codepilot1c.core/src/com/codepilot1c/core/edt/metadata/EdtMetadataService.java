@@ -165,6 +165,7 @@ import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.Serializ
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeResult;
 import com.codepilot1c.core.edt.forms.FormUsage;
+import com.codepilot1c.core.edt.forms.HandlerStubKind;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutRequest;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutResult;
 import com.codepilot1c.core.edt.forms.ModuleFileWriter;
@@ -557,7 +558,8 @@ public class EdtMetadataService {
     }
 
     /**
-     * Post-export tail (07-03, STUB-06): for each pending stub, ensures {@code Module.bsl}
+     * Post-export tail (07-03, STUB-06): for each pending event or command-action stub,
+     * ensures {@code Module.bsl}
      * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
      * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} attempts
      * compensating {@link #rollbackHandlerSlot} + re-export. The thrown failure records
@@ -597,31 +599,46 @@ public class EdtMetadataService {
         BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
         BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
         for (PendingStub pending : pendingStubs) {
-            Event freshEvent;
-            try {
-                freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
-            } catch (MetadataOperationException e) {
-                throw stubPhaseFailure(
-                        e,
-                        FailurePhase.RESOLVE_EVENT,
-                        pending.handlerName(),
-                        written,
-                        skippedExisting,
-                        RollbackAttempt.notAttempted());
-            }
             BslHandlerStubGenerator.StubText stub;
             StubWriteOutcome outcome;
-            try {
-                stub = generator.generate(freshEvent, pending.handlerName(), variant);
-                outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
-            } catch (MetadataOperationException e) {
-                throw stubPhaseFailure(
-                        e,
-                        FailurePhase.WRITE_STUB,
-                        pending.handlerName(),
-                        written,
-                        skippedExisting,
-                        RollbackAttempt.notAttempted());
+            if (pending.kind() == HandlerStubKind.COMMAND_ACTION) {
+                try {
+                    stub = generator.generateCommandAction(pending.handlerName(), variant);
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+                } catch (MetadataOperationException e) {
+                    throw stubPhaseFailure(
+                            e,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            RollbackAttempt.notAttempted());
+                }
+            } else {
+                Event freshEvent;
+                try {
+                    freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
+                } catch (MetadataOperationException e) {
+                    throw stubPhaseFailure(
+                            e,
+                            FailurePhase.RESOLVE_EVENT,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            RollbackAttempt.notAttempted());
+                }
+                try {
+                    stub = generator.generate(freshEvent, pending.handlerName(), variant);
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+                } catch (MetadataOperationException e) {
+                    throw stubPhaseFailure(
+                            e,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            RollbackAttempt.notAttempted());
+                }
             }
             switch (outcome) {
                 case WRITTEN -> {
@@ -1245,10 +1262,11 @@ public class EdtMetadataService {
 
     /**
      * Applies form-model operations and threads every {@code add_event_handler}/
-     * {@code set_event_handler} into {@code pendingStubs}. Both {@code updateFormModel}
-     * and {@code applyFormRecipe} consume these records in their shared post-export tail,
-     * strictly after {@code forceExportTopLevelObject}/{@code verifyObjectPersisted}
-     * (STUB-06). The {@code remove_event_handler} case records nothing.
+     * {@code set_event_handler} and {@code add_command}/{@code create_command} into
+     * {@code pendingStubs}. Both {@code updateFormModel} and {@code applyFormRecipe}
+     * consume these records in their shared post-export tail, strictly after
+     * {@code forceExportTopLevelObject}/{@code verifyObjectPersisted} (STUB-06).
+     * {@code add_button} and {@code remove_event_handler} record nothing.
      */
     private List<String> applyFormModelOperations(
             Form formModel, List<Map<String, Object>> operations, List<PendingStub> pendingStubs) {
@@ -1421,7 +1439,14 @@ public class EdtMetadataService {
                     if (actionHandler == null || actionHandler.isBlank()) {
                         actionHandler = name; // Default handler name = command name
                     }
+                    if (!MetadataNameValidator.isValidName(actionHandler)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid command action handler name: " + actionHandler, false); //$NON-NLS-1$
+                    }
                     FormCommand formCommand = addCommandToForm(formModel, name, actionHandler, operation);
+                    pendingStubs.add(PendingStub.forCommandAction(
+                            operation, formCommand.getName(), actionHandler));
                     summaries.add("add_command[" + operationIndex + "]: name=" + formCommand.getName() //$NON-NLS-1$ //$NON-NLS-2$
                             + ", id=" + formCommand.getId() + ", action=" + actionHandler); //$NON-NLS-1$ //$NON-NLS-2$
                 }
@@ -1470,7 +1495,7 @@ public class EdtMetadataService {
                 case "addeventhandler", "seteventhandler" -> {
                     WiredEventHandler wired = wireEventHandler(formModel, operation);
                     EventHandler handler = wired.handler();
-                    pendingStubs.add(new PendingStub(
+                    pendingStubs.add(PendingStub.forEventHandler(
                             operation,
                             handler.getEvent().getName(),
                             handler.getName(),
@@ -1692,28 +1717,64 @@ public class EdtMetadataService {
     }
 
     /**
-     * A recorded {@code add_event_handler}/{@code set_event_handler} upsert awaiting its
+     * A recorded event-handler upsert or newly-created command action awaiting its
      * post-export BSL stub write (07-03, STUB-06).
      *
-     * <p>{@code operation} is the ORIGINAL operation map and {@code eventName} the
-     * resolved event's EN name — both retained (rather than the live, transaction-scoped
-     * {@code Event}/container EMF references) so BOTH the stub-write tail and the
-     * compensating rollback ({@link #rollbackHandlerSlot}) re-resolve the
-     * target/container/event completely FRESH via {@link #resolveEventHandlerFormItem} +
-     * {@code resolveConcreteEvent} inside their own transactions — never touching a
-     * reference from the (by-then-committed, transaction-scoped) original transaction
-     * (Pitfall 2).</p>
+     * <p>{@code operation}, the event's EN name, or the command name are retained instead
+     * of live transaction-scoped EMF references. The stub tail and compensation can thus
+     * re-resolve their target completely fresh after the initial transaction commits
+     * (Pitfall 2). Exactly one of {@code eventName}/{@code commandName} is populated, as
+     * required by {@code kind}.</p>
      *
      * <p>{@code handlerName} is the already-validated handler procedure name (validated
-     * upstream by {@code MetadataNameValidator.isValidName} in {@link #wireEventHandler} —
-     * not re-validated here or downstream, per V5). {@code createdHandlerSlot} is the
-     * safety proof for destructive compensation: an existing upsert is never removed.</p>
+     * upstream by {@code MetadataNameValidator.isValidName} in {@link #wireEventHandler}
+     * or the command-operation branch — not re-validated here or downstream, per V5).
+     * {@code createdHandlerSlot} is the
+     * safety proof for destructive compensation: an existing upsert is never removed.
+     * Command actions always set it because duplicate command names are rejected before
+     * registration, so the recorded command was created by this operation.</p>
      */
     private record PendingStub(
+            HandlerStubKind kind,
             Map<String, Object> operation,
             String eventName,
+            String commandName,
             String handlerName,
             boolean createdHandlerSlot) {
+
+        PendingStub {
+            if (kind == HandlerStubKind.EVENT_HANDLER && (eventName == null || commandName != null)) {
+                throw new IllegalArgumentException("EVENT_HANDLER stub requires eventName and no commandName"); //$NON-NLS-1$
+            }
+            if (kind == HandlerStubKind.COMMAND_ACTION && (commandName == null || eventName != null)) {
+                throw new IllegalArgumentException("COMMAND_ACTION stub requires commandName and no eventName"); //$NON-NLS-1$
+            }
+        }
+
+        private static PendingStub forEventHandler(
+                Map<String, Object> operation,
+                String eventName,
+                String handlerName,
+                boolean createdHandlerSlot) {
+            return new PendingStub(
+                    HandlerStubKind.EVENT_HANDLER,
+                    operation,
+                    eventName,
+                    null,
+                    handlerName,
+                    createdHandlerSlot);
+        }
+
+        private static PendingStub forCommandAction(
+                Map<String, Object> operation, String commandName, String handlerName) {
+            return new PendingStub(
+                    HandlerStubKind.COMMAND_ACTION,
+                    operation,
+                    null,
+                    commandName,
+                    handlerName,
+                    true);
+        }
     }
 
     private record StubPhaseOutcome(
