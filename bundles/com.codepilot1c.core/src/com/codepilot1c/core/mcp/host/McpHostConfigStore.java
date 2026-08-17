@@ -36,6 +36,9 @@ public class McpHostConfigStore {
             prefs.get(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name())));
         cfg.setMutationPolicy(McpHostConfig.MutationPolicy.from(
             prefs.get(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name())));
+        cfg.setSessionProfileId(prefs.get(
+            VibePreferenceConstants.PREF_MCP_HOST_POLICY_SESSION_PROFILE,
+            cfg.getSessionProfileId()));
         cfg.setExposedToolsFilter(prefs.get(
             VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS,
             cfg.getExposedToolsFilter()));
@@ -88,6 +91,11 @@ public class McpHostConfigStore {
             cfg.setMutationPolicy(McpHostConfig.MutationPolicy.from(mutationPolicy));
         }
 
+        String sessionProfile = System.getProperty("codepilot.mcp.host.policy.sessionProfile"); //$NON-NLS-1$
+        if (sessionProfile != null && !sessionProfile.isBlank()) {
+            cfg.setSessionProfileId(sessionProfile.trim());
+        }
+
         String exposedTools = System.getProperty("codepilot.mcp.host.policy.exposedTools"); //$NON-NLS-1$
         if (exposedTools != null && !exposedTools.isBlank()) {
             cfg.setExposedToolsFilter(exposedTools.trim());
@@ -111,6 +119,7 @@ public class McpHostConfigStore {
         prefs.putInt(VibePreferenceConstants.PREF_MCP_HOST_HTTP_PORT, cfg.getPort());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name());
+        prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_SESSION_PROFILE, cfg.getSessionProfileId());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, cfg.getExposedToolsFilter());
         SecureStorageUtil.storeSecurely(TOKEN_SECURE_KEY, cfg.getBearerToken());
 
