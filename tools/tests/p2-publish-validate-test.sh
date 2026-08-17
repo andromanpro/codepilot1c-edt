@@ -26,7 +26,9 @@ new_fixture() { # <qualifier> -> prints <root_dir>; creates a git repo with a va
   printf '<repository/>\n' > "$p2/content.xml"
   ( cd "$p2" && zip -q content.jar content.xml )
   rm -f "$p2/content.xml"
-  printf 'artifacts' > "$p2/artifacts.jar"
+  printf '<repository/>\n' > "$p2/artifacts.xml"
+  ( cd "$p2" && zip -q artifacts.jar artifacts.xml )
+  rm -f "$p2/artifacts.xml"
   printf 'core' > "$p2/plugins/com.codepilot1c.core_$q.jar"
   printf 'ui' > "$p2/plugins/com.codepilot1c.ui_$q.jar"
   printf 'feature' > "$p2/features/com.codepilot1c.feature_$q.jar"
@@ -61,6 +63,26 @@ assert_absent() { # <path> <name>
   fi
 }
 
+assert_equal() { # <expected> <actual> <name>
+  local expected="$1" actual="$2" name="$3"
+  if [ "$actual" = "$expected" ]; then
+    printf 'ok   %s\n' "$name"
+  else
+    printf 'FAIL %s (values differ)\n' "$name"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+assert_file_content() { # <path> <expected> <name>
+  local path="$1" expected="$2" name="$3" actual
+  if [ -f "$path" ]; then
+    actual="$(sed -n '1p' "$path")"
+  else
+    actual="<missing>"
+  fi
+  assert_equal "$expected" "$actual" "$name"
+}
+
 validate() { # <root> <expect_q> <expect_head> <require_clean>
   local root="$1"
   ( . "$LIB"
@@ -76,7 +98,7 @@ record() {
 
 copy_publisher() { # <root>
   local root="$1"
-  mkdir -p "$root/tools/lib" "$root/bin" "$root/gh-pages-worktree"
+  mkdir -p "$root/tools/lib" "$root/bin"
   cp "$PUBLISH" "$root/tools/"
   cp "$LIB" "$root/tools/lib/"
   printf '%s\n' '#!/usr/bin/env bash' \
@@ -113,6 +135,22 @@ rm -f "$p2/wrong.xml"
 assert_code 11 "content.jar without content.xml" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
 
 root="$(new_fixture "$Q")"
+: > "$root/repositories/com.codepilot1c.update/target/repository/artifacts.jar"
+assert_code 11 "empty artifacts.jar" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
+printf 'not a zip' > "$root/repositories/com.codepilot1c.update/target/repository/artifacts.jar"
+assert_code 11 "corrupt artifacts.jar" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
+p2="$root/repositories/com.codepilot1c.update/target/repository"
+rm -f "$p2/artifacts.jar"
+printf '<wrong/>\n' > "$p2/wrong.xml"
+( cd "$p2" && zip -q artifacts.jar wrong.xml )
+rm -f "$p2/wrong.xml"
+assert_code 11 "artifacts.jar without artifacts.xml" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
 rm -f "$root/repositories/com.codepilot1c.update/target/repository"/{plugins,features}/com.codepilot1c.*.jar
 assert_code 12 "no codepilot artifacts" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
 
@@ -133,7 +171,31 @@ printf 'tests' > "$root/repositories/com.codepilot1c.update/target/repository/pl
 assert_code 15 "tests bundle present" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
 
 root="$(new_fixture "$Q")"
+printf 'tests feature' > "$root/repositories/com.codepilot1c.update/target/repository/features/com.codepilot1c.feature.tests_$Q.jar"
+assert_code 15 "tests feature present" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
 assert_code 16 "missing provenance" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
+rm -rf "$root/.git"
+assert_code 19 "non-git provenance record fails" record "$root"
+assert_absent "$root/repositories/com.codepilot1c.update/target/repository.provenance" \
+  "non-git failure writes no marker"
+
+root="$(new_fixture "$Q")"
+record "$root" >/dev/null
+marker="$root/repositories/com.codepilot1c.update/target/repository.provenance"
+sed '/^dirty=/d' "$marker" > "$marker.tmp"
+mv "$marker.tmp" "$marker"
+assert_code 16 "missing provenance dirty flag" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
+
+root="$(new_fixture "$Q")"
+record "$root" >/dev/null
+marker="$root/repositories/com.codepilot1c.update/target/repository.provenance"
+sed 's/^dirty=.*/dirty=unknown/' "$marker" > "$marker.tmp"
+mv "$marker.tmp" "$marker"
+assert_code 16 "invalid provenance dirty flag" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
 
 root="$(new_fixture "$Q")"
 record "$root" >/dev/null
@@ -153,6 +215,11 @@ assert_code 19 "expected HEAD mismatch" validate "$root" "$Q" deadbeef 1
 
 root="$(new_fixture "$Q")"
 record "$root" >/dev/null
+assert_code 20 "EXPECT_HEAD rejects short prefix" validate "$root" "$Q" abc123 1
+assert_code 20 "EXPECT_HEAD rejects non-hex prefix" validate "$root" "$Q" 'deadbee?' 1
+
+root="$(new_fixture "$Q")"
+record "$root" >/dev/null
 printf 'dirty' > "$root/untracked"
 assert_code 19 "dirty tree rejected" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 1
 
@@ -160,6 +227,18 @@ root="$(new_fixture "$Q")"
 record "$root" >/dev/null
 printf 'dirty' > "$root/untracked"
 assert_code 0 "dirty tree allowed after build" validate "$root" "$Q" "$(git -C "$root" rev-parse HEAD)" 0
+
+root="$(new_fixture "$Q")"
+printf 'clean\n' > "$root/source.txt"
+git -C "$root" add source.txt
+GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git -C "$root" commit -q -m source
+printf 'dirty\n' >> "$root/source.txt"
+record "$root" >/dev/null
+git -C "$root" restore source.txt
+head="$(git -C "$root" rev-parse HEAD)"
+assert_code 17 "dirty-record provenance rejected after tree is cleaned" validate "$root" "$Q" "$head" 1
+assert_code 0 "dirty-record provenance allowed in build-first mode" validate "$root" "$Q" "$head" 0
 
 root="$(new_fixture "$Q")"
 record "$root" >/dev/null
@@ -175,9 +254,13 @@ fi
 
 root="$(new_fixture "$Q")"
 copy_publisher "$root"
+mkdir -p "$root/gh-pages-worktree"
+printf 'precious\n' > "$root/gh-pages-worktree/content"
 assert_code 20 "SKIP_BUILD requires EXPECT_QUALIFIER" \
   run_publisher "$root" SKIP_BUILD=1 EXPECT_HEAD="$(git -C "$root" rev-parse HEAD)"
 assert_absent "$root/mvn-invoked" "missing qualifier does not invoke mvn"
+assert_file_content "$root/gh-pages-worktree/content" precious \
+  "usage error preserves caller WORKTREE_DIR"
 
 root="$(new_fixture "$Q")"
 copy_publisher "$root"
@@ -194,12 +277,47 @@ assert_absent "$root/mvn-invoked" "contradictory mode does not invoke mvn"
 
 root="$(new_fixture "$Q")"
 copy_publisher "$root"
+mkdir -p "$root/gh-pages-worktree"
+printf 'precious\n' > "$root/gh-pages-worktree/content"
+worktrees_before="$(git -C "$root" worktree list --porcelain)"
+assert_code 16 "validation failure exits before worktree setup" \
+  run_publisher "$root" SKIP_BUILD=1 DRY_RUN=1 EXPECT_QUALIFIER="$Q" \
+    EXPECT_HEAD="$(git -C "$root" rev-parse HEAD)"
+assert_file_content "$root/gh-pages-worktree/content" precious \
+  "validation failure preserves caller WORKTREE_DIR"
+assert_equal "$worktrees_before" "$(git -C "$root" worktree list --porcelain)" \
+  "validation failure creates no second worktree"
+
+root="$(new_fixture "$Q")"
+copy_publisher "$root"
 record "$root" >/dev/null
+mkdir -p "$root/gh-pages-worktree"
+printf 'precious\n' > "$root/gh-pages-worktree/content"
+git -C "$root" branch gh-pages
 head="$(git -C "$root" rev-parse HEAD)"
+worktrees_before="$(git -C "$root" worktree list --porcelain)"
+branch_before="$(git -C "$root" rev-parse gh-pages)"
 assert_code 0 "SKIP_BUILD DRY_RUN validates only" \
   run_publisher "$root" SKIP_BUILD=1 DRY_RUN=1 EXPECT_QUALIFIER="$Q" EXPECT_HEAD="$head"
 assert_absent "$root/mvn-invoked" "SKIP_BUILD DRY_RUN does not invoke mvn"
-assert_absent "$root/gh-pages-worktree" "SKIP_BUILD DRY_RUN leaves no worktree"
+assert_file_content "$root/gh-pages-worktree/content" precious \
+  "SKIP_BUILD DRY_RUN preserves caller WORKTREE_DIR"
+assert_equal "$worktrees_before" "$(git -C "$root" worktree list --porcelain)" \
+  "SKIP_BUILD DRY_RUN creates no second worktree"
+assert_equal "$branch_before" "$(git -C "$root" rev-parse gh-pages)" \
+  "SKIP_BUILD DRY_RUN creates no branch commit"
+
+root="$(new_fixture "$Q")"
+copy_publisher "$root"
+mkdir -p "$root/gh-pages-worktree"
+printf 'precious\n' > "$root/gh-pages-worktree/content"
+worktrees_before="$(git -C "$root" worktree list --porcelain)"
+assert_code 0 "RECORD_PROVENANCE exits before worktree setup" \
+  run_publisher "$root" RECORD_PROVENANCE=1
+assert_file_content "$root/gh-pages-worktree/content" precious \
+  "RECORD_PROVENANCE preserves caller WORKTREE_DIR"
+assert_equal "$worktrees_before" "$(git -C "$root" worktree list --porcelain)" \
+  "RECORD_PROVENANCE creates no second worktree"
 
 root="$(new_fixture "$Q")"
 copy_publisher "$root"

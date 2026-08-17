@@ -6,8 +6,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT_DIR/tools/lib/p2-publish-lib.sh"
 
 P2_DIR="$ROOT_DIR/repositories/com.codepilot1c.update/target/repository"
-WORKTREE_DIR="${WORKTREE_DIR:-$(mktemp -d -t codepilot1c-gh-pages.XXXXXX)}"
-WORKTREE_DIR_REAL="$(cd "$WORKTREE_DIR" && pwd -P)"
+WORKTREE_DIR="${WORKTREE_DIR:-}"
+WORKTREE_DIR_REAL=""
+WORKTREE_OWNED=0
 REMOTE_NAME="${REMOTE_NAME:-origin}"
 BRANCH_NAME="${BRANCH_NAME:-gh-pages}"
 
@@ -18,10 +19,13 @@ EXPECT_QUALIFIER="${EXPECT_QUALIFIER:-}"
 EXPECT_HEAD="${EXPECT_HEAD:-}"
 
 cleanup() {
-  if git -C "$ROOT_DIR" worktree list | grep -q "$WORKTREE_DIR_REAL"; then
+  if [[ -n "$WORKTREE_DIR_REAL" ]] && git -C "$ROOT_DIR" worktree list --porcelain \
+      | grep -Fxq -- "worktree $WORKTREE_DIR_REAL"; then
     git -C "$ROOT_DIR" worktree remove --force "$WORKTREE_DIR_REAL" >/dev/null 2>&1 || true
   fi
-  rm -rf "$WORKTREE_DIR_REAL" >/dev/null 2>&1 || true
+  if [[ "$WORKTREE_OWNED" == "1" ]] && [[ -n "$WORKTREE_DIR_REAL" ]]; then
+    rm -rf "$WORKTREE_DIR_REAL" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -54,6 +58,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "DRY_RUN=1 — validation only, nothing published."
   exit 0
 fi
+
+if [[ -z "$WORKTREE_DIR" ]]; then
+  WORKTREE_DIR="$(mktemp -d -t codepilot1c-gh-pages.XXXXXX)"
+  WORKTREE_OWNED=1
+elif [[ ! -d "$WORKTREE_DIR" ]]; then
+  p2_fail 20 "caller-supplied WORKTREE_DIR must be an existing directory: $WORKTREE_DIR"
+fi
+WORKTREE_DIR_REAL="$(cd "$WORKTREE_DIR" && pwd -P)"
 
 echo "[2/5] Preparing landing pages..."
 mkdir -p "$P2_DIR/site"

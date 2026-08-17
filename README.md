@@ -88,6 +88,7 @@ EDT_APP="$HOME/Library/Application Support/1C/1cedtstart/installations/1C_EDT (L
 EDT_HOME="$EDT_APP/Contents/Eclipse"
 EDT_EXE="$EDT_APP/Contents/MacOS/1cedt"
 EDT_VM="/Applications/1C/1CE/components/axiom-jdk-full-25.0.2+12-x86_64/lib/server/libjvm.dylib"
+BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
 IU="com.codepilot1c.feature.feature.group"
 SITE="https://ondysss.github.io/codepilot1c-edt/"
 # Для локальной сборки вместо SITE используйте абсолютный путь к собранному сайту:
@@ -122,10 +123,16 @@ printf 'data.area=[%s]\nprofile=[%s]\n' "$P2_DATA_AREA" "$P2_PROFILE"
 
 #### B2. Разделяемый агент: обновление одной транзакцией
 
+Пути к общей и возможной локальной копиям профиля нужны для бэкапа, диагностики и отката:
+
+```bash
+LOCAL_PROFILE="$EDT_HOME/p2/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
+SHARED_PROFILE="$P2_DATA_AREA/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
+```
+
 **Шаг 1. Снять фактические версии (ничего не меняет).**
 
 ```bash
-BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
 grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
 
 "$EDT_EXE" -vm "$EDT_VM" \
@@ -180,8 +187,6 @@ ls -l "$BACKUP_DIR"
 director'а с одним `-destination`. Сравните копии по числу установленных единиц:
 
 ```bash
-LOCAL_PROFILE="$EDT_HOME/p2/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
-SHARED_PROFILE="$P2_DATA_AREA/org.eclipse.equinox.p2.engine/profileRegistry/$P2_PROFILE.profile"
 for d in "$LOCAL_PROFILE" "$SHARED_PROFILE"; do
   f="$(ls -t "$d"/*.profile.gz 2>/dev/null | head -n1)"
   [ -n "$f" ] && printf '%s: %s IU (%s)\n' "$d" "$(gunzip -c "$f" | grep -c '<unit ')" "${f##*/}"
@@ -228,12 +233,28 @@ mv "$BACKUP_DIR/stale-local-p2-profile/$(basename "$LOCAL_PROFILE")" "$(dirname 
 #### B3. Самодостаточная установка (профиль в каталоге установки)
 
 Если `config.ini` не задаёт `eclipse.p2.data.area`, профиль живёт в `$EDT_HOME/p2` и агент задаётся
-через `-destination`. Порядок тот же: список root-IU → бэкап → `-verifyOnly` → применение.
+через `-destination`. Сначала независимо снимите обе версии и определите точные IU:
 
 ```bash
+grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
+
 "$EDT_EXE" -vm "$EDT_VM" \
   -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
   -destination "$EDT_HOME" -listInstalledRoots | grep "$IU"
+
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+  -repository "$SITE" -list | grep "$IU"
+```
+
+Список root-IU обязан быть непустым. Установленную версию берите из `-listInstalledRoots`, целевую —
+из `-repository "$SITE" -list`, затем задайте все четыре переменные до бэкапа и сухого прогона:
+
+```bash
+OLD_VERSION="<версия из -listInstalledRoots>"
+NEW_VERSION="<версия из -list>"
+OLD_IU="$IU/$OLD_VERSION"
+NEW_IU="$IU/$NEW_VERSION"
 
 tar -czf "$BACKUP_DIR/configuration.tar.gz" -C "$EDT_HOME" configuration
 tar -czf "$BACKUP_DIR/local-p2.tar.gz" -C "$EDT_HOME" p2
@@ -309,11 +330,19 @@ pgrep -f '1cedt' | while read -r pid; do lsof -p "$pid" 2>/dev/null | grep codep
    `-tag` можно указать созданный тег):
 
    ```bash
+   # B2: разделяемый агент
    ls -t "$SHARED_PROFILE" | head
    "$EDT_EXE" -vm "$EDT_VM" \
      -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
      -shared "$P2_DATA_AREA" -destination "$EDT_HOME" -profile "$P2_PROFILE" \
      -revert <снимок-или-тег>
+
+   # B3: самодостаточная установка
+   find "$EDT_HOME/p2/org.eclipse.equinox.p2.engine/profileRegistry" \
+     -name '*.profile.gz' -print
+   "$EDT_EXE" -vm "$EDT_VM" \
+     -application org.eclipse.equinox.p2.director -noSplash -consoleLog \
+     -destination "$EDT_HOME" -revert <снимок-или-тег>
    ```
 
    JAR прежней версии остаются в bundle pool, поэтому откат не требует сети.
@@ -355,6 +384,11 @@ tools/publish-p2-local.sh
 
 По умолчанию скрипт сначала собирает проект (`mvn clean verify`) и публикует свежий результат.
 
+**Внимание:** `clean verify` удаляет существующий `target/`, включая уже записанные локальный
+репозиторий и `repository.provenance`, до каких-либо проверок, после чего создаёт новый qualifier и
+новый marker. Для публикации ровно тех bits, которые прошли live-приёмку, обязательны
+`SKIP_BUILD=1`, точные `EXPECT_QUALIFIER`/`EXPECT_HEAD` и заранее записанный provenance.
+
 **Важно про qualifier.** Tycho генерирует qualifier заново на каждой сборке, поэтому пересборка
 всегда даёт версию, отличную от той, которую вы проверяли на живой EDT. Публиковать пересобранный,
 непроверенный qualifier нельзя. Если приёмка проходила на конкретной локальной сборке — публикуйте
@@ -377,17 +411,25 @@ SKIP_BUILD=1 \
   tools/publish-p2-local.sh
 ```
 
+`DRY_RUN=1` без `SKIP_BUILD=1` всё равно выполняет полный `mvn clean verify`; сухим является только
+этап публикации. Для проверки уже собранного артефакта без сборки используйте сочетание из примера.
+
 `SKIP_BUILD=1` требует обеих переменных `EXPECT_QUALIFIER` и `EXPECT_HEAD` и падает до любых
 действий с git, если хотя бы одна проверка не прошла:
 
-- каталог p2-репозитория существует, содержит непустые `content.jar` и `artifacts.jar`;
+- каталог p2-репозитория существует, а `content.jar`/`artifacts.jar` — читаемые ZIP с
+  `content.xml`/`artifacts.xml` соответственно;
 - в репозитории присутствуют feature, `com.codepilot1c.core` и `com.codepilot1c.ui`;
 - **ровно один** qualifier на все артефакты `com.codepilot1c.*`, и он равен `EXPECT_QUALIFIER`;
-- в `plugins/` нет `*.tests` бандлов;
+- в `plugins/` нет `*.tests` бандлов, а в `features/` — test-feature;
 - рядом лежит файл происхождения `repositories/com.codepilot1c.update/target/repository.provenance`,
   его qualifier и HEAD совпадают с ожидаемыми, а контрольная сумма артефакта не изменилась с момента
   фиксации;
-- рабочее дерево чистое и `HEAD` совпадает с `EXPECT_HEAD`.
+- provenance был записан при чистом рабочем дереве, дерево остаётся чистым, а `HEAD` совпадает с
+  `EXPECT_HEAD`.
+
+`EXPECT_HEAD` — hex-префикс commit длиной от 7 до 40 символов; более короткие и не-hex значения
+отклоняются как ошибка использования.
 
 `EXPECT_QUALIFIER` можно задавать и в режиме по умолчанию: тогда сборка выполняется, но публикация
 будет отклонена, если собранный qualifier не совпал с ожидаемым.
