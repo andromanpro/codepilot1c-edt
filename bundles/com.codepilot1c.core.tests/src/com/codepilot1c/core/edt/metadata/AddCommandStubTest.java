@@ -182,11 +182,11 @@ public class AddCommandStubTest {
     public void addCommandWritesActionStubAfterExportVerification() throws Exception {
         String source = Files.readString(locateServiceSource());
         int methodStart = source.indexOf("public UpdateFormModelResult updateFormModel"); //$NON-NLS-1$
-        int methodEnd = source.indexOf("private List<String> writeHandlerStubs", methodStart); //$NON-NLS-1$
+        int methodEnd = source.indexOf("private StubPhaseOutcome writeHandlerStubsDetailed", methodStart); //$NON-NLS-1$
         assertTrue("updateFormModel end marker not found", methodEnd > methodStart); //$NON-NLS-1$
         String method = source.substring(methodStart, methodEnd);
         int verify = method.indexOf("verifyObjectPersisted(project, request.formFqn(), opId)"); //$NON-NLS-1$
-        int write = method.indexOf("writeHandlerStubs("); //$NON-NLS-1$
+        int write = method.indexOf("writeHandlerStubsDetailed("); //$NON-NLS-1$
         int refresh = method.indexOf("refreshProjectSafely(project)"); //$NON-NLS-1$
         assertTrue("export must be verified before stub write", verify >= 0 && write > verify); //$NON-NLS-1$
         assertTrue("stub write must precede refresh", refresh > write); //$NON-NLS-1$

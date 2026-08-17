@@ -54,4 +54,18 @@ public class HandlerStubReportTest {
         assertTrue(report.skippedExisting().isEmpty());
     }
 
+    @Test
+    public void recipeAndModelResultsRenderIdenticalStubBlock() {
+        HandlerStubReport report = new HandlerStubReport(List.of("Written"), List.of("Skipped")); //$NON-NLS-1$ //$NON-NLS-2$
+        FormRecipeResult recipe = new FormRecipeResult(
+                "Project", "Catalog.C.Form.F", 0, 0, 0, 0, List.of(), report); //$NON-NLS-1$ //$NON-NLS-2$
+        UpdateFormModelResult model = new UpdateFormModelResult(
+                "Project", "Catalog.C.Form.F", 0, List.of(), report); //$NON-NLS-1$ //$NON-NLS-2$
+
+        String block = report.formatForLlm();
+
+        assertTrue(recipe.formatForLlm().contains(block));
+        assertTrue(model.formatForLlm().contains(block));
+    }
+
 }

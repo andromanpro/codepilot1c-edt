@@ -537,25 +537,27 @@ public class EdtMetadataService {
         // PHASE C (07-03, STUB-06): BSL handler stub write, strictly AFTER the BM
         // export/verify above — never inside the executeWrite transaction that
         // committed the model slot.
+        StubPhaseOutcome stubOutcome = StubPhaseOutcome.empty();
         if (!pendingStubs.isEmpty()) {
-            List<String> stubSummaries = writeHandlerStubs(
+            stubOutcome = writeHandlerStubsDetailed(
                     project, configuration, request.formFqn(), topLevelFqn, pendingStubs, opId);
-            operationSummaries = new ArrayList<>(operationSummaries);
-            operationSummaries.addAll(stubSummaries);
         }
 
         refreshProjectSafely(project);
-        LOG.info("[%s] updateFormModel SUCCESS in %s form=%s operations=%d", //$NON-NLS-1$
+        LOG.info("[%s] updateFormModel SUCCESS in %s form=%s operations=%d stubsWritten=%d stubsSkipped=%d", //$NON-NLS-1$
                 opId,
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
                 request.formFqn(),
-                Integer.valueOf(operationSummaries.size()));
+                Integer.valueOf(operationSummaries.size()),
+                Integer.valueOf(stubOutcome.written().size()),
+                Integer.valueOf(stubOutcome.skippedExisting().size()));
 
         return new UpdateFormModelResult(
                 request.projectName(),
                 request.formFqn(),
                 operationSummaries.size(),
-                operationSummaries);
+                operationSummaries,
+                stubOutcome.toReport());
     }
 
     /**
@@ -569,26 +571,14 @@ public class EdtMetadataService {
      * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
      * model slot stays wired, NO rollback (Pitfall 3).
      */
-    private List<String> writeHandlerStubs(
-            IProject project,
-            Configuration configuration,
-            String formFqn,
-            String topLevelFqn,
-            List<PendingStub> pendingStubs,
-            String opId) {
-        return writeHandlerStubsDetailed(
-                project, configuration, formFqn, topLevelFqn, pendingStubs, opId).summaries();
-    }
-
     private StubPhaseOutcome writeHandlerStubsDetailed(
             IProject project,
             Configuration configuration,
             String formFqn,
             String topLevelFqn,
             List<PendingStub> pendingStubs,
-            String opId) {
+        String opId) {
         ScriptVariant variant = resolveScriptVariant(configuration);
-        List<String> summaries = new ArrayList<>();
         List<String> written = new ArrayList<>();
         List<String> skippedExisting = new ArrayList<>();
         String modulePath;
@@ -643,16 +633,11 @@ public class EdtMetadataService {
                 }
             }
             switch (outcome) {
-                case WRITTEN -> {
-                    written.add(pending.handlerName());
-                    summaries.add("stub generated: " + pending.handlerName() //$NON-NLS-1$
-                            + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$
-                }
+                case WRITTEN -> written.add(pending.handlerName());
                 case SKIPPED_EXISTING_WARN -> {
                     LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
                             opId, pending.handlerName());
                     skippedExisting.add(pending.handlerName());
-                    summaries.add("stub skipped (exists): " + pending.handlerName()); //$NON-NLS-1$
                 }
                 case WRITE_FAILURE -> {
                     LOG.error("[%s] Stub write failed for handler '%s'; attempting handler-slot compensation", //$NON-NLS-1$
@@ -671,7 +656,7 @@ public class EdtMetadataService {
                 default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
             }
         }
-        return new StubPhaseOutcome(summaries, written, skippedExisting);
+        return new StubPhaseOutcome(written, skippedExisting);
     }
 
     private StubPhaseFailureException stubPhaseFailure(
@@ -1178,7 +1163,7 @@ public class EdtMetadataService {
                 applyResult.stats().removed(),
                 applyResult.layoutSummaries().size(),
                 applyResult.layoutSummaries(),
-                new HandlerStubReport(stubOutcome.written(), stubOutcome.skippedExisting()));
+                stubOutcome.toReport());
     }
 
     static FormRecipePartialFailureException formRecipePartialFailure(
@@ -1910,12 +1895,15 @@ public class EdtMetadataService {
     }
 
     private record StubPhaseOutcome(
-            List<String> summaries,
             List<String> written,
             List<String> skippedExisting
     ) {
         private static StubPhaseOutcome empty() {
-            return new StubPhaseOutcome(List.of(), List.of(), List.of());
+            return new StubPhaseOutcome(List.of(), List.of());
+        }
+
+        private HandlerStubReport toReport() {
+            return new HandlerStubReport(written, skippedExisting);
         }
     }
 

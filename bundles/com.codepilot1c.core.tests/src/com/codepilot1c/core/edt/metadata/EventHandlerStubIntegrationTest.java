@@ -27,6 +27,7 @@ import com.codepilot1c.core.edt.forms.BslHandlerStubWriter.StubWriteOutcome;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.BmState;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.RollbackStatus;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.SerializedModelState;
+import com.codepilot1c.core.edt.forms.HandlerStubReport;
 import com.codepilot1c.core.edt.forms.ModuleFileWriter;
 import com.codepilot1c.core.edt.metadata.EdtMetadataService.RollbackAttempt;
 
@@ -81,13 +82,13 @@ public class EventHandlerStubIntegrationTest {
         StubText stub = new BslHandlerStubGenerator().generate(onOpenEvent, HANDLER_NAME, ScriptVariant.RUSSIAN);
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
-        String summary = summarize(outcome, HANDLER_NAME, stub);
+        HandlerStubReport report = new HandlerStubReport(List.of(HANDLER_NAME), List.of());
 
         assertEquals(StubWriteOutcome.WRITTEN, outcome);
         assertTrue(writer.read(MODULE_PATH).contains("&НаКлиенте")); //$NON-NLS-1$
         assertTrue(writer.read(MODULE_PATH).contains("Процедура " + HANDLER_NAME + "(")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue(summary.contains("stub generated")); //$NON-NLS-1$
-        assertTrue(summary.contains(HANDLER_NAME));
+        assertTrue(report.formatForLlm().contains("Записано заглушек обработчиков: 1")); //$NON-NLS-1$
+        assertTrue(report.formatForLlm().contains(HANDLER_NAME));
     }
 
     @Test
@@ -165,13 +166,13 @@ public class EventHandlerStubIntegrationTest {
         container.addHandler(HANDLER_NAME);
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
-        String summary = summarize(outcome, HANDLER_NAME, stub);
+        HandlerStubReport report = new HandlerStubReport(List.of(), List.of(HANDLER_NAME));
 
         assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, outcome);
         assertEquals("model slot must stay wired on SKIPPED_EXISTING_WARN (Pitfall 3, no rollback)", //$NON-NLS-1$
                 true, container.hasHandler(HANDLER_NAME));
         assertEquals(existingText, writer.read(MODULE_PATH));
-        assertTrue(summary.contains("stub skipped (exists)")); //$NON-NLS-1$
+        assertTrue(report.formatForLlm().contains("Пропущено заглушек (уже существуют): 1")); //$NON-NLS-1$
     }
 
     @Test
@@ -208,10 +209,10 @@ public class EventHandlerStubIntegrationTest {
     public void mutateFormModelUsesSharedMeasuredAndExternalAwareStubTail() throws Exception {
         String source = Files.readString(locateServiceSource());
         int updateStart = source.indexOf("public UpdateFormModelResult updateFormModel"); //$NON-NLS-1$
-        int updateEnd = source.indexOf("private List<String> writeHandlerStubs", updateStart); //$NON-NLS-1$
+        int updateEnd = source.indexOf("private StubPhaseOutcome writeHandlerStubsDetailed", updateStart); //$NON-NLS-1$
         assertTrue("updateFormModel end marker not found", updateEnd > updateStart); //$NON-NLS-1$
         String updateMethod = source.substring(updateStart, updateEnd);
-        assertTrue(updateMethod.contains("writeHandlerStubs(")); //$NON-NLS-1$
+        assertTrue(updateMethod.contains("writeHandlerStubsDetailed(")); //$NON-NLS-1$
 
         int sharedStart = updateEnd;
         int sharedEnd = source.indexOf("private String ensureFormModulePath", sharedStart); //$NON-NLS-1$
@@ -242,19 +243,6 @@ public class EventHandlerStubIntegrationTest {
         }
         throw new AssertionError("Cannot locate EdtMetadataService.java from " //$NON-NLS-1$
                 + Path.of("").toAbsolutePath()); //$NON-NLS-1$
-    }
-
-    /**
-     * Mirrors {@code EdtMetadataService.writeHandlerStubs}'s per-handler summary text exactly,
-     * so this test proves the summary SHAPE the real orchestrator emits without needing a live
-     * project to invoke the private method itself.
-     */
-    private static String summarize(StubWriteOutcome outcome, String handlerName, StubText stub) {
-        return switch (outcome) {
-            case WRITTEN -> "stub generated: " + handlerName + " (" + stub.directive() + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case SKIPPED_EXISTING_WARN -> "stub skipped (exists): " + handlerName; //$NON-NLS-1$
-            case WRITE_FAILURE -> "stub write failed: " + handlerName; //$NON-NLS-1$
-        };
     }
 
     /**
