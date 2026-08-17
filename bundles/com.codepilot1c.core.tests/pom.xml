@@ -43,6 +43,14 @@
 
     <build>
         <testSourceDirectory>src</testSourceDirectory>
+        <testResources>
+            <testResource>
+                <directory>src</directory>
+                <excludes>
+                    <exclude>**/*.java</exclude>
+                </excludes>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
