@@ -562,7 +562,8 @@ public class EdtMetadataService {
      * ensures {@code Module.bsl}
      * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
      * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} attempts
-     * compensating {@link #rollbackHandlerSlot} + re-export. The thrown failure records
+     * compensating {@link #rollbackHandlerSlot} or {@link #rollbackCommandSlot} + re-export.
+     * The thrown failure records
      * whether compensation actually removed/exported the slot; it never assumes rollback.
      * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
      * model slot stays wired, NO rollback (Pitfall 3).
@@ -697,6 +698,14 @@ public class EdtMetadataService {
             PendingStub pending,
             String opId
     ) {
+        if (pending.kind() == HandlerStubKind.COMMAND_ACTION) {
+            return compensateHandlerSlot(
+                    pending.createdHandlerSlot(),
+                    pending.handlerName(),
+                    opId,
+                    () -> compensateCreatedCommandSlot(
+                            project, configuration, formFqn, topLevelFqn, pending, opId));
+        }
         return compensateHandlerSlot(
                 pending.createdHandlerSlot(),
                 pending.handlerName(),
@@ -776,6 +785,75 @@ public class EdtMetadataService {
         }
     }
 
+    private RollbackAttempt compensateCreatedCommandSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        RollbackMutationResult mutationResult;
+        try {
+            mutationResult = rollbackCommandSlot(project, configuration, formFqn, pending, opId);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Command-slot compensation failed for '%s': %s", //$NON-NLS-1$
+                    opId, pending.commandName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.FAILED,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    e);
+        }
+        if (mutationResult != RollbackMutationResult.REMOVED) {
+            return mapCommandRollbackMutation(mutationResult, pending.commandName(), opId);
+        }
+        try {
+            forceExportTopLevelObject(project, topLevelFqn, opId);
+            verifyObjectPersisted(project, formFqn, opId);
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_AND_EXPORTED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_VERIFIED,
+                    null);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Command slot removed for '%s', but rollback export failed: %s", //$NON-NLS-1$
+                    opId, pending.commandName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_EXPORT_FAILED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_FAILED,
+                    e);
+        }
+    }
+
+    RollbackAttempt mapCommandRollbackMutation(
+            RollbackMutationResult mutationResult, String commandName, String opId) {
+        return switch (mutationResult) {
+            case SLOT_NOT_FOUND -> new RollbackAttempt(
+                    RollbackStatus.SLOT_NOT_FOUND,
+                    BmState.HANDLER_ABSENCE_CONFIRMED,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+            case FORM_NOT_FOUND -> new RollbackAttempt(
+                    RollbackStatus.FORM_NOT_FOUND,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+            case SLOT_REFERENCED -> {
+                LOG.warn("[%s] Command-slot compensation not attempted for '%s': command is referenced by a button", //$NON-NLS-1$
+                        opId, commandName);
+                yield new RollbackAttempt(
+                        RollbackStatus.NOT_ATTEMPTED_UNSAFE,
+                        BmState.INITIAL_COMMIT_REMAINS,
+                        SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                        null);
+            }
+            case REMOVED -> throw new IllegalArgumentException(
+                    "REMOVED command rollback requires export verification"); //$NON-NLS-1$
+        };
+    }
+
     MetadataOperationException stubWriteFailure(String handlerName, RollbackAttempt rollback) {
         return new MetadataOperationException(
                 MetadataOperationCode.EDT_TRANSACTION_FAILED,
@@ -850,6 +928,61 @@ public class EdtMetadataService {
                     opId, formFqn, pending.eventName());
             return RollbackMutationResult.SLOT_NOT_FOUND;
         });
+    }
+
+    /**
+     * Removes a just-created command only when no button references it. Both the form and
+     * command are resolved afresh inside this compensating write transaction; no EMF
+     * reference from the committed mutation transaction is reused.
+     */
+    private RollbackMutationResult rollbackCommandSlot(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
+        return executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                LOG.warn("[%s] rollbackCommandSlot: form metadata not found: %s", opId, formFqn); //$NON-NLS-1$
+                return RollbackMutationResult.FORM_NOT_FOUND;
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormCommand target = findFormCommandByName(formModel, pending.commandName());
+            if (target == null) {
+                LOG.warn("[%s] rollbackCommandSlot: command slot not found form=%s command=%s", //$NON-NLS-1$
+                        opId, formFqn, pending.commandName());
+                return RollbackMutationResult.SLOT_NOT_FOUND;
+            }
+            if (isCommandReferenced(formModel, target)) {
+                LOG.warn("[%s] rollbackCommandSlot: command is referenced form=%s command=%s", //$NON-NLS-1$
+                        opId, formFqn, pending.commandName());
+                return RollbackMutationResult.SLOT_REFERENCED;
+            }
+            formModel.getFormCommands().remove(target);
+            return RollbackMutationResult.REMOVED;
+        });
+    }
+
+    boolean isCommandReferenced(Form formModel, FormCommand target) {
+        if (formModel == null || target == null) {
+            return false;
+        }
+        TreeIterator<EObject> iterator = formModel.eAllContents();
+        while (iterator.hasNext()) {
+            EObject object = iterator.next();
+            if (!(object instanceof Button button)) {
+                continue;
+            }
+            Command referenced = button.getCommandName();
+            if (referenced == target) {
+                return true;
+            }
+            if (referenced instanceof FormCommand referencedCommand
+                    && target.getName() != null
+                    && referencedCommand.getName() != null
+                    && target.getName().equalsIgnoreCase(referencedCommand.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public FormRecipeResult applyFormRecipe(FormRecipeRequest request) {
@@ -1790,7 +1923,8 @@ public class EdtMetadataService {
     private enum RollbackMutationResult {
         REMOVED,
         SLOT_NOT_FOUND,
-        FORM_NOT_FOUND
+        FORM_NOT_FOUND,
+        SLOT_REFERENCED
     }
 
     record RollbackAttempt(

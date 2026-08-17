@@ -11,19 +11,34 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.Test;
 
+import com._1c.g5.v8.dt.form.model.Button;
 import com._1c.g5.v8.dt.form.model.Form;
+import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.mcore.Event;
+import com._1c.g5.v8.dt.mcore.McoreFactory;
+import com._1c.g5.v8.dt.mcore.util.Environments;
 import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 
 import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator;
+import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator.StubText;
+import com.codepilot1c.core.edt.forms.BslHandlerStubWriter;
+import com.codepilot1c.core.edt.forms.BslHandlerStubWriter.StubWriteOutcome;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.BmState;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.RollbackStatus;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.SerializedModelState;
 import com.codepilot1c.core.edt.forms.HandlerStubKind;
+import com.codepilot1c.core.edt.forms.ModuleFileWriter;
+import com.codepilot1c.core.edt.metadata.EdtMetadataService.RollbackAttempt;
 
 public class AddCommandStubTest {
 
@@ -163,12 +178,175 @@ public class AddCommandStubTest {
         assertInvariantRejected(constructor, HandlerStubKind.EVENT_HANDLER, "OnOpen", "Run"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    @Test
+    public void addCommandWritesActionStubAfterExportVerification() throws Exception {
+        String source = Files.readString(locateServiceSource());
+        int methodStart = source.indexOf("public UpdateFormModelResult updateFormModel"); //$NON-NLS-1$
+        int methodEnd = source.indexOf("private List<String> writeHandlerStubs", methodStart); //$NON-NLS-1$
+        assertTrue("updateFormModel end marker not found", methodEnd > methodStart); //$NON-NLS-1$
+        String method = source.substring(methodStart, methodEnd);
+        int verify = method.indexOf("verifyObjectPersisted(project, request.formFqn(), opId)"); //$NON-NLS-1$
+        int write = method.indexOf("writeHandlerStubs("); //$NON-NLS-1$
+        int refresh = method.indexOf("refreshProjectSafely(project)"); //$NON-NLS-1$
+        assertTrue("export must be verified before stub write", verify >= 0 && write > verify); //$NON-NLS-1$
+        assertTrue("stub write must precede refresh", refresh > write); //$NON-NLS-1$
+
+        List<String> callOrder = new ArrayList<>();
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter() {
+            @Override
+            public void write(String workspacePath, String content) {
+                callOrder.add("write"); //$NON-NLS-1$
+                super.write(workspacePath, content);
+            }
+        };
+        writer.seed("Module.bsl", ""); //$NON-NLS-1$ //$NON-NLS-2$
+        callOrder.add("model-slot-commit"); //$NON-NLS-1$
+        callOrder.add("export"); //$NON-NLS-1$
+        callOrder.add("verify"); //$NON-NLS-1$
+        StubText stub = new BslHandlerStubGenerator()
+                .generateCommandAction("RunAction", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+        StubWriteOutcome outcome = new BslHandlerStubWriter(writer)
+                .write("Module.bsl", "RunAction", stub, ScriptVariant.RUSSIAN); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(StubWriteOutcome.WRITTEN, outcome);
+        assertTrue(callOrder.indexOf("write") > callOrder.indexOf("verify")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void existingActionProcedureIsSkippedWithWarnAndSlotIsKept() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        List<Object> pendingStubs = new ArrayList<>();
+        invokeOperations(form, List.of(commandOperation("Run", "RunAction")), pendingStubs); //$NON-NLS-1$ //$NON-NLS-2$
+        String existing = "&НаКлиенте\nПроцедура RunAction(Команда)\n\tСообщить(\"готово\");\nКонецПроцедуры"; //$NON-NLS-1$
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        writer.seed("Module.bsl", existing); //$NON-NLS-1$
+        StubText stub = new BslHandlerStubGenerator()
+                .generateCommandAction("RunAction", ScriptVariant.RUSSIAN); //$NON-NLS-1$
+
+        StubWriteOutcome outcome = new BslHandlerStubWriter(writer)
+                .write("Module.bsl", "RunAction", stub, ScriptVariant.RUSSIAN); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, outcome);
+        assertEquals(existing, writer.read("Module.bsl")); //$NON-NLS-1$
+        assertEquals(1, form.getFormCommands().size());
+        assertEquals("Run", form.getFormCommands().get(0).getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void duplicateHandlerAcrossCommandAndEventWritesSingleStub() throws Exception {
+        Event onOpen = McoreFactory.eINSTANCE.createEvent();
+        onOpen.setName("OnOpen"); //$NON-NLS-1$
+        onOpen.setNameRu("ПриОткрытии"); //$NON-NLS-1$
+        onOpen.setEnvironments(Environments.ALL_CLIENTS);
+        EdtMetadataService eventService = new EdtMetadataService(
+                new EdtMetadataGateway(), new EventHandlerTargetResolver(target -> List.of(onOpen)));
+        Form form = FormFactory.eINSTANCE.createForm();
+        Map<String, Object> eventOperation = new LinkedHashMap<>();
+        eventOperation.put("op", "add_event_handler"); //$NON-NLS-1$ //$NON-NLS-2$
+        eventOperation.put("target", "form"); //$NON-NLS-1$ //$NON-NLS-2$
+        eventOperation.put("event", "OnOpen"); //$NON-NLS-1$ //$NON-NLS-2$
+        eventOperation.put("handler_name", "SharedAction"); //$NON-NLS-1$ //$NON-NLS-2$
+        List<Object> pendingStubs = new ArrayList<>();
+        invokeOperations(
+                eventService,
+                form,
+                List.of(commandOperation("Run", "SharedAction"), eventOperation), //$NON-NLS-1$ //$NON-NLS-2$
+                pendingStubs);
+        assertEquals(2, pendingStubs.size());
+
+        InMemoryModuleFileWriter writer = new InMemoryModuleFileWriter();
+        writer.seed("Module.bsl", ""); //$NON-NLS-1$ //$NON-NLS-2$
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(writer);
+        BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
+        StubWriteOutcome first = stubWriter.write(
+                "Module.bsl", //$NON-NLS-1$
+                "SharedAction", //$NON-NLS-1$
+                generator.generateCommandAction("SharedAction", ScriptVariant.RUSSIAN), //$NON-NLS-1$
+                ScriptVariant.RUSSIAN);
+        StubWriteOutcome second = stubWriter.write(
+                "Module.bsl", //$NON-NLS-1$
+                "SharedAction", //$NON-NLS-1$
+                generator.generate(onOpen, "SharedAction", ScriptVariant.RUSSIAN), //$NON-NLS-1$
+                ScriptVariant.RUSSIAN);
+
+        assertEquals(StubWriteOutcome.WRITTEN, first);
+        assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, second);
+        assertEquals(1, countOccurrences(writer.read("Module.bsl"), "Процедура SharedAction(")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void writeFailureRollsBackCommandSlotAndReportsMeasuredState() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        List<Object> pendingStubs = new ArrayList<>();
+        invokeOperations(form, List.of(commandOperation("Run", "RunAction")), pendingStubs); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(1, form.getFormCommands().size());
+        AtomicBoolean compensationCalled = new AtomicBoolean();
+        RollbackAttempt measured = new RollbackAttempt(
+                RollbackStatus.REMOVED_AND_EXPORTED,
+                BmState.HANDLER_REMOVED,
+                SerializedModelState.ROLLBACK_EXPORT_VERIFIED,
+                null);
+
+        RollbackAttempt actual = service.compensateHandlerSlot(true, "RunAction", "test", () -> { //$NON-NLS-1$ //$NON-NLS-2$
+            compensationCalled.set(true);
+            form.getFormCommands().clear();
+            return measured;
+        });
+
+        assertTrue(compensationCalled.get());
+        assertTrue(form.getFormCommands().isEmpty());
+        assertEquals(RollbackStatus.REMOVED_AND_EXPORTED, actual.status());
+        assertTrue(service.stubWriteFailure("RunAction", actual).getMessage() //$NON-NLS-1$
+                .contains("rollback_status=REMOVED_AND_EXPORTED")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void referencedCommandIsNotRemovedAndReportsNotAttemptedUnsafe() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormCommand command = FormFactory.eINSTANCE.createFormCommand();
+        command.setName("Run"); //$NON-NLS-1$
+        form.getFormCommands().add(command);
+        Button button = FormFactory.eINSTANCE.createButton();
+        button.setName("RunButton"); //$NON-NLS-1$
+        button.setCommandName(command);
+        form.getItems().add(button);
+
+        assertTrue(service.isCommandReferenced(form, command));
+        Class<?> mutationType = null;
+        for (Class<?> nested : EdtMetadataService.class.getDeclaredClasses()) {
+            if ("RollbackMutationResult".equals(nested.getSimpleName())) { //$NON-NLS-1$
+                mutationType = nested;
+                break;
+            }
+        }
+        assertTrue("RollbackMutationResult not found", mutationType != null); //$NON-NLS-1$
+        @SuppressWarnings({ "rawtypes", "unchecked" })
+        Object referenced = Enum.valueOf((Class)mutationType, "SLOT_REFERENCED"); //$NON-NLS-1$
+        Method mapping = EdtMetadataService.class.getDeclaredMethod(
+                "mapCommandRollbackMutation", mutationType, String.class, String.class); //$NON-NLS-1$
+        mapping.setAccessible(true);
+        Object attempt = mapping.invoke(service, referenced, "Run", "test"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(RollbackStatus.NOT_ATTEMPTED_UNSAFE, accessor(attempt, "status")); //$NON-NLS-1$
+        assertEquals(BmState.INITIAL_COMMIT_REMAINS, accessor(attempt, "bmState")); //$NON-NLS-1$
+        assertEquals(1, form.getFormCommands().size());
+        assertEquals(command, button.getCommandName());
+    }
+
     private void invokeOperations(Form form, List<Map<String, Object>> operations, List<Object> pendingStubs)
             throws Exception {
+        invokeOperations(service, form, operations, pendingStubs);
+    }
+
+    private static void invokeOperations(
+            EdtMetadataService targetService,
+            Form form,
+            List<Map<String, Object>> operations,
+            List<Object> pendingStubs) throws Exception {
         Method method = EdtMetadataService.class.getDeclaredMethod(
                 "applyFormModelOperations", Form.class, List.class, List.class); //$NON-NLS-1$
         method.setAccessible(true);
-        method.invoke(service, form, operations, pendingStubs);
+        method.invoke(targetService, form, operations, pendingStubs);
     }
 
     private static Object accessor(Object target, String name) throws Exception {
@@ -195,6 +373,16 @@ public class AddCommandStubTest {
         } catch (InvocationTargetException e) {
             assertTrue(e.getCause() instanceof IllegalArgumentException);
         }
+    }
+
+    private static int countOccurrences(String text, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = text.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private static Path locateGeneratorSource() {
@@ -225,5 +413,23 @@ public class AddCommandStubTest {
         }
         throw new AssertionError("Cannot locate EdtMetadataService.java from " //$NON-NLS-1$
                 + Path.of("").toAbsolutePath()); //$NON-NLS-1$
+    }
+
+    private static class InMemoryModuleFileWriter implements ModuleFileWriter {
+        private final Map<String, String> files = new HashMap<>();
+
+        void seed(String path, String content) {
+            files.put(path, content);
+        }
+
+        @Override
+        public String read(String workspacePath) {
+            return files.getOrDefault(workspacePath, ""); //$NON-NLS-1$
+        }
+
+        @Override
+        public void write(String workspacePath, String content) {
+            files.put(workspacePath, content);
+        }
     }
 }
