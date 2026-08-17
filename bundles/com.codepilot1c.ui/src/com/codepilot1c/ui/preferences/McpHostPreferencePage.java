@@ -6,6 +6,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.eclipse.jface.preference.PreferencePage;
 import org.eclipse.swt.SWT;
@@ -22,6 +24,8 @@ import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPreferencePage;
 
+import com.codepilot1c.core.agent.profiles.AgentProfile;
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.codepilot1c.core.mcp.host.McpHostConfigStore;
 import com.codepilot1c.core.mcp.host.McpHostManager;
@@ -39,6 +43,8 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
     private Combo authModeCombo;
     private Text bearerTokenText;
     private Combo mutationPolicyCombo;
+    private Combo sessionProfileCombo;
+    private final List<String> sessionProfileIds = new ArrayList<>();
     private Text exposedToolsText;
     private Label warningLabel;
     private Label statusLabel;
@@ -124,6 +130,21 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
             Messages.McpHostPreferencePage_MutationAllow
         });
         mutationPolicyCombo.select(Math.max(0, config.getMutationPolicy().ordinal()));
+
+        createLabel(container, Messages.McpHostPreferencePage_SessionProfile);
+        sessionProfileCombo = new Combo(container, SWT.DROP_DOWN | SWT.READ_ONLY);
+        sessionProfileCombo.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        List<String> profileLabels = new ArrayList<>();
+        sessionProfileIds.clear();
+        sessionProfileIds.add(""); //$NON-NLS-1$
+        profileLabels.add("(не задан — профильный гейт выключен)"); //$NON-NLS-1$
+        for (AgentProfile profile : AgentProfileRegistry.getInstance().getAllProfiles()) {
+            sessionProfileIds.add(profile.getId());
+            profileLabels.add(profile.getId());
+        }
+        sessionProfileCombo.setItems(profileLabels.toArray(String[]::new));
+        int selectedProfile = sessionProfileIds.indexOf(config.getSessionProfileId());
+        sessionProfileCombo.select(selectedProfile >= 0 ? selectedProfile : 0);
 
         createLabel(container, Messages.McpHostPreferencePage_ExposedTools);
         exposedToolsText = new Text(container, SWT.BORDER);
@@ -365,6 +386,7 @@ Codex (MCP-конфиг):
         newConfig.setAuthMode(McpHostConfig.AuthMode.values()[authModeCombo.getSelectionIndex()]);
         newConfig.setBearerToken(bearerTokenText.getText().trim());
         newConfig.setMutationPolicy(McpHostConfig.MutationPolicy.values()[mutationPolicyCombo.getSelectionIndex()]);
+        newConfig.setSessionProfileId(sessionProfileIds.get(sessionProfileCombo.getSelectionIndex()));
         newConfig.setExposedToolsFilter(exposedToolsText.getText().trim());
 
         McpHostConfigStore.getInstance().save(newConfig);
@@ -383,6 +405,7 @@ Codex (MCP-конфиг):
         authModeCombo.select(defaults.getAuthMode().ordinal());
         bearerTokenText.setText(defaults.getBearerToken());
         mutationPolicyCombo.select(defaults.getMutationPolicy().ordinal());
+        sessionProfileCombo.select(0);
         exposedToolsText.setText(defaults.getExposedToolsFilter());
         installHintsText.setText(buildInstallHints());
         refreshWarning();

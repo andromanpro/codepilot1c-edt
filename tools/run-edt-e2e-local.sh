@@ -29,6 +29,7 @@ MCP_PORT="${MCP_PORT:-8765}"
 MCP_PROTOCOL_VERSION="${MCP_PROTOCOL_VERSION:-2025-06-18}"
 MCP_WAIT_TIMEOUT_SECONDS="${MCP_WAIT_TIMEOUT_SECONDS:-180}"
 MCP_MUTATION_POLICY="${MCP_MUTATION_POLICY:-ALLOW}"
+MCP_SESSION_PROFILE="${MCP_SESSION_PROFILE:-}"
 MCP_EXPOSED_TOOLS="${MCP_EXPOSED_TOOLS:-*}"
 MCP_URL="${MCP_URL:-http://$MCP_BIND:$MCP_PORT/mcp}"
 MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-}"
@@ -414,6 +415,9 @@ launch_edt() {
         "-Dcodepilot.mcp.host.policy.exposedTools=$MCP_EXPOSED_TOOLS"
         "-Dcodepilot1c.agent.trace.dir=$TRACE_DIR"
     )
+    if [[ -n "$MCP_SESSION_PROFILE" ]]; then
+        vmargs+=("-Dcodepilot.mcp.host.policy.sessionProfile=$MCP_SESSION_PROFILE")
+    fi
     if bool_true "$EDT_HEADLESS"; then
         vmargs+=("-Declipse.ignoreApp=true" "-Dosgi.noShutdown=true")
     fi
