@@ -293,7 +293,8 @@ public class ChatViewPermissionGateTest {
                 "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"), //$NON-NLS-1$
                 StandardCharsets.UTF_8);
         int start = source.indexOf("private CompletableFuture<String> processToolCalls("); //$NON-NLS-1$
-        int end = source.indexOf("private ChatToolGate activeToolGate()", start); //$NON-NLS-1$
+        int end = source.indexOf(
+                "private synchronized ChatToolGate activeToolGate()", start); //$NON-NLS-1$
         assertTrue("processToolCalls region must exist", start >= 0 && end > start); //$NON-NLS-1$
         String region = source.substring(start, end);
 

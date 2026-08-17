@@ -243,7 +243,7 @@ public class ChatView extends ViewPart {
     /** Current set of proposed changes awaiting review */
     private ProposedChangeSet currentProposedChanges;
     /** Profile and permission policy fixed for the current chat turn. */
-    private ChatToolGate toolGate;
+    private volatile ChatToolGate toolGate;
     /** Token usage totals for current chat session */
     private long inputTokensTotal = 0;
     private long cachedInputTokensTotal = 0;
@@ -2027,7 +2027,7 @@ public class ChatView extends ViewPart {
         return prefs.getBoolean(VibePreferenceConstants.PREF_AGENT_SKIP_TOOL_CONFIRMATIONS, false);
     }
 
-    private ChatToolGate activeToolGate() {
+    private synchronized ChatToolGate activeToolGate() {
         if (toolGate == null) {
             toolGate = createToolGate();
         }
