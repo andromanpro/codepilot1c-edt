@@ -15,6 +15,7 @@ import com.codepilot1c.core.edt.forms.BslRegionPlacement.Insertion;
 public class BslRegionPlacementTest {
 
     private static final String FORM_REGION = "ОбработчикиСобытийФормы"; //$NON-NLS-1$
+    private static final String TABLE_REGION = "ОбработчикиСобытийЭлементовТаблицыФормы"; //$NON-NLS-1$
     private static final String COMMAND_REGION = "ОбработчикиКомандФормы"; //$NON-NLS-1$
     private static final String STUB = "&НаКлиенте\n" //$NON-NLS-1$
             + "Процедура НовыйОбработчик(Отказ)\n" //$NON-NLS-1$
@@ -73,6 +74,15 @@ public class BslRegionPlacementTest {
         String result = apply(module, plan(module, COMMAND_REGION, 4, STUB, ScriptVariant.RUSSIAN));
 
         assertTrue(result.indexOf(FORM_REGION) < result.indexOf(COMMAND_REGION));
+        assertTrue(result.indexOf("#КонецОбласти") < result.indexOf(COMMAND_REGION)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void commandRegionIsInsertedAfterBareTableRegionPrefix() {
+        String module = region(TABLE_REGION, "Процедура Таблица()\nКонецПроцедуры"); //$NON-NLS-1$
+        String result = apply(module, plan(module, COMMAND_REGION, 4, STUB, ScriptVariant.RUSSIAN));
+
+        assertTrue(result.indexOf(TABLE_REGION) < result.indexOf(COMMAND_REGION));
         assertTrue(result.indexOf("#КонецОбласти") < result.indexOf(COMMAND_REGION)); //$NON-NLS-1$
     }
 
@@ -189,6 +199,27 @@ public class BslRegionPlacementTest {
 
         assertEquals(1, count(result, "#Region " + FORM_REGION)); //$NON-NLS-1$
         assertFalse(result.contains("#Область")); //$NON-NLS-1$
+        assertTrue(result.indexOf(STUB) < result.indexOf("#EndRegion")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void russianOpenRegionTrailingCommentKeepsCanonicalTargetIdentity() {
+        String module = "#Область " + FORM_REGION + " // keep\n\n#КонецОбласти\n"; //$NON-NLS-1$ //$NON-NLS-2$
+        String result = apply(module, plan(module, FORM_REGION, 1, STUB, ScriptVariant.RUSSIAN));
+
+        assertEquals(1, count(result, "#Область " + FORM_REGION)); //$NON-NLS-1$
+        assertTrue(result.startsWith("#Область " + FORM_REGION + " // keep")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(result.indexOf(STUB) < result.indexOf("#КонецОбласти")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void englishOpenRegionTrailingCommentKeepsCanonicalTargetIdentity() {
+        String target = "FormEventHandlers"; //$NON-NLS-1$
+        String module = "#Region " + target + "// keep\n\n#EndRegion\n"; //$NON-NLS-1$ //$NON-NLS-2$
+        String result = apply(module, plan(module, target, 1, STUB, ScriptVariant.ENGLISH));
+
+        assertEquals(1, count(result, "#Region " + target)); //$NON-NLS-1$
+        assertTrue(result.startsWith("#Region " + target + "// keep")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue(result.indexOf(STUB) < result.indexOf("#EndRegion")); //$NON-NLS-1$
     }
 

@@ -18,7 +18,7 @@ public final class BslRegionPlacement {
                     + Pattern.quote(BslKeywords.regionDirective(ScriptVariant.RUSSIAN))
                     + "|" //$NON-NLS-1$
                     + Pattern.quote(BslKeywords.regionDirective(ScriptVariant.ENGLISH))
-                    + ")[\\t ]+(.+?)[\\t ]*$", //$NON-NLS-1$
+                    + ")[\\t ]+(.+?)(?:[\\t ]*//.*)?[\\t ]*$", //$NON-NLS-1$
             REGION_PATTERN_FLAGS);
     private static final Pattern END_REGION = Pattern.compile(
             "^[\\t ]*(?:" //$NON-NLS-1$
@@ -204,7 +204,7 @@ public final class BslRegionPlacement {
             String russian = region.name(ScriptVariant.RUSSIAN);
             String english = region.name(ScriptVariant.ENGLISH);
             if (region.isSuffixed()) {
-                if (hasSuffix(name, russian) || hasSuffix(name, english)) {
+                if (startsWith(name, russian) || startsWith(name, english)) {
                     return Integer.valueOf(region.ordinalIndex());
                 }
             } else if (name.equalsIgnoreCase(russian) || name.equalsIgnoreCase(english)) {
@@ -214,8 +214,8 @@ public final class BslRegionPlacement {
         return null;
     }
 
-    private static boolean hasSuffix(String name, String prefix) {
-        return name.length() > prefix.length() && name.regionMatches(true, 0, prefix, 0, prefix.length());
+    private static boolean startsWith(String name, String prefix) {
+        return name.length() >= prefix.length() && name.regionMatches(true, 0, prefix, 0, prefix.length());
     }
 
     public record Insertion(int offset, String text) {

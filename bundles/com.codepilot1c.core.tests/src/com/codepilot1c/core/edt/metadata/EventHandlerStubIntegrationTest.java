@@ -36,7 +36,7 @@ import com.codepilot1c.core.edt.metadata.EdtMetadataService.RollbackAttempt;
  * {@code mutate_form_model} and {@code apply_form_recipe}.
  *
  * <p>{@code EdtMetadataService.updateFormModel}'s full tail
- * ({@code writeHandlerStubs}/{@code ensureFormModulePath}/{@code resolveFreshEvent}/
+ * ({@code writeHandlerStubs}/{@code ensureFormModulePath}/{@code resolveFreshEventContext}/
  * {@code rollbackHandlerSlot}) requires a live {@code IProject} + BM workspace
  * ({@code gateway.getBmModelManager()}, {@code IBmPlatformGlobalEditingContext},
  * {@code ensureModuleArtifact}'s {@code IFile} access) and cannot run headlessly — exactly
