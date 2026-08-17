@@ -660,11 +660,6 @@ public class EdtMetadataService {
                             RollbackAttempt.notAttempted());
                 }
             }
-            LOG.info("[%s] stub handler=%s region=%s placement=%s", //$NON-NLS-1$
-                    opId,
-                    pending.handlerName(),
-                    region.isUnknown() ? "UNKNOWN" : region.canonicalName(variant), //$NON-NLS-1$
-                    outcome);
             switch (outcome) {
                 case WRITTEN -> written.add(pending.handlerName());
                 case SKIPPED_EXISTING_WARN -> {
