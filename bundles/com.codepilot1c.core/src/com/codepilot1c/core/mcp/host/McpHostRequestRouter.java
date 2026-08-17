@@ -349,9 +349,12 @@ public class McpHostRequestRouter {
     }
 
     private Map<String, Object> toMcpToolResult(ToolResult result) {
-        Map<String, Object> payload = new HashMap<>();
+        Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("isError", Boolean.valueOf(!result.isSuccess())); //$NON-NLS-1$
         payload.put("content", List.of(McpContent.text(result.getContentForLlm()))); //$NON-NLS-1$
+        if (result.hasStructuredData()) {
+            payload.put("structuredContent", result.getStructuredData().deepCopy()); //$NON-NLS-1$
+        }
         return payload;
     }
 
