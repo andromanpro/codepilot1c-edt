@@ -28,31 +28,62 @@ public final class PermissionEvaluator {
             "path", "file", "filePath", "command", "resource"
     };
 
-    private static final String[] PATH_RESOURCE_KEYS = {
-            "path", "file", "filePath"
+    /**
+     * Дополнительные объектные идентификаторы только для strict agent gate.
+     * Порядок задаёт приоритет и намеренно идёт после legacy-ключей, чтобы
+     * сохранить {@code command} как ресурс для manage-инструментов.
+     */
+    private static final String[] GATE_ONLY_RESOURCE_KEYS = {
+            "target_fqn",
+            "parent_fqn",
+            "form_fqn",
+            "owner_fqn",
+            "object_fqn",
+            "template_fqn",
+            "role",
+            "repo_path"
     };
+
+    private static final String[] PATH_RESOURCE_KEYS = {
+            "path", "file", "filePath", "repo_path"
+    };
+
+    private record ResolvedResource(String key, String value) {
+    }
 
     private PermissionEvaluator() {
     }
 
     /**
      * Извлекает raw-ресурс из аргументов инструмента без нормализации.
-     * Этот контракт используется legacy {@link PermissionManager} и MCP Host.
+     * Это неизменяемый legacy-контракт {@link PermissionManager} и MCP Host:
+     * список ключей нельзя расширять. Strict agent gate использует
+     * {@link #gateResourceOf(Map)}.
      *
      * @param arguments аргументы инструмента
      * @return значение первого известного ресурсного ключа или {@link #ANY_RESOURCE}
      */
     public static String resourceOf(Map<String, Object> arguments) {
-        if (arguments == null) {
-            return ANY_RESOURCE;
-        }
-        for (String key : RESOURCE_KEYS) {
-            Object value = arguments.get(key);
-            if (value != null) {
-                return String.valueOf(value);
-            }
-        }
-        return ANY_RESOURCE;
+        return resolve(arguments, false).value();
+    }
+
+    /**
+     * Извлекает raw-ресурс для strict agent gate. Legacy-ключи всегда имеют
+     * приоритет перед gate-only ключами. Возвращаемое значение предназначено
+     * для diagnostics/payload; правила сопоставляются с нормализованным
+     * ресурсом и его кандидатами.
+     *
+     * <p>{@code create_metadata} не имеет объектного ключа и остаётся со
+     * значением {@link #ANY_RESOURCE}. {@code git_mutate} без
+     * {@code repo_path} также остаётся со значением {@link #ANY_RESOURCE}:
+     * {@code operation}, {@code project_name} и {@code project_path} намеренно
+     * не являются resource keys.</p>
+     *
+     * @param arguments аргументы инструмента
+     * @return значение первого strict resource key или {@link #ANY_RESOURCE}
+     */
+    public static String gateResourceOf(Map<String, Object> arguments) {
+        return resolve(arguments, true).value();
     }
 
     /**
@@ -122,16 +153,51 @@ public final class PermissionEvaluator {
      * Legacy callers must continue to use {@link #resourceOf(Map)}.
      */
     static String normalizedResourceOf(Map<String, Object> arguments) {
-        String resource = resourceOf(arguments);
-        if (arguments == null) {
-            return resource;
+        ResolvedResource resource = resolve(arguments, true);
+        return isPathResourceKey(resource.key())
+                ? normalizePathSeparators(resource.value())
+                : resource.value();
+    }
+
+    private static ResolvedResource resolve(
+            Map<String, Object> arguments, boolean includeGateKeys) {
+        ResolvedResource legacy = resolveFirst(arguments, RESOURCE_KEYS);
+        if (legacy != null) {
+            return legacy;
         }
-        for (String key : PATH_RESOURCE_KEYS) {
-            if (arguments.get(key) != null) {
-                return normalizePathSeparators(resource);
+        if (includeGateKeys) {
+            ResolvedResource gateOnly = resolveFirst(arguments, GATE_ONLY_RESOURCE_KEYS);
+            if (gateOnly != null) {
+                return gateOnly;
             }
         }
-        return resource;
+        return new ResolvedResource(null, ANY_RESOURCE);
+    }
+
+    private static ResolvedResource resolveFirst(
+            Map<String, Object> arguments, String[] keys) {
+        if (arguments == null) {
+            return null;
+        }
+        for (String key : keys) {
+            Object value = arguments.get(key);
+            if (value != null) {
+                return new ResolvedResource(key, String.valueOf(value));
+            }
+        }
+        return null;
+    }
+
+    private static boolean isPathResourceKey(String selectedKey) {
+        if (selectedKey == null) {
+            return false;
+        }
+        for (String key : PATH_RESOURCE_KEYS) {
+            if (key.equals(selectedKey)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean matchesStrict(PermissionRule rule, String toolName, String resource) {

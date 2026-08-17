@@ -10,6 +10,7 @@ package com.codepilot1c.core.permissions;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -35,6 +36,43 @@ public class PermissionEvaluatorTest {
         assertEquals("src\\Configuration\\Configuration.MDO", //$NON-NLS-1$
                 PermissionEvaluator.resourceOf(Map.of(
                         "path", "src\\Configuration\\Configuration.MDO"))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void legacyResourceOfIgnoresGateOnlyKeys() {
+        assertEquals(PermissionEvaluator.ANY_RESOURCE,
+                PermissionEvaluator.resourceOf(Map.of(
+                        "target_fqn", "Catalog.X"))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void legacyResourceOfIgnoresRepoPath() {
+        assertEquals(PermissionEvaluator.ANY_RESOURCE,
+                PermissionEvaluator.resourceOf(Map.of("repo_path", "/x"))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void gateResourceOfKeepsLegacyPrecedence() {
+        assertEquals("p", PermissionEvaluator.gateResourceOf(Map.of( //$NON-NLS-1$
+                "path", "p", //$NON-NLS-1$ //$NON-NLS-2$
+                "target_fqn", "t"))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void gateOnlyKeyOrderIsPinned() {
+        List<String> keys = List.of(
+                "target_fqn", "parent_fqn", "form_fqn", "owner_fqn", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "object_fqn", "template_fqn", "role", "repo_path"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        for (String key : keys) {
+            arguments.put(key, "value-" + key); //$NON-NLS-1$
+        }
+
+        for (String expectedKey : keys) {
+            assertEquals("value-" + expectedKey, //$NON-NLS-1$
+                    PermissionEvaluator.gateResourceOf(arguments));
+            arguments.remove(expectedKey);
+        }
     }
 
     @Test

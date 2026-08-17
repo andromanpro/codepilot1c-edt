@@ -29,8 +29,10 @@ public final class ProfilePermissionGate {
      * @param decision итоговое решение
      * @param rule выигравшее правило, либо null для {@link GateDecision#NO_RULE}
      * @param layer слой выигравшего правила: profile, global или none
+     * @param resource raw-ресурс strict gate без нормализации
      */
-    public record GateResult(GateDecision decision, PermissionRule rule, String layer) {
+    public record GateResult(
+            GateDecision decision, PermissionRule rule, String layer, String resource) {
         /**
          * @return true, если выполнение должно быть запрещено
          */
@@ -57,6 +59,7 @@ public final class ProfilePermissionGate {
             List<PermissionRule> globalRules,
             String toolName,
             Map<String, Object> arguments) {
+        String rawResource = PermissionEvaluator.gateResourceOf(arguments);
         String resource = PermissionEvaluator.normalizedResourceOf(arguments);
         PermissionRule profileRule = PermissionEvaluator
                 .strictestMatch(profileRules, toolName, resource)
@@ -66,23 +69,23 @@ public final class ProfilePermissionGate {
                 .orElse(null);
 
         if (profileRule == null && globalRule == null) {
-            return new GateResult(GateDecision.NO_RULE, null, "none");
+            return new GateResult(GateDecision.NO_RULE, null, "none", rawResource);
         }
         if (hasDecision(profileRule, PermissionDecision.DENY)) {
-            return new GateResult(GateDecision.DENY, profileRule, "profile");
+            return new GateResult(GateDecision.DENY, profileRule, "profile", rawResource);
         }
         if (hasDecision(globalRule, PermissionDecision.DENY)) {
-            return new GateResult(GateDecision.DENY, globalRule, "global");
+            return new GateResult(GateDecision.DENY, globalRule, "global", rawResource);
         }
         if (hasDecision(profileRule, PermissionDecision.ASK)) {
-            return new GateResult(GateDecision.ASK, profileRule, "profile");
+            return new GateResult(GateDecision.ASK, profileRule, "profile", rawResource);
         }
         if (hasDecision(globalRule, PermissionDecision.ASK)) {
-            return new GateResult(GateDecision.ASK, globalRule, "global");
+            return new GateResult(GateDecision.ASK, globalRule, "global", rawResource);
         }
         return profileRule != null
-                ? new GateResult(GateDecision.ALLOW, profileRule, "profile")
-                : new GateResult(GateDecision.ALLOW, globalRule, "global");
+                ? new GateResult(GateDecision.ALLOW, profileRule, "profile", rawResource)
+                : new GateResult(GateDecision.ALLOW, globalRule, "global", rawResource);
     }
 
     private static boolean hasDecision(PermissionRule rule, PermissionDecision decision) {
