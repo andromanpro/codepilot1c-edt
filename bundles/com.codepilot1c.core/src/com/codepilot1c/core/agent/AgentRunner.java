@@ -919,7 +919,7 @@ public class AgentRunner implements IAgentRunner {
     private Map<String, Object> parseArguments(String json) {
         try {
             return toolRegistry.getExecutionService().parseArguments(json);
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             logWarning("Не удалось распарсить аргументы инструмента: " + json, e);
             return Map.of();
         }

@@ -43,6 +43,7 @@ import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceAugmentor;
@@ -200,6 +201,24 @@ public class AgentRunnerAskGateTest {
                 results.get(1).getStructuredData().keySet());
     }
 
+    @Test
+    public void parseArgumentsSurvivesStackOverflowError() throws Exception {
+        CountingTool editFile = new CountingTool("edit_file", false, true); //$NON-NLS-1$
+        ToolRegistry registry = isolatedRegistry(Map.of(editFile.getName(), editFile));
+        setField(registry, "executionService", new StackOverflowParseService(registry)); //$NON-NLS-1$
+        AgentRunner runner = runnerWith(registry);
+        RecordingListener events = new RecordingListener();
+        runner.addListener(events);
+
+        invokeExecuteFuture(runner, call("call-1", "src/Main.bsl"), gsdExecuteConfig()) //$NON-NLS-1$ //$NON-NLS-2$
+                .get(1, TimeUnit.SECONDS);
+
+        assertEquals(0, editFile.executions.get());
+        ToolResult result = toolResults(events.events).get(0);
+        assertEquals("permission_denied", result.getStructuredString("error")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("confirmation_unavailable", result.getStructuredString("reason_code")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     private static ToolCall call(String id, String path) {
         return new ToolCall(id, "edit_file", //$NON-NLS-1$
                 "{\"path\":\"" + path + "\"}"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -213,8 +232,11 @@ public class AgentRunnerAskGateTest {
     }
 
     private static AgentRunner runnerWith(ITool tool) throws Exception {
-        AgentRunner runner = new AgentRunner(new NoopProvider(),
-                isolatedRegistry(Map.of(tool.getName(), tool)), "system"); //$NON-NLS-1$
+        return runnerWith(isolatedRegistry(Map.of(tool.getName(), tool)));
+    }
+
+    private static AgentRunner runnerWith(ToolRegistry registry) throws Exception {
+        AgentRunner runner = new AgentRunner(new NoopProvider(), registry, "system"); //$NON-NLS-1$
         Field field = AgentRunner.class.getDeclaredField("conversationHistory"); //$NON-NLS-1$
         field.setAccessible(true);
         field.set(runner, new ArrayList<>(List.of(LlmMessage.user("test")))); //$NON-NLS-1$
@@ -262,6 +284,17 @@ public class AgentRunnerAskGateTest {
         Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
         field.setAccessible(true);
         return (Unsafe) field.get(null);
+    }
+
+    private static final class StackOverflowParseService extends ToolExecutionService {
+        private StackOverflowParseService(ToolRegistry registry) {
+            super(registry);
+        }
+
+        @Override
+        public Map<String, Object> parseArguments(String json) {
+            throw new StackOverflowError("test parser overflow"); //$NON-NLS-1$
+        }
     }
 
     private enum Resolution {
