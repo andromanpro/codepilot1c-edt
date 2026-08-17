@@ -154,6 +154,7 @@ import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.CreateFormResult;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
+import com.codepilot1c.core.edt.forms.FormItemInformationEventCatalog;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
@@ -254,7 +255,8 @@ public class EdtMetadataService {
     }
 
     public EdtMetadataService(EdtMetadataGateway gateway) {
-        this(gateway, new EventHandlerTargetResolver());
+        this(gateway, new EventHandlerTargetResolver(
+                new FormItemInformationEventCatalog(gateway::getFormItemInformationService)));
     }
 
     /**
@@ -11377,7 +11379,8 @@ public class EdtMetadataService {
                     project.getName(), e.getMessage(), e.getCode());
             throw e;
         } catch (RuntimeException e) {
-            LOG.error("executeWrite(project=%s) runtime failure: %s", project.getName(), e.getMessage()); //$NON-NLS-1$
+            LOG.error(String.format("executeWrite(project=%s) runtime failure: %s", //$NON-NLS-1$
+                    project.getName(), e.getMessage()), e);
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
                     "Metadata transaction failed: " + e.getMessage(), false, e); //$NON-NLS-1$
@@ -11425,6 +11428,8 @@ public class EdtMetadataService {
         } catch (MetadataOperationException e) {
             throw e;
         } catch (RuntimeException e) {
+            LOG.error(String.format("executeRead(project=%s) runtime failure: %s", //$NON-NLS-1$
+                    project.getName(), e.getMessage()), e);
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
                     "Metadata read transaction failed: " + e.getMessage(), true, e); //$NON-NLS-1$

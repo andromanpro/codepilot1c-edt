@@ -1,6 +1,7 @@
 package com.codepilot1c.core.edt.forms;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
@@ -21,17 +22,12 @@ public class EventHandlerTargetResolver {
 
     private final EventHandlerCatalog catalog;
 
-    public EventHandlerTargetResolver() {
-        this(new FormItemInformationEventCatalog());
-    }
-
     /**
-     * Test/DI-injection constructor: accepts an arbitrary {@link EventHandlerCatalog},
-     * e.g. a fake catalog substituted by unit tests outside this package (such as
-     * {@code EventHandlerWiringTest}), avoiding any live EDT/BM/OSGi dependency.
+     * Injection constructor: accepts the production EDT-backed catalog or a fake
+     * catalog for tests that run without live EDT/BM/OSGi dependencies.
      */
     public EventHandlerTargetResolver(EventHandlerCatalog catalog) {
-        this.catalog = catalog;
+        this.catalog = Objects.requireNonNull(catalog, "catalog"); //$NON-NLS-1$
     }
 
     /**
