@@ -193,7 +193,6 @@ public class EdtMetadataService {
     private static final String EN_LANGUAGE = "en"; //$NON-NLS-1$
     private static final String FORM_BUNDLE_ID = "com._1c.g5.v8.dt.form"; //$NON-NLS-1$
     private static final String PLATFORM_BUNDLE_ID = "com._1c.g5.v8.dt.platform"; //$NON-NLS-1$
-    private static final String FORM_PLUGIN_CLASS = "com._1c.g5.v8.dt.internal.form.FormPlugin"; //$NON-NLS-1$
     private static final String RIGHTS_BUNDLE_ID = "com._1c.g5.v8.dt.rights"; //$NON-NLS-1$
     private static final String RIGHTS_PLUGIN_CLASS = "com._1c.g5.v8.dt.rights.RightsPlugin"; //$NON-NLS-1$
     private static final String FORM_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormGenerator"; //$NON-NLS-1$
@@ -201,7 +200,6 @@ public class EdtMetadataService {
     private static final String FORM_FIELD_INFO_CLASS = "com._1c.g5.v8.dt.form.generator.FormFieldInfo"; //$NON-NLS-1$
     private static final String FORM_GENERATOR_TYPE_CLASS = "com._1c.g5.v8.dt.form.generator.FormType"; //$NON-NLS-1$
     private static final String VERSION_CLASS = "com._1c.g5.v8.dt.platform.version.Version"; //$NON-NLS-1$
-    private static final String GUICE_INJECTOR_CLASS = "com.google.inject.Injector"; //$NON-NLS-1$
     private static final String DEFAULT_BASIC_FEATURE_TYPE = "String"; //$NON-NLS-1$
     private static final String COMMON_MODULE_PREFIX = "CommonModule."; //$NON-NLS-1$
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtMetadataService.class);
@@ -6112,88 +6110,15 @@ public class EdtMetadataService {
     }
 
     private Object resolveFormInjector(Bundle formBundle) throws ReflectiveOperationException {
-        Class<?> formPluginClass = loadBundleClass(formBundle, FORM_PLUGIN_CLASS);
-        Method getDefault = formPluginClass.getMethod("getDefault"); //$NON-NLS-1$
-        Object plugin = getDefault.invoke(null);
-        if (plugin == null) {
-            try {
-                formBundle.start(Bundle.START_TRANSIENT);
-            } catch (Exception e) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                        "Failed to start EDT form bundle: " + e.getMessage(), false, e); //$NON-NLS-1$
-            }
-            plugin = getDefault.invoke(null);
-        }
-        if (plugin == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "FormPlugin instance is unavailable", false); //$NON-NLS-1$
-        }
-        Method getInjector = formPluginClass.getMethod("getInjector"); //$NON-NLS-1$
-        Object injector = getInjector.invoke(plugin);
-        if (injector == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "FormPlugin injector is unavailable", false); //$NON-NLS-1$
-        }
-        return injector;
+        return EdtPluginInjectorLocator.formInjector();
     }
 
     private Object resolvePluginInjector(Bundle bundle, String pluginClassName) throws ReflectiveOperationException {
-        Class<?> pluginClass = loadBundleClass(bundle, pluginClassName);
-        Method getDefault = pluginClass.getMethod("getDefault"); //$NON-NLS-1$
-        Object plugin = getDefault.invoke(null);
-        if (plugin == null) {
-            try {
-                bundle.start(Bundle.START_TRANSIENT);
-            } catch (Exception e) {
-                throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                        "Failed to start EDT bundle " + bundle.getSymbolicName() + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-            plugin = getDefault.invoke(null);
-        }
-        if (plugin == null) {
-            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "Plugin instance unavailable: " + pluginClassName, false); //$NON-NLS-1$
-        }
-        Method getInjector = pluginClass.getMethod("getInjector"); //$NON-NLS-1$
-        Object injector = getInjector.invoke(plugin);
-        if (injector == null) {
-            throw new MetadataOperationException(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "Plugin injector unavailable: " + pluginClassName, false); //$NON-NLS-1$
-        }
-        return injector;
+        return EdtPluginInjectorLocator.pluginInjector(bundle.getSymbolicName(), pluginClassName);
     }
 
     private Object resolveInjectorService(Object injector, Class<?> serviceClass) throws ReflectiveOperationException {
-        Class<?> injectorApiClass = resolveInjectorApiClass(injector);
-        Method getInstance = injectorApiClass.getMethod("getInstance", Class.class); //$NON-NLS-1$
-        Object service = getInstance.invoke(injector, serviceClass);
-        if (service == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "Injector returned null for " + serviceClass.getName(), false); //$NON-NLS-1$
-        }
-        return service;
-    }
-
-    private Class<?> resolveInjectorApiClass(Object injector) {
-        ClassLoader classLoader = injector.getClass().getClassLoader();
-        try {
-            Class<?> injectorInterface = Class.forName(GUICE_INJECTOR_CLASS, false, classLoader);
-            if (injectorInterface.isAssignableFrom(injector.getClass())) {
-                return injectorInterface;
-            }
-        } catch (ClassNotFoundException e) {
-            LOG.debug("Guice Injector interface was not resolved from injector classloader: %s", e.getMessage()); //$NON-NLS-1$
-        }
-        for (Class<?> iface : injector.getClass().getInterfaces()) {
-            if (GUICE_INJECTOR_CLASS.equals(iface.getName())) {
-                return iface;
-            }
-        }
-        return injector.getClass();
+        return EdtPluginInjectorLocator.service(injector, serviceClass);
     }
 
     private Bundle requireBundle(String bundleId) {
