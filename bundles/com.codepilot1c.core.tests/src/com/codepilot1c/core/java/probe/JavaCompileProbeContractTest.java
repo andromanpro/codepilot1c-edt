@@ -27,6 +27,8 @@ import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.java.JavaCompileProbeTool;
+import com.codepilot1c.core.mcp.host.DefaultMcpToolExposurePolicy;
+import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -335,6 +337,17 @@ public class JavaCompileProbeContractTest {
         for (String providerTerm : List.of("openai", "anthropic", "qwen", "gemini", "provider")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
             assertFalse(providerTerm, contract.contains(providerTerm));
         }
+    }
+
+    @Test
+    public void toolIsNotExposedByMcpWildcardByDefault() {
+        McpHostConfig wildcard = new McpHostConfig();
+        wildcard.setExposedToolsFilter("*"); //$NON-NLS-1$
+        McpHostConfig explicit = new McpHostConfig();
+        explicit.setExposedToolsFilter("java_compile_probe"); //$NON-NLS-1$
+
+        assertFalse(new DefaultMcpToolExposurePolicy(wildcard).isExposed("java_compile_probe")); //$NON-NLS-1$
+        assertTrue(new DefaultMcpToolExposurePolicy(explicit).isExposed("java_compile_probe")); //$NON-NLS-1$
     }
 
     private static List<String> command(Path javac, Path source, Path out) {

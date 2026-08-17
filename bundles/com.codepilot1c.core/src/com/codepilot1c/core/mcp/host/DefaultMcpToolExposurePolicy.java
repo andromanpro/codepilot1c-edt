@@ -17,16 +17,24 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
 
     private final McpHostConfig config;
     private final Predicate<String> sensitivePredicate;
+    private final Predicate<String> localExecPredicate;
     private final Set<String> explicitAllow;
     private final Set<String> explicitDeny;
 
     public DefaultMcpToolExposurePolicy(McpHostConfig config) {
-        this(config, DefaultMcpToolExposurePolicy::isSensitiveTool);
+        this(config, DefaultMcpToolExposurePolicy::isSensitiveTool,
+                DefaultMcpToolExposurePolicy::isLocalExecTool);
     }
 
     DefaultMcpToolExposurePolicy(McpHostConfig config, Predicate<String> sensitivePredicate) {
+        this(config, sensitivePredicate, DefaultMcpToolExposurePolicy::isLocalExecTool);
+    }
+
+    DefaultMcpToolExposurePolicy(McpHostConfig config, Predicate<String> sensitivePredicate,
+            Predicate<String> localExecPredicate) {
         this.config = config;
         this.sensitivePredicate = sensitivePredicate;
+        this.localExecPredicate = localExecPredicate;
         this.explicitAllow = new HashSet<>();
         this.explicitDeny = new HashSet<>();
         parse(config.getExposedToolsFilter());
@@ -62,7 +70,7 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
             return true;
         }
         if (explicitAllow.contains("*")) { //$NON-NLS-1$
-            return !sensitivePredicate.test(toolName);
+            return !sensitivePredicate.test(toolName) && !localExecPredicate.test(toolName);
         }
         return false;
     }
@@ -70,6 +78,11 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
     private static boolean isSensitiveTool(String toolName) {
         ITool tool = ToolRegistry.getInstance().getTool(toolName);
         return tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
+    }
+
+    private static boolean isLocalExecTool(String toolName) {
+        ITool tool = ToolRegistry.getInstance().getTool(toolName);
+        return tool != null && tool.getTags() != null && tool.getTags().contains("local-exec"); //$NON-NLS-1$
     }
 
     @Override

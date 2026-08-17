@@ -28,10 +28,21 @@ public class McpToolExposureSensitiveTagTest {
         assertTrue(policy("*,-read_file").isExposed("write_file")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    @Test
+    public void wildcardDoesNotExposeLocalExecTool() {
+        assertFalse(policy("*").isExposed("java_compile_probe")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void explicitNameExposesLocalExecTool() {
+        assertTrue(policy("java_compile_probe").isExposed("java_compile_probe")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     private static DefaultMcpToolExposurePolicy policy(String filter) {
         McpHostConfig config = new McpHostConfig();
         config.setExposedToolsFilter(filter);
         return new DefaultMcpToolExposurePolicy(config,
-                "get_infobase_credentials"::equals); //$NON-NLS-1$
+                "get_infobase_credentials"::equals, //$NON-NLS-1$
+                "java_compile_probe"::equals); //$NON-NLS-1$
     }
 }
