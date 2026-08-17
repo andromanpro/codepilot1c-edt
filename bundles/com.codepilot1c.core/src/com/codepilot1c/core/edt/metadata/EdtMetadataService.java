@@ -156,6 +156,11 @@ import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.BmState;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.FailurePhase;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.RollbackStatus;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException.SerializedModelState;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeResult;
 import com.codepilot1c.core.edt.forms.FormUsage;
@@ -169,6 +174,7 @@ import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.osgi.framework.Bundle;
 
 /**
@@ -553,9 +559,9 @@ public class EdtMetadataService {
     /**
      * Post-export tail (07-03, STUB-06): for each pending stub, ensures {@code Module.bsl}
      * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
-     * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} runs the
-     * compensating {@link #rollbackHandlerSlot} + re-export, then throws
-     * {@code EDT_TRANSACTION_FAILED} (STUB-01 both-or-neither).
+     * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} attempts
+     * compensating {@link #rollbackHandlerSlot} + re-export. The thrown failure records
+     * whether compensation actually removed/exported the slot; it never assumes rollback.
      * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
      * model slot stays wired, NO rollback (Pitfall 3).
      */
@@ -566,37 +572,200 @@ public class EdtMetadataService {
             String topLevelFqn,
             List<PendingStub> pendingStubs,
             String opId) {
+        return writeHandlerStubsDetailed(
+                project, configuration, formFqn, topLevelFqn, pendingStubs, opId).summaries();
+    }
+
+    private StubPhaseOutcome writeHandlerStubsDetailed(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId) {
         ScriptVariant variant = resolveScriptVariant(configuration);
-        String modulePath = ensureFormModulePath(project, formFqn, opId);
         List<String> summaries = new ArrayList<>();
+        List<String> written = new ArrayList<>();
+        List<String> skippedExisting = new ArrayList<>();
+        String modulePath;
+        try {
+            modulePath = ensureFormModulePath(project, formFqn, opId);
+        } catch (MetadataOperationException e) {
+            throw stubPhaseFailure(
+                    e, FailurePhase.ENSURE_MODULE, "", written, skippedExisting, RollbackAttempt.notAttempted()); //$NON-NLS-1$
+        }
         BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
         BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
         for (PendingStub pending : pendingStubs) {
-            Event freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
-            BslHandlerStubGenerator.StubText stub = generator.generate(freshEvent, pending.handlerName(), variant);
-            StubWriteOutcome outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+            Event freshEvent;
+            try {
+                freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
+            } catch (MetadataOperationException e) {
+                throw stubPhaseFailure(
+                        e,
+                        FailurePhase.RESOLVE_EVENT,
+                        pending.handlerName(),
+                        written,
+                        skippedExisting,
+                        RollbackAttempt.notAttempted());
+            }
+            BslHandlerStubGenerator.StubText stub;
+            StubWriteOutcome outcome;
+            try {
+                stub = generator.generate(freshEvent, pending.handlerName(), variant);
+                outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+            } catch (MetadataOperationException e) {
+                throw stubPhaseFailure(
+                        e,
+                        FailurePhase.WRITE_STUB,
+                        pending.handlerName(),
+                        written,
+                        skippedExisting,
+                        RollbackAttempt.notAttempted());
+            }
             switch (outcome) {
-                case WRITTEN -> summaries.add(
-                        "stub generated: " + pending.handlerName() + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                case WRITTEN -> {
+                    written.add(pending.handlerName());
+                    summaries.add("stub generated: " + pending.handlerName() //$NON-NLS-1$
+                            + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 case SKIPPED_EXISTING_WARN -> {
                     LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
                             opId, pending.handlerName());
+                    skippedExisting.add(pending.handlerName());
                     summaries.add("stub skipped (exists): " + pending.handlerName()); //$NON-NLS-1$
                 }
                 case WRITE_FAILURE -> {
-                    LOG.error("[%s] Stub write failed for handler '%s'; rolling back handler slot", //$NON-NLS-1$
+                    LOG.error("[%s] Stub write failed for handler '%s'; attempting handler-slot compensation", //$NON-NLS-1$
                             opId, pending.handlerName());
-                    rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
-                    forceExportTopLevelObject(project, topLevelFqn, opId);
-                    throw new MetadataOperationException(
-                            MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                            "Stub write failed for handler '" + pending.handlerName() //$NON-NLS-1$
-                                    + "'; handler slot rolled back", true); //$NON-NLS-1$
+                    RollbackAttempt rollback = compensateHandlerSlot(
+                            project, configuration, formFqn, topLevelFqn, pending, opId);
+                    MetadataOperationException failure = stubWriteFailure(pending.handlerName(), rollback);
+                    throw stubPhaseFailure(
+                            failure,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            rollback);
                 }
                 default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
             }
         }
-        return summaries;
+        return new StubPhaseOutcome(summaries, written, skippedExisting);
+    }
+
+    private StubPhaseFailureException stubPhaseFailure(
+            MetadataOperationException cause,
+            FailurePhase phase,
+            String failedHandler,
+            List<String> written,
+            List<String> skippedExisting,
+            RollbackAttempt rollback
+    ) {
+        return new StubPhaseFailureException(
+                cause,
+                phase,
+                failedHandler,
+                written,
+                skippedExisting,
+                rollback != null ? rollback : RollbackAttempt.notAttempted());
+    }
+
+    private RollbackAttempt compensateHandlerSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        return compensateHandlerSlot(
+                pending.createdHandlerSlot(),
+                pending.handlerName(),
+                opId,
+                () -> compensateCreatedHandlerSlot(
+                        project, configuration, formFqn, topLevelFqn, pending, opId));
+    }
+
+    RollbackAttempt compensateHandlerSlot(
+            boolean createdHandlerSlot,
+            String handlerName,
+            String opId,
+            Supplier<RollbackAttempt> safeCompensation
+    ) {
+        if (!createdHandlerSlot) {
+            LOG.warn("[%s] Handler-slot compensation not attempted for '%s': " //$NON-NLS-1$
+                    + "the operation updated an existing handler slot", opId, handlerName); //$NON-NLS-1$
+            return new RollbackAttempt(
+                    RollbackStatus.NOT_ATTEMPTED_UNSAFE,
+                    BmState.INITIAL_COMMIT_REMAINS,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        return safeCompensation.get();
+    }
+
+    private RollbackAttempt compensateCreatedHandlerSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        RollbackMutationResult mutationResult;
+        try {
+            mutationResult = rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Handler-slot compensation failed for '%s': %s", //$NON-NLS-1$
+                    opId, pending.handlerName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.FAILED,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    e);
+        }
+        if (mutationResult == RollbackMutationResult.FORM_NOT_FOUND) {
+            return new RollbackAttempt(
+                    RollbackStatus.FORM_NOT_FOUND,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        if (mutationResult == RollbackMutationResult.SLOT_NOT_FOUND) {
+            return new RollbackAttempt(
+                    RollbackStatus.SLOT_NOT_FOUND,
+                    BmState.HANDLER_ABSENCE_CONFIRMED,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        try {
+            forceExportTopLevelObject(project, topLevelFqn, opId);
+            verifyObjectPersisted(project, formFqn, opId);
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_AND_EXPORTED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_VERIFIED,
+                    null);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Handler slot removed for '%s', but rollback export failed: %s", //$NON-NLS-1$
+                    opId, pending.handlerName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_EXPORT_FAILED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_FAILED,
+                    e);
+        }
+    }
+
+    MetadataOperationException stubWriteFailure(String handlerName, RollbackAttempt rollback) {
+        return new MetadataOperationException(
+                MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                "Stub write failed for handler '" + handlerName + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                        + "; rollback_status=" + rollback.status().name(), //$NON-NLS-1$
+                true,
+                rollback.failure());
     }
 
     /**
@@ -621,12 +790,8 @@ public class EdtMetadataService {
             IProject project, Configuration configuration, String formFqn, PendingStub pending) {
         return executeRead(project, tx -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
-            if (txConfiguration == null) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                        "Cannot access configuration in BM read transaction", false); //$NON-NLS-1$
-            }
-            MdObject resolved = resolveByFqn(txConfiguration, formFqn);
+            MdObject resolved = resolveObjectForTransaction(
+                    project, asPlatformTransaction(tx), txConfiguration, formFqn);
             if (!(resolved instanceof BasicForm basicForm)) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.METADATA_NOT_FOUND,
@@ -643,16 +808,17 @@ public class EdtMetadataService {
      * Compensating transaction (STUB-01 "both or neither"): re-resolves the Form/container/
      * handler completely FRESH inside a NEW {@code executeWrite} — never closing over the
      * original transaction's (now-stale) object references (Pitfall 2) — and removes the
-     * just-wired handler slot.
+     * just-created handler slot. Callers must not invoke this for an upsert that changed an
+     * existing slot because removing it would not restore the pre-recipe state.
      */
-    private void rollbackHandlerSlot(
+    private RollbackMutationResult rollbackHandlerSlot(
             IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
-        executeWrite(project, transaction -> {
+        return executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
             MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, formFqn);
             if (!(resolved instanceof BasicForm basicForm)) {
                 LOG.warn("[%s] rollbackHandlerSlot: form metadata not found: %s", opId, formFqn); //$NON-NLS-1$
-                return null;
+                return RollbackMutationResult.FORM_NOT_FOUND;
             }
             Form formModel = resolveManagedFormModel(basicForm, formFqn);
             FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
@@ -661,8 +827,11 @@ public class EdtMetadataService {
             EventHandler existing = findExistingHandler(container, freshEvent);
             if (existing != null) {
                 container.getHandlers().remove(existing);
+                return RollbackMutationResult.REMOVED;
             }
-            return null;
+            LOG.warn("[%s] rollbackHandlerSlot: handler slot not found form=%s event=%s", //$NON-NLS-1$
+                    opId, formFqn, pending.eventName());
+            return RollbackMutationResult.SLOT_NOT_FOUND;
         });
     }
 
@@ -690,10 +859,15 @@ public class EdtMetadataService {
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
-        if (configuration == null && tryResolveExternalProject(project) == null) {
+        final boolean externalProject = isExternalProject(project);
+        if (configuration == null && !externalProject) {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
                     "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+        if (configuration == null) {
+            LOG.warn("[%s] applyFormRecipe uses external-object resolution project=%s form=%s", //$NON-NLS-1$
+                    opId, request.projectName(), requestedFormFqn);
         }
 
         String formFqn = requestedFormFqn;
@@ -704,7 +878,6 @@ public class EdtMetadataService {
             effectiveName = resolveEffectiveFormName(ownerFqn, requestedName, effectiveUsage);
             formFqn = ownerFqn + ".Form." + effectiveName; //$NON-NLS-1$
         }
-        final boolean externalProject = isExternalProject(project);
         FormUsage usageForDefault = effectiveUsage != null
                 ? effectiveUsage
                 : resolveEffectiveFormUsage(ownerFqn, effectiveName, usage);
@@ -764,6 +937,8 @@ public class EdtMetadataService {
                     0,
                     0,
                     0,
+                    List.of(),
+                    List.of(),
                     List.of());
         }
 
@@ -771,6 +946,7 @@ public class EdtMetadataService {
 
         final String applyFormFqn = formFqn;
         final String applyOwnerFqn = ownerFqn;
+        final List<PendingStub> pendingStubs = new ArrayList<>();
         FormRecipeApplyResult applyResult = executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
             MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, applyFormFqn);
@@ -785,7 +961,7 @@ public class EdtMetadataService {
                     ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
                     : new FormAttributeRecipeStats();
             List<String> summaries = hasLayoutOps
-                    ? applyFormModelOperations(formModel, request.layoutOperations())
+                    ? applyFormModelOperations(formModel, request.layoutOperations(), pendingStubs)
                     : List.of();
             if (Boolean.TRUE.equals(request.setAsDefault())) {
                 boolean bindDefault = resolveDefaultBinding(Boolean.TRUE, usageForDefault, applyOwnerFqn, externalProject);
@@ -807,10 +983,42 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(formFqn);
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectPersisted(project, formFqn, opId);
+
+        // PHASE C (07-03, STUB-06): write BSL handler stubs strictly after the
+        // model transaction has committed and its export has been verified.
+        StubPhaseOutcome stubOutcome = StubPhaseOutcome.empty();
+        if (!pendingStubs.isEmpty()) {
+            try {
+                stubOutcome = writeHandlerStubsDetailed(
+                        project, configuration, formFqn, topLevelFqn, pendingStubs, opId);
+            } catch (MetadataOperationException e) {
+                StubPhaseFailureException failure = e instanceof StubPhaseFailureException stubFailure
+                        ? stubFailure
+                        : StubPhaseFailureException.unknown(e);
+                throw formRecipePartialFailure(
+                        e,
+                        formFqn,
+                        externalProject,
+                        applyResult.stats().created(),
+                        applyResult.stats().updated(),
+                        applyResult.stats().removed(),
+                        applyResult.layoutSummaries().size(),
+                        pendingStubs.stream().map(PendingStub::handlerName).toList(),
+                        failure.written(),
+                        failure.skippedExisting(),
+                        failure.phase(),
+                        failure.failedHandler(),
+                        failure.rollback().status(),
+                        failure.rollback().bmState(),
+                        failure.rollback().serializedModelState());
+            }
+        }
         refreshProjectSafely(project);
-        LOG.info("[%s] applyFormRecipe SUCCESS in %s form=%s", opId, //$NON-NLS-1$
+        LOG.info("[%s] applyFormRecipe SUCCESS in %s form=%s stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                formFqn);
+                formFqn,
+                Integer.valueOf(stubOutcome.written().size()),
+                Integer.valueOf(stubOutcome.skippedExisting().size()));
 
         return new FormRecipeResult(
                 request.projectName(),
@@ -819,7 +1027,47 @@ public class EdtMetadataService {
                 applyResult.stats().updated(),
                 applyResult.stats().removed(),
                 applyResult.layoutSummaries().size(),
-                applyResult.layoutSummaries());
+                applyResult.layoutSummaries(),
+                stubOutcome.written(),
+                stubOutcome.skippedExisting());
+    }
+
+    static FormRecipePartialFailureException formRecipePartialFailure(
+            MetadataOperationException cause,
+            String formFqn,
+            boolean externalProject,
+            int attributesCreated,
+            int attributesUpdated,
+            int attributesRemoved,
+            int layoutOperationsInitiallyCommitted,
+            List<String> handlerSlotsInitiallyCommitted,
+            List<String> handlerStubsWritten,
+            List<String> handlerStubsSkippedExisting,
+            FailurePhase failurePhase,
+            String failedHandler,
+            RollbackStatus rollbackStatus,
+            BmState bmState,
+            SerializedModelState serializedModelState
+    ) {
+        return new FormRecipePartialFailureException(
+                cause.getCode(),
+                cause.getMessage(),
+                cause.isRecoverable(),
+                formFqn,
+                externalProject,
+                attributesCreated,
+                attributesUpdated,
+                attributesRemoved,
+                layoutOperationsInitiallyCommitted,
+                handlerSlotsInitiallyCommitted,
+                handlerStubsWritten,
+                handlerStubsSkippedExisting,
+                failurePhase,
+                failedHandler,
+                rollbackStatus,
+                bmState,
+                serializedModelState,
+                cause);
     }
 
     private void applyFormRootPropertiesIfNeeded(BasicForm form, FormRecipeRequest request) {
@@ -995,18 +1243,12 @@ public class EdtMetadataService {
         return formModel;
     }
 
-    private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations) {
-        return applyFormModelOperations(formModel, operations, new ArrayList<>());
-    }
-
     /**
-     * Same as {@link #applyFormModelOperations(Form, List)}, additionally threading out
-     * a {@code pendingStubs} list: every {@code add_event_handler}/{@code set_event_handler}
-     * upsert appends a {@link PendingStub} record here, consumed by {@code updateFormModel}'s
-     * post-export tail (07-03) to generate/write the matching BSL stub strictly AFTER
-     * {@code forceExportTopLevelObject}/{@code verifyObjectPersisted} (STUB-06). The
-     * {@code remove_event_handler} case records nothing. The single-arg overload above
-     * (used by {@code EventHandlerWiringTest} via reflection) simply discards this list.
+     * Applies form-model operations and threads every {@code add_event_handler}/
+     * {@code set_event_handler} into {@code pendingStubs}. Both {@code updateFormModel}
+     * and {@code applyFormRecipe} consume these records in their shared post-export tail,
+     * strictly after {@code forceExportTopLevelObject}/{@code verifyObjectPersisted}
+     * (STUB-06). The {@code remove_event_handler} case records nothing.
      */
     private List<String> applyFormModelOperations(
             Form formModel, List<Map<String, Object>> operations, List<PendingStub> pendingStubs) {
@@ -1228,7 +1470,11 @@ public class EdtMetadataService {
                 case "addeventhandler", "seteventhandler" -> {
                     WiredEventHandler wired = wireEventHandler(formModel, operation);
                     EventHandler handler = wired.handler();
-                    pendingStubs.add(new PendingStub(operation, handler.getEvent().getName(), handler.getName()));
+                    pendingStubs.add(new PendingStub(
+                            operation,
+                            handler.getEvent().getName(),
+                            handler.getName(),
+                            wired.createdHandlerSlot()));
                     StringBuilder summary = new StringBuilder("add_event_handler[") //$NON-NLS-1$
                             .append(operationIndex)
                             .append("]: event=") //$NON-NLS-1$
@@ -1323,6 +1569,7 @@ public class EdtMetadataService {
         ExtendedMethodCallType requestedCallType = extendedMethodCallTypeResolver.resolve(
                 asString(getMapValueIgnoreCase(operation, "call_type"))); //$NON-NLS-1$
         EventHandler handler = findExistingHandler(container, event);
+        boolean createdHandlerSlot = handler == null;
         if (handler == null) {
             handler = createHandlerForTarget(adopted, requestedCallType);
             handler.setEvent(event);
@@ -1332,7 +1579,7 @@ public class EdtMetadataService {
         }
         handler.setName(handlerName);
         boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
-        return new WiredEventHandler(handler, requestedCallType, adopted, baseExists);
+        return new WiredEventHandler(handler, requestedCallType, adopted, baseExists, createdHandlerSlot);
     }
 
     /**
@@ -1437,7 +1684,11 @@ public class EdtMetadataService {
      * (validated) but never applied/echoed — {@code adopted} is {@code false}.
      */
     private record WiredEventHandler(
-            EventHandler handler, ExtendedMethodCallType callType, boolean adopted, boolean baseHandlerExists) {
+            EventHandler handler,
+            ExtendedMethodCallType callType,
+            boolean adopted,
+            boolean baseHandlerExists,
+            boolean createdHandlerSlot) {
     }
 
     /**
@@ -1455,9 +1706,102 @@ public class EdtMetadataService {
      *
      * <p>{@code handlerName} is the already-validated handler procedure name (validated
      * upstream by {@code MetadataNameValidator.isValidName} in {@link #wireEventHandler} —
-     * not re-validated here or downstream, per V5).</p>
+     * not re-validated here or downstream, per V5). {@code createdHandlerSlot} is the
+     * safety proof for destructive compensation: an existing upsert is never removed.</p>
      */
-    private record PendingStub(Map<String, Object> operation, String eventName, String handlerName) {
+    private record PendingStub(
+            Map<String, Object> operation,
+            String eventName,
+            String handlerName,
+            boolean createdHandlerSlot) {
+    }
+
+    private record StubPhaseOutcome(
+            List<String> summaries,
+            List<String> written,
+            List<String> skippedExisting
+    ) {
+        private static StubPhaseOutcome empty() {
+            return new StubPhaseOutcome(List.of(), List.of(), List.of());
+        }
+    }
+
+    private enum RollbackMutationResult {
+        REMOVED,
+        SLOT_NOT_FOUND,
+        FORM_NOT_FOUND
+    }
+
+    record RollbackAttempt(
+            RollbackStatus status,
+            BmState bmState,
+            SerializedModelState serializedModelState,
+            MetadataOperationException failure
+    ) {
+        private static RollbackAttempt notAttempted() {
+            return new RollbackAttempt(
+                    RollbackStatus.NOT_ATTEMPTED,
+                    BmState.INITIAL_COMMIT_REMAINS,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+    }
+
+    private static final class StubPhaseFailureException extends MetadataOperationException {
+
+        private static final long serialVersionUID = 1L;
+
+        private final FailurePhase phase;
+        private final String failedHandler;
+        private final List<String> written;
+        private final List<String> skippedExisting;
+        private final RollbackAttempt rollback;
+
+        private StubPhaseFailureException(
+                MetadataOperationException cause,
+                FailurePhase phase,
+                String failedHandler,
+                List<String> written,
+                List<String> skippedExisting,
+                RollbackAttempt rollback
+        ) {
+            super(cause.getCode(), cause.getMessage(), cause.isRecoverable(), cause);
+            this.phase = phase != null ? phase : FailurePhase.UNKNOWN;
+            this.failedHandler = failedHandler != null ? failedHandler : ""; //$NON-NLS-1$
+            this.written = List.copyOf(written);
+            this.skippedExisting = List.copyOf(skippedExisting);
+            this.rollback = rollback != null ? rollback : RollbackAttempt.notAttempted();
+        }
+
+        private static StubPhaseFailureException unknown(MetadataOperationException cause) {
+            return new StubPhaseFailureException(
+                    cause,
+                    FailurePhase.UNKNOWN,
+                    "", //$NON-NLS-1$
+                    List.of(),
+                    List.of(),
+                    RollbackAttempt.notAttempted());
+        }
+
+        private FailurePhase phase() {
+            return phase;
+        }
+
+        private String failedHandler() {
+            return failedHandler;
+        }
+
+        private List<String> written() {
+            return written;
+        }
+
+        private List<String> skippedExisting() {
+            return skippedExisting;
+        }
+
+        private RollbackAttempt rollback() {
+            return rollback;
+        }
     }
 
     /**

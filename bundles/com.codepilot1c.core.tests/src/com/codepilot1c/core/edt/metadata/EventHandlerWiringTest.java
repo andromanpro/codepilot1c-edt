@@ -9,6 +9,7 @@ import static org.junit.Assert.fail;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -261,10 +262,10 @@ public class EventHandlerWiringTest {
     private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations)
             throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
         Method method = EdtMetadataService.class.getDeclaredMethod(
-                "applyFormModelOperations", Form.class, List.class); //$NON-NLS-1$
+                "applyFormModelOperations", Form.class, List.class, List.class); //$NON-NLS-1$
         method.setAccessible(true);
         try {
-            return (List<String>) method.invoke(service, formModel, operations);
+            return (List<String>) method.invoke(service, formModel, operations, new ArrayList<>());
         } catch (InvocationTargetException e) {
             if (e.getCause() instanceof RuntimeException runtimeException) {
                 throw runtimeException;
