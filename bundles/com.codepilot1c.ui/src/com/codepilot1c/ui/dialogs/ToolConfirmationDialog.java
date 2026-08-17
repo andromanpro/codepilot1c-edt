@@ -38,6 +38,7 @@ public class ToolConfirmationDialog extends Dialog {
     private final ToolCall toolCall;
     private final String toolDescription;
     private final boolean isDestructive;
+    private final Map<String, Object> approvedArguments;
 
     private Color warningColor;
     private Font codeFont;
@@ -52,10 +53,27 @@ public class ToolConfirmationDialog extends Dialog {
      */
     public ToolConfirmationDialog(Shell parentShell, ToolCall toolCall,
                                   String toolDescription, boolean isDestructive) {
+        this(parentShell, toolCall, toolDescription, isDestructive, null);
+    }
+
+    /**
+     * Creates a confirmation dialog using the argument map already approved by
+     * the permission gate for its preview.
+     *
+     * @param parentShell the parent shell
+     * @param toolCall the tool call to confirm
+     * @param toolDescription description of what the tool does
+     * @param isDestructive whether the tool modifies files/state
+     * @param approvedArguments parsed arguments that will be executed
+     */
+    public ToolConfirmationDialog(Shell parentShell, ToolCall toolCall,
+                                  String toolDescription, boolean isDestructive,
+                                  Map<String, Object> approvedArguments) {
         super(parentShell);
         this.toolCall = toolCall;
         this.toolDescription = toolDescription;
         this.isDestructive = isDestructive;
+        this.approvedArguments = approvedArguments;
     }
 
     @Override
@@ -128,7 +146,9 @@ public class ToolConfirmationDialog extends Dialog {
     }
 
     private void createArgumentsPreview(Composite parent) {
-        Map<String, Object> arguments = parseArguments(toolCall.getArguments());
+        Map<String, Object> arguments = approvedArguments != null
+                ? approvedArguments
+                : parseArguments(toolCall.getArguments());
         if (arguments == null || arguments.isEmpty()) {
             return;
         }

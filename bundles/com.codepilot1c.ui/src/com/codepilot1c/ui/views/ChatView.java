@@ -1905,7 +1905,8 @@ public class ChatView extends ViewPart {
                                 getShell(),
                                 call,
                                 tool.getDescription(),
-                                tool.isDestructive()
+                                tool.isDestructive(),
+                                decision.arguments()
                         );
 
                         if (dialog.openAndConfirm()) {
