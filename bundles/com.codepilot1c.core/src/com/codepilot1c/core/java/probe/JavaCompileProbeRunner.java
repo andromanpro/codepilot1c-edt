@@ -25,7 +25,7 @@ public final class JavaCompileProbeRunner {
     private static final Logger LOG = Logger.getLogger(JavaCompileProbeRunner.class.getName());
 
     public static final int MAX_SNIPPET_CHARS = 20_000;
-    public static final int MAX_DIAGNOSTICS_CHARS = 64 * 1024;
+    public static final int MAX_DIAGNOSTICS_CHARS = 32 * 1024;
     public static final Duration ATTEMPT_TIMEOUT = Duration.ofSeconds(10);
 
     private final CommandRunner commandRunner;

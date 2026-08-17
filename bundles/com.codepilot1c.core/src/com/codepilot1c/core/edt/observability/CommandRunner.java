@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.List;
@@ -50,7 +53,7 @@ final class ProcessBuilderCommandRunner implements CommandRunner {
         try {
             ProcessBuilder builder = new ProcessBuilder(List.copyOf(command));
             if (isolated) {
-                configureIsolated(builder);
+                configureIsolated(builder, command);
             }
             process = builder.start();
         } catch (IOException | RuntimeException e) {
@@ -84,11 +87,30 @@ final class ProcessBuilderCommandRunner implements CommandRunner {
         return new CommandResult(exitCode, stdoutTail, stderrTail, timedOut);
     }
 
-    private static void configureIsolated(ProcessBuilder builder) {
+    private static void configureIsolated(ProcessBuilder builder, List<String> command) {
         builder.redirectInput(ProcessBuilder.Redirect.from(nullDevice()));
-        builder.directory(new File(System.getProperty("java.io.tmpdir"))); //$NON-NLS-1$
+        builder.directory(isolatedWorkingDirectory(command).toFile());
 
         MapEnvironment.keepRequiredWindowsVariables(builder);
+    }
+
+    private static Path isolatedWorkingDirectory(List<String> command) {
+        if (command.size() > 1) {
+            try {
+                Path finalArgument = Path.of(command.get(command.size() - 1)).toAbsolutePath().normalize();
+                if (Files.isRegularFile(finalArgument) && finalArgument.getParent() != null) {
+                    return finalArgument.getParent();
+                }
+            } catch (InvalidPathException e) {
+                // Fixed helper options such as -version are not paths.
+            }
+        }
+        Path temp = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize(); //$NON-NLS-1$
+        Path project = Path.of("").toAbsolutePath().normalize(); //$NON-NLS-1$
+        if (temp.startsWith(project)) {
+            throw new IllegalStateException("System temporary directory overlaps current project"); //$NON-NLS-1$
+        }
+        return temp;
     }
 
     private static File nullDevice() {

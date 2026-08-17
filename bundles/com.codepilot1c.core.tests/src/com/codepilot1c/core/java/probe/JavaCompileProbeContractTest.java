@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Test;
 import org.junit.Assume;
@@ -130,6 +131,24 @@ public class JavaCompileProbeContractTest {
     }
 
     @Test
+    public void unsupportedJdkFallsBackToNextSource() {
+        Path home = runtimeJdkHome();
+        AtomicInteger checks = new AtomicInteger();
+        JdkLocator locator = new JdkLocator(
+                () -> home.toString(),
+                () -> home.toString(),
+                () -> null,
+                path -> checks.getAndIncrement() == 0
+                        ? JdkLocator.VersionStatus.TOO_OLD : JdkLocator.VersionStatus.SUPPORTED);
+
+        JdkLocator.Location location = locator.locate();
+
+        assertTrue(location.available());
+        assertEquals("env:JAVA_HOME", location.source()); //$NON-NLS-1$
+        assertEquals(2, checks.get());
+    }
+
+    @Test
     public void timeoutAndOutputCapsAreEnforced() {
         String oversized = "x".repeat(JavaCompileProbeRunner.MAX_DIAGNOSTICS_CHARS + 10); //$NON-NLS-1$
         ProbeOutcome timeout = runnerWith(new CommandResult(-1, "", oversized, true)) //$NON-NLS-1$
@@ -230,16 +249,31 @@ public class JavaCompileProbeContractTest {
     }
 
     @Test
-    public void isolatedProcessRunnerClearsEnvironmentClosesInputAndLeavesProject() {
+    public void isolatedProcessRunnerClearsEnvironmentClosesInputAndLeavesProject() throws Exception {
         Assume.assumeFalse(System.getProperty("os.name", "").toLowerCase().contains("win")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         Assume.assumeTrue(Files.isExecutable(Path.of("/usr/bin/env"))); //$NON-NLS-1$
         Assume.assumeTrue(Files.isExecutable(Path.of("/usr/bin/wc"))); //$NON-NLS-1$
         Assume.assumeTrue(Files.isExecutable(Path.of("/bin/pwd"))); //$NON-NLS-1$
+        Assume.assumeTrue(Files.isExecutable(Path.of("/bin/sh"))); //$NON-NLS-1$
         CommandRunner isolated = CommandRunner.isolatedProcessBuilder();
 
         CommandResult environment = isolated.run(List.of("/usr/bin/env"), Duration.ofSeconds(2)); //$NON-NLS-1$
         CommandResult stdin = isolated.run(List.of("/usr/bin/wc", "-c"), Duration.ofSeconds(2)); //$NON-NLS-1$ //$NON-NLS-2$
         CommandResult directory = isolated.run(List.of("/bin/pwd"), Duration.ofSeconds(2)); //$NON-NLS-1$
+        Path sourceDirectory = Files.createTempDirectory("cp1c-runner-cwd-"); //$NON-NLS-1$
+        Path expectedSourceDirectory = sourceDirectory.toRealPath();
+        Path source = Files.createFile(sourceDirectory.resolve("Probe.java")); //$NON-NLS-1$
+        CommandResult sourceDirectoryResult;
+        Path reportedSourceDirectory;
+        try {
+            sourceDirectoryResult = isolated.run(
+                    List.of("/bin/sh", "-c", "pwd", "probe", source.toString()), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    Duration.ofSeconds(2));
+            reportedSourceDirectory = Path.of(sourceDirectoryResult.stdout().trim()).toRealPath();
+        } finally {
+            Files.deleteIfExists(source);
+            Files.deleteIfExists(sourceDirectory);
+        }
 
         assertEquals(0, environment.exitCode());
         assertTrue(environment.stdout().isBlank());
@@ -247,6 +281,8 @@ public class JavaCompileProbeContractTest {
         assertEquals("0", stdin.stdout().trim()); //$NON-NLS-1$
         assertEquals(0, directory.exitCode());
         assertFalse(Path.of(directory.stdout().trim()).startsWith(Path.of("").toAbsolutePath().normalize())); //$NON-NLS-1$
+        assertEquals(0, sourceDirectoryResult.exitCode());
+        assertEquals(expectedSourceDirectory, reportedSourceDirectory);
     }
 
     @Test

@@ -54,6 +54,7 @@ public final class JdkLocator {
                 new Candidate("env:JAVA_HOME", supplied(environmentHome)), //$NON-NLS-1$
                 new Candidate("runtime:java.home", supplied(runtimeHome))); //$NON-NLS-1$
         List<String> checked = new ArrayList<>();
+        String tooOldSource = null;
         for (Candidate candidate : candidates) {
             checked.add(candidate.source());
             Optional<Path> javac = javacIn(candidate.home());
@@ -62,10 +63,13 @@ public final class JdkLocator {
                 if (status == VersionStatus.SUPPORTED) {
                     return new Location(javac.get(), candidate.source(), String.join(", ", checked), ""); //$NON-NLS-1$ //$NON-NLS-2$
                 }
-                String errorCode = status == VersionStatus.TOO_OLD
-                        ? "javac_too_old" : "javac_not_available"; //$NON-NLS-1$ //$NON-NLS-2$
-                return new Location(null, candidate.source(), String.join(", ", checked), errorCode); //$NON-NLS-1$
+                if (status == VersionStatus.TOO_OLD && tooOldSource == null) {
+                    tooOldSource = candidate.source();
+                }
             }
+        }
+        if (tooOldSource != null) {
+            return new Location(null, tooOldSource, String.join(", ", checked), "javac_too_old"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return new Location(null, "none", String.join(", ", checked), "javac_not_available"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
