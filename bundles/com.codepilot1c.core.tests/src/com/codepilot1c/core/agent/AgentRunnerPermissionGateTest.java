@@ -10,6 +10,7 @@ package com.codepilot1c.core.agent;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -27,6 +28,8 @@ import java.util.function.Consumer;
 import org.junit.Test;
 
 import com.codepilot1c.core.agent.events.AgentEvent;
+import com.codepilot1c.core.agent.events.ConfirmationRequiredEvent;
+import com.codepilot1c.core.agent.events.IAgentEventListener;
 import com.codepilot1c.core.agent.events.ToolCallEvent;
 import com.codepilot1c.core.agent.events.ToolResultEvent;
 import com.codepilot1c.core.agent.profiles.AgentCapability;
@@ -101,6 +104,8 @@ public class AgentRunnerPermissionGateTest {
     public void trailingCommaUsesApprovedParsedArgumentsForExecution() throws Exception {
         CountingTool writeFile = new CountingTool("write_file"); //$NON-NLS-1$
         AgentRunner runner = runnerWith(writeFile);
+        AtomicReference<ConfirmationRequiredEvent> confirmation = new AtomicReference<>();
+        autoConfirm(runner, confirmation);
         AgentConfig config = AgentConfig.builder()
                 .profileName("gsd-execute") //$NON-NLS-1$
                 .enableTool("write_file") //$NON-NLS-1$
@@ -111,6 +116,7 @@ public class AgentRunnerPermissionGateTest {
 
         assertEquals(1, writeFile.executions.get());
         assertEquals("src/Main.bsl", writeFile.lastParameters.get().get("path")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertSame(confirmation.get().getArguments(), writeFile.lastParameters.get());
     }
 
     @Test
@@ -138,6 +144,7 @@ public class AgentRunnerPermissionGateTest {
     public void writeFileToBslIsNotDeniedInGsdExecuteProfile() throws Exception {
         CountingTool writeFile = new CountingTool("write_file"); //$NON-NLS-1$
         AgentRunner runner = runnerWith(writeFile);
+        autoConfirm(runner, null);
         AgentConfig config = AgentConfig.builder()
                 .profileName("gsd-execute") //$NON-NLS-1$
                 .enableTool("write_file") //$NON-NLS-1$
@@ -153,6 +160,7 @@ public class AgentRunnerPermissionGateTest {
     public void releaseNotesAreNotDeniedInGsdShipProfile() throws Exception {
         CountingTool writeFile = new CountingTool("write_file"); //$NON-NLS-1$
         AgentRunner runner = runnerWith(writeFile);
+        autoConfirm(runner, null);
         AgentConfig config = AgentConfig.builder()
                 .profileName("gsd-ship") //$NON-NLS-1$
                 .enableTool("write_file") //$NON-NLS-1$
@@ -258,6 +266,26 @@ public class AgentRunnerPermissionGateTest {
         List<AgentEvent> events = new ArrayList<>();
         runner.addListener(events::add);
         return events;
+    }
+
+    private static void autoConfirm(
+            AgentRunner runner, AtomicReference<ConfirmationRequiredEvent> captured) {
+        runner.addListener(new IAgentEventListener() {
+            @Override
+            public void onEvent(AgentEvent event) {
+                if (event instanceof ConfirmationRequiredEvent confirmation) {
+                    if (captured != null) {
+                        captured.set(confirmation);
+                    }
+                    confirmation.confirm();
+                }
+            }
+
+            @Override
+            public boolean handlesConfirmations() {
+                return true;
+            }
+        });
     }
 
     private static ToolResult onlyResult(List<AgentEvent> events) {

@@ -70,7 +70,17 @@ public class AgentSessionController {
     private AgentState currentState = AgentState.IDLE;
     private String lastErrorMessage;
 
-    private final IAgentEventListener forwardingListener = this::handleAgentEvent;
+    private final IAgentEventListener forwardingListener = new IAgentEventListener() {
+        @Override
+        public void onEvent(AgentEvent event) {
+            handleAgentEvent(event);
+        }
+
+        @Override
+        public boolean handlesConfirmations() {
+            return true;
+        }
+    };
 
     public static synchronized AgentSessionController getInstance() {
         if (instance == null) {

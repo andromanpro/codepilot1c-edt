@@ -56,7 +56,6 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
-import com.codepilot1c.core.permissions.PermissionEvaluator;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
@@ -543,7 +542,7 @@ public class AgentRunner implements IAgentRunner {
         ProfilePermissionGate.GateResult gate = ProfilePermissionGate.evaluate(
                 profile.getDefaultPermissions(), globalRulesSafe(), toolName, args);
         if (gate.isDenied()) {
-            String resource = PermissionEvaluator.resourceOf(args);
+            String resource = gate.resource();
             String reasonCode = "denied_by_" + gate.layer() + "_rule"; //$NON-NLS-1$ //$NON-NLS-2$
             String ruleDescription = gate.rule() != null
                     ? gate.rule().getDescription()
@@ -559,12 +558,16 @@ public class AgentRunner implements IAgentRunner {
             return CompletableFuture.completedFuture(null);
         }
 
+        boolean gateAsk = gate.decision() == ProfilePermissionGate.GateDecision.ASK;
+        boolean effectiveConfirmation = gateAsk || tool.requiresConfirmation();
+
         // Emit tool call event
-        emit(new ToolCallEvent(step, call, args, tool.requiresConfirmation()));
+        emit(new ToolCallEvent(step, call, args, effectiveConfirmation));
 
         // Check if confirmation is required
-        if (tool.requiresConfirmation()) {
-            return requestConfirmation(call, tool, args, config, executionContext);
+        if (effectiveConfirmation) {
+            return requestConfirmation(
+                    call, tool, args, profile.getId(), executionContext, gate, gateAsk);
         }
 
         // Execute directly
@@ -583,6 +586,11 @@ public class AgentRunner implements IAgentRunner {
         }
     }
 
+    /**
+     * Создаёт детерминированный permission payload. Поле {@code reason}
+     * сохранено для совместимости; новые потребители должны использовать
+     * {@code reason_code}.
+     */
     private ToolResult permissionDenied(
             String toolName, String profileId, String resource, String reasonCode,
             String layer, String ruleDescription) {
@@ -618,11 +626,30 @@ public class AgentRunner implements IAgentRunner {
      * Запрашивает подтверждение у пользователя.
      */
     private CompletableFuture<Void> requestConfirmation(
-            ToolCall call, ITool tool, Map<String, Object> args, AgentConfig config,
-            ToolExecutionContext executionContext) {
+            ToolCall call, ITool tool, Map<String, Object> args, String profileId,
+            ToolExecutionContext executionContext,
+            ProfilePermissionGate.GateResult gate, boolean gateAsk) {
+
+        int step = currentStep.get();
+        if (!hasConfirmationSink()) {
+            String layer = gateAsk ? gate.layer() : "tool"; //$NON-NLS-1$
+            ToolResult denied = permissionDenied(
+                    call.getName(), profileId,
+                    gateAsk ? gate.resource() : null,
+                    gateAsk
+                            ? "confirmation_unavailable" //$NON-NLS-1$
+                            : "confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                    layer,
+                    gateAsk && gate.rule() != null ? gate.rule().getDescription() : null);
+            addToolResult(call.getId(), denied);
+            emit(new ToolResultEvent(step, call.getName(), call.getId(), denied, 0));
+            log(new Status(IStatus.WARNING, PLUGIN_ID, String.format(
+                    "confirmation_unavailable tool=%s profile=%s layer=%s", //$NON-NLS-1$
+                    call.getName(), profileId, layer)));
+            return CompletableFuture.completedFuture(null);
+        }
 
         state.set(AgentState.WAITING_CONFIRMATION);
-        int step = currentStep.get();
 
         ConfirmationRequiredEvent event = new ConfirmationRequiredEvent(
                 step,
@@ -650,7 +677,16 @@ public class AgentRunner implements IAgentRunner {
                     return CompletableFuture.completedFuture(null);
                 case DENIED:
                 default:
-                    toolResult = ToolResult.failure("Операция отклонена пользователем");
+                    JsonObject data = new JsonObject();
+                    data.addProperty("error", "confirmation_denied"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("tool", call.getName()); //$NON-NLS-1$
+                    data.addProperty("profile", profileId); //$NON-NLS-1$
+                    data.addProperty("reason", "denied_by_user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("reason_code", "denied_by_user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("layer", "user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("rule_description", ""); //$NON-NLS-1$ //$NON-NLS-2$
+                    toolResult = ToolResult.failure(
+                            "Операция отклонена пользователем", data); //$NON-NLS-1$
                     addToolResult(call.getId(), toolResult);
                     emit(new ToolResultEvent(step, call.getName(), call.getId(), toolResult, 0));
                     return CompletableFuture.completedFuture(null);
@@ -666,6 +702,15 @@ public class AgentRunner implements IAgentRunner {
             }
             return null;
         });
+    }
+
+    private boolean hasConfirmationSink() {
+        for (IAgentEventListener listener : listeners) {
+            if (listener.handlesConfirmations()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
