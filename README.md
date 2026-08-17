@@ -4,9 +4,11 @@
 
 ## Актуальные артефакты
 
-- Последний релиз: `v0.1.7.20260714-1024` — <https://github.com/ondysss/codepilot1c-edt/releases/tag/v0.1.7.20260714-1024>
-- Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/>
-- GitHub Packages (Maven, ZIP): <https://github.com/ondysss/codepilot1c-edt/packages/2846572>
+- Текущая линия разработки: `1.3.0` — **не выпущена**: git-тега `v1.3.0*` нет, GitHub Release не создан.
+- Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/> — сейчас отдаёт
+  preview-сборку `1.3.0.20260817-1245`, опубликованную из `64c45d95`.
+- Последний тегированный релиз: [`v1.0.0.20260803-1552`](https://github.com/ondysss/codepilot1c-edt/releases/tag/v1.0.0.20260803-1552).
+- GitHub Packages (container image): <https://github.com/users/ondysss/packages/container/package/codepilot1c-edt>
 - Telegram-канал: <https://t.me/codepilot1c>
 - Группа поддержки: <https://t.me/ai_1c_dev>
 
@@ -33,6 +35,87 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 4. Нажмите `Archive...` и выберите скачанный ZIP.
 5. Выберите `1C Copilot`, нажмите `Next` и пройдите мастер установки.
 6. При необходимости подтвердите окна доверия и перезапустите EDT.
+
+## Обновление с 1.0.x на 1.3.0
+
+> **До начала обновления сохраните локальную копию прежнего update-site ZIP.** Публичный update site
+> хранит только последнюю версию, поэтому без локальной копии или
+> [ZIP-ассета релиза `v1.0.0.20260803-1552`](https://github.com/ondysss/codepilot1c-edt/releases/tag/v1.0.0.20260803-1552)
+> надёжный откат на 1.0.x невозможен.
+
+Прямая доустановка через `Install New Software` может не разрешиться: `com.codepilot1c.core` и
+`com.codepilot1c.ui` являются singleton-бандлами, а update site уже не содержит артефакты
+установленной версии 1.0.x. Мастеру не хватает старых IU для согласованного обновления, тогда как
+профилю нужна замена старого root IU на новый. Точный текст отказа смотрите в выводе p2 и логах
+конкретной установки.
+
+### Путь A: через интерфейс EDT
+
+1. Закройте рабочие проекты и откройте `Help → About 1C:EDT → Installation Details`.
+2. На вкладке `Installed Software` выберите `1C Copilot`, нажмите `Uninstall…`, затем `Finish` и перезапустите EDT.
+3. Откройте `Help → Install New Software…`, добавьте сайт `https://ondysss.github.io/codepilot1c-edt/` и выберите `1C Copilot`.
+4. Нажмите `Next`, затем `Finish`, подтвердите доверие кнопкой `Trust Selected` и снова перезапустите EDT.
+
+### Путь B: замена через p2 director (рекомендуется)
+
+Полностью закройте EDT. Для установки 1C:EDT 2026.2.0 на macOS прямому native launcher нужен
+явный `-vm`:
+
+```bash
+EDT_APP="$HOME/Library/Application Support/1C/1cedtstart/installations/1C_EDT (Lite) 2026.2.0/1cedt.app"
+EDT_HOME="$EDT_APP/Contents/Eclipse"
+EDT_EXE="$EDT_APP/Contents/MacOS/1cedt"
+EDT_VM="/Applications/1C/1CE/components/axiom-jdk-full-25.0.2+12-x86_64/lib/server/libjvm.dylib"
+SITE="https://ondysss.github.io/codepilot1c-edt/"
+# Для локальной сборки вместо SITE используйте:
+# SITE="file:/абсолютный/путь/repositories/com.codepilot1c.update/target/repository"
+IU="com.codepilot1c.feature.feature.group"
+
+# 0. Резервная копия профиля
+cp -R "$EDT_HOME/p2" "$EDT_HOME/p2.bak-$(date +%Y%m%d-%H%M)"
+cp -R "$EDT_HOME/configuration" "$EDT_HOME/configuration.bak-$(date +%Y%m%d-%H%M)"
+
+# 1. Снять старую версию
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash \
+  -destination "$EDT_HOME" -uninstallIU "$IU" -consoleLog
+
+# 2. Поставить новую версию
+"$EDT_EXE" -vm "$EDT_VM" \
+  -application org.eclipse.equinox.p2.director -noSplash \
+  -repository "$SITE" -destination "$EDT_HOME" -installIU "$IU" -consoleLog
+```
+
+На headless Linux запускайте director под Xvfb, как в `tools/run-edt-e2e-local.sh`; на macOS Xvfb не нужен.
+
+### Проверка обновления
+
+Активный набор бандлов задаёт `bundles.info`. Общий p2 pool может сохранять JAR предыдущих версий —
+это кеш, удалять их вручную не нужно.
+
+```bash
+BUNDLES_INFO="$EDT_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
+grep -E '^com\.codepilot1c\.(core|ui),' "$BUNDLES_INFO"
+# Ожидаются две строки: core и ui версии 1.3.0.20260817-1245.
+```
+
+Затем в `Installation Details → Installed Software` проверьте версию `1C Copilot
+1.3.0.20260817-1245`. Представление `1C Copilot` должно открываться, а раздел
+`Preferences → 1C Copilot` — быть доступен.
+
+### Диагностика и откат
+
+При отказе сохраните вывод `-consoleLog` и проверьте `$EDT_HOME/configuration/*.log`. При частичном
+отказе повторите шаги удаления и установки по одному, проверяя `bundles.info` между ними.
+
+Откат через `Installation Details → Installation History → Revert` возможен, но может не разрешиться,
+поскольку артефакты 1.0.x удалены с публичного сайта. Надёжный путь — локально сохранённый update-site
+ZIP: `Help → Install New Software… → Add… → Archive…`, после удаления текущей версии.
+
+Сборка компилируется против target 1C:EDT `2025.2.3+30` (`targets/default/default.target`). Импорты
+`com._1c.g5.*` не имеют версионных диапазонов: OSGi resolver формально принимает более новую EDT, но
+это не гарантирует бинарную совместимость. Сборка проверена на `2025.2.3+30`; установка на `2026.2.0`
+выполнялась вручную.
 
 ## Сборка
 
