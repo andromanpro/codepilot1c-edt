@@ -154,7 +154,9 @@ import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.CreateFormResult;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
+import com.codepilot1c.core.edt.forms.FormHandlerRegionResolver;
 import com.codepilot1c.core.edt.forms.FormItemInformationEventCatalog;
+import com.codepilot1c.core.edt.forms.FormModuleRegion;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
@@ -167,6 +169,7 @@ import com.codepilot1c.core.edt.forms.FormRecipeResult;
 import com.codepilot1c.core.edt.forms.HandlerStubReport;
 import com.codepilot1c.core.edt.forms.FormUsage;
 import com.codepilot1c.core.edt.forms.HandlerStubKind;
+import com.codepilot1c.core.edt.forms.HandlerRegionTarget;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutRequest;
 import com.codepilot1c.core.edt.forms.InspectFormLayoutResult;
 import com.codepilot1c.core.edt.forms.ModuleFileWriter;
@@ -615,10 +618,12 @@ public class EdtMetadataService {
         for (PendingStub pending : pendingStubs) {
             BslHandlerStubGenerator.StubText stub;
             StubWriteOutcome outcome;
+            HandlerRegionTarget region;
             if (pending.kind() == HandlerStubKind.COMMAND_ACTION) {
+                region = HandlerRegionTarget.of(FormModuleRegion.FORM_COMMAND_EVENT_HANDLERS);
                 try {
                     stub = generator.generateCommandAction(pending.handlerName(), variant);
-                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant, region);
                 } catch (MetadataOperationException e) {
                     throw stubPhaseFailure(
                             e,
@@ -629,9 +634,9 @@ public class EdtMetadataService {
                             RollbackAttempt.notAttempted());
                 }
             } else {
-                Event freshEvent;
+                FreshEventContext freshEvent;
                 try {
-                    freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
+                    freshEvent = resolveFreshEventContext(project, configuration, formFqn, pending);
                 } catch (MetadataOperationException e) {
                     throw stubPhaseFailure(
                             e,
@@ -641,9 +646,10 @@ public class EdtMetadataService {
                             skippedExisting,
                             RollbackAttempt.notAttempted());
                 }
+                region = freshEvent.region();
                 try {
-                    stub = generator.generate(freshEvent, pending.handlerName(), variant);
-                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+                    stub = generator.generate(freshEvent.event(), pending.handlerName(), variant);
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant, region);
                 } catch (MetadataOperationException e) {
                     throw stubPhaseFailure(
                             e,
@@ -654,6 +660,11 @@ public class EdtMetadataService {
                             RollbackAttempt.notAttempted());
                 }
             }
+            LOG.info("[%s] stub handler=%s region=%s placement=%s", //$NON-NLS-1$
+                    opId,
+                    pending.handlerName(),
+                    region.isUnknown() ? "UNKNOWN" : region.canonicalName(variant), //$NON-NLS-1$
+                    outcome);
             switch (outcome) {
                 case WRITTEN -> written.add(pending.handlerName());
                 case SKIPPED_EXISTING_WARN -> {
@@ -889,7 +900,7 @@ public class EdtMetadataService {
      * (Pitfall 2) — re-runs the exact same target/container/event resolution
      * {@link #wireEventHandler} used, via a fresh read-only {@code executeRead}.
      */
-    private Event resolveFreshEvent(
+    private FreshEventContext resolveFreshEventContext(
             IProject project, Configuration configuration, String formFqn, PendingStub pending) {
         return executeRead(project, tx -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
@@ -903,7 +914,9 @@ public class EdtMetadataService {
             Form formModel = resolveManagedFormModel(basicForm, formFqn);
             FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
             EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
-            return eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
+            Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
+            HandlerRegionTarget region = new FormHandlerRegionResolver().resolve(container);
+            return new FreshEventContext(event, region);
         });
     }
 
@@ -1918,6 +1931,9 @@ public class EdtMetadataService {
                     handlerName,
                     true);
         }
+    }
+
+    private record FreshEventContext(Event event, HandlerRegionTarget region) {
     }
 
     private record StubPhaseOutcome(

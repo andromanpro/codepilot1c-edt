@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.forms;
 
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,8 +18,9 @@ import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator.StubText;
  * target name (ScriptVariant-correct regex, STUB-01/Pitfall 5) -&gt; if found with a
  * non-empty body OR a different signature, leave the text byte-for-byte untouched and
  * return {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} (a benign warn, never a rollback
- * trigger — Pitfall 3) -&gt; otherwise append the generated procedure text (blank-line
- * separated, with no forced-region wrapper around it) via the injected writer,
+ * trigger — Pitfall 3) -&gt; otherwise place the generated procedure in its exact
+ * model-derived standard region when the pure-text planner proves the placement safe,
+ * or fall back to the historical plain EOF append when it vetoes the module shape,
  * re-read to verify the handler name is actually present (STUB-06 verify-don't-trust),
  * and return {@link StubWriteOutcome#WRITTEN}. Any thrown failure from the injected
  * writer's {@code write(...)}, or a re-read that does not contain the handler name,
@@ -52,6 +54,19 @@ public class BslHandlerStubWriter {
      * @return the {@link StubWriteOutcome} the caller (07-03) switches on
      */
     public StubWriteOutcome write(String modulePath, String handlerName, StubText stub, ScriptVariant variant) {
+        return write(modulePath, handlerName, stub, variant, HandlerRegionTarget.unknown());
+    }
+
+    /**
+     * Region-aware variant. The existing-procedure short-circuit deliberately remains
+     * before all placement logic so existing user code is never moved or rewritten.
+     */
+    public StubWriteOutcome write(
+            String modulePath,
+            String handlerName,
+            StubText stub,
+            ScriptVariant variant,
+            HandlerRegionTarget region) {
         String currentText;
         try {
             currentText = writer.read(modulePath);
@@ -70,9 +85,26 @@ public class BslHandlerStubWriter {
             return StubWriteOutcome.SKIPPED_EXISTING_WARN;
         }
 
-        String nextText = currentText.isBlank()
-                ? stub.procedureText()
-                : currentText.stripTrailing() + "\n\n" + stub.procedureText() + "\n"; //$NON-NLS-1$ //$NON-NLS-2$
+        Optional<BslRegionPlacement.Insertion> planned = Optional.empty();
+        if (region != null && !region.isUnknown()) {
+            planned = new BslRegionPlacement().plan(
+                    currentText,
+                    region.canonicalName(variant),
+                    region.section().ordinalIndex(),
+                    stub.procedureText(),
+                    variant);
+        }
+        String nextText;
+        if (planned.isPresent()) {
+            BslRegionPlacement.Insertion insertion = planned.get();
+            nextText = currentText.substring(0, insertion.offset())
+                    + insertion.text()
+                    + currentText.substring(insertion.offset());
+        } else {
+            nextText = currentText.isBlank()
+                    ? stub.procedureText()
+                    : currentText.stripTrailing() + "\n\n" + stub.procedureText() + "\n"; //$NON-NLS-1$ //$NON-NLS-2$
+        }
 
         try {
             writer.write(modulePath, nextText);
