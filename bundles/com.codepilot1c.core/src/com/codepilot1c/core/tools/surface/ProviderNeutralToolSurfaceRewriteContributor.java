@@ -72,7 +72,7 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "mutate_form_model" -> "Изменяет форму через operations:[{op:...}]. " //$NON-NLS-1$
                     + "op: add_field|add_group|add_command|add_button|set_item|remove_item|move_item|set_form_props. " //$NON-NLS-1$
                     + "add_field: ОБЯЗАТЕЛЬНО name+data_path, field_type=LABEL_FIELD|INPUT_FIELD. " //$NON-NLS-1$
-                    + "add_command: name+action(обработчик)+title. add_button: name+command_name(ссылка на команду), parent автоматически=CommandBar. " //$NON-NLS-1$
+                    + "add_command: name+action(обработчик)+title; процедура action создаётся автоматически, не пиши её отдельно через write_file. add_button: name+command_name(ссылка на команду), parent автоматически=CommandBar. " //$NON-NLS-1$
                     + "set_item: ОБЯЗАТЕЛЬНО item_id(число) ИЛИ item_name(строка) + set:{...}. НЕ используй id или name вместо item_id/item_name. " //$NON-NLS-1$
                     + "Родитель: parent_item_id(число) ИЛИ parent_item_name(строка). НЕ используй parent_id или parent. " //$NON-NLS-1$
                     + "Сначала вызови inspect_form_layout чтобы узнать ID элементов. " //$NON-NLS-1$
