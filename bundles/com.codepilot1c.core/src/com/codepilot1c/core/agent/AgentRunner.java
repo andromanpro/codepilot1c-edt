@@ -66,6 +66,7 @@ import com.codepilot1c.core.tools.ToolContextGate;
 import com.codepilot1c.core.tools.ToolLogger;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
 import com.codepilot1c.core.tools.surface.BuiltinToolTaxonomy;
 import com.codepilot1c.core.tools.surface.DeferredToolSession;
@@ -521,6 +522,8 @@ public class AgentRunner implements IAgentRunner {
         }
 
         AgentProfile profile = resolveProfile(config);
+        ToolExecutionContext executionContext =
+                ToolExecutionContext.of(profile, config.getDelegationDepth());
         Set<String> profileAllowed = profile.getAllowedTools();
         boolean deferredDiscovery = deferredToolSession.isDeferredLoadingActive()
                 && "discover_tools".equals(toolName); //$NON-NLS-1$
@@ -561,11 +564,11 @@ public class AgentRunner implements IAgentRunner {
 
         // Check if confirmation is required
         if (tool.requiresConfirmation()) {
-            return requestConfirmation(call, tool, args, config);
+            return requestConfirmation(call, tool, args, config, executionContext);
         }
 
         // Execute directly
-        return executeToolAndAddResult(call, args);
+        return executeToolAndAddResult(call, args, executionContext);
     }
 
     private List<PermissionRule> globalRulesSafe() {
@@ -615,7 +618,8 @@ public class AgentRunner implements IAgentRunner {
      * Запрашивает подтверждение у пользователя.
      */
     private CompletableFuture<Void> requestConfirmation(
-            ToolCall call, ITool tool, Map<String, Object> args, AgentConfig config) {
+            ToolCall call, ITool tool, Map<String, Object> args, AgentConfig config,
+            ToolExecutionContext executionContext) {
 
         state.set(AgentState.WAITING_CONFIRMATION);
         int step = currentStep.get();
@@ -637,7 +641,7 @@ public class AgentRunner implements IAgentRunner {
             ToolResult toolResult;
             switch (result) {
                 case CONFIRMED:
-                    return executeToolAndAddResult(call, args);
+                    return executeToolAndAddResult(call, args, executionContext);
                 case SKIPPED:
                     toolResult = ToolResult.success("Операция пропущена пользователем",
                             ToolResult.ToolResultType.CONFIRMATION);
@@ -667,12 +671,13 @@ public class AgentRunner implements IAgentRunner {
     /**
      * Выполняет инструмент и добавляет результат в историю.
      */
-    private CompletableFuture<Void> executeToolAndAddResult(ToolCall call, Map<String, Object> args) {
+    private CompletableFuture<Void> executeToolAndAddResult(
+            ToolCall call, Map<String, Object> args, ToolExecutionContext executionContext) {
         long toolStartTime = System.currentTimeMillis();
         int step = currentStep.get();
         String parentTraceEventId = toolTraceEventIds.get(call.getId());
 
-        return toolRegistry.execute(call, args, traceSession, parentTraceEventId)
+        return toolRegistry.execute(call, args, traceSession, parentTraceEventId, executionContext)
                 .handle((result, error) -> {
                     long executionTime = System.currentTimeMillis() - toolStartTime;
                     toolCallsCount.incrementAndGet();

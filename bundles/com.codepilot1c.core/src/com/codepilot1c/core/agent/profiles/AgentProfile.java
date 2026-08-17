@@ -94,4 +94,17 @@ public interface AgentProfile {
      */
     boolean canExecuteShell();
 
+    /**
+     * Strongest capability that this profile may delegate to a child agent.
+     * Read-only profiles are read-only delegators by default; mutating
+     * profiles may delegate mutating work.
+     *
+     * @return delegation capability ceiling
+     */
+    default AgentCapability getDelegationCeiling() {
+        return isReadOnly() && !canExecuteShell()
+                ? AgentCapability.READ_ONLY
+                : AgentCapability.MUTATING;
+    }
+
 }

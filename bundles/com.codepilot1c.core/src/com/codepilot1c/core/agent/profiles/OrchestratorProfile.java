@@ -91,4 +91,13 @@ public final class OrchestratorProfile implements AgentProfile {
     public boolean canExecuteShell() {
         return false;
     }
+
+    /**
+     * The orchestrator is the declared broker allowed to delegate mutating
+     * work while keeping its own execution surface read-only.
+     */
+    @Override
+    public AgentCapability getDelegationCeiling() {
+        return AgentCapability.MUTATING;
+    }
 }

@@ -101,7 +101,8 @@ public class ToolExecutionService {
 
         try {
             parameters = argumentParser.parseArguments(toolCall.getArguments());
-            return executeParsed(toolCall, parameters, tool, toolLogger, traceSession, parentEventId);
+            return executeParsed(toolCall, parameters, tool, toolLogger, traceSession, parentEventId,
+                    ToolExecutionContext.unscoped());
         } catch (Exception e) {
             LOG.error("Error executing tool %s: %s", toolCall.getName(), e.getMessage()); //$NON-NLS-1$
             ToolResult failResult = ToolResult.failure("Error executing tool: " + e.getMessage()); //$NON-NLS-1$
@@ -125,6 +126,22 @@ public class ToolExecutionService {
      */
     public CompletableFuture<ToolResult> execute(ToolCall toolCall, Map<String, Object> parameters,
             AgentTraceSession traceSession, String parentEventId) {
+        return execute(toolCall, parameters, traceSession, parentEventId,
+                ToolExecutionContext.unscoped());
+    }
+
+    /**
+     * Executes an already parsed tool call with immutable caller context.
+     *
+     * @param toolCall original tool call
+     * @param parameters exact parsed parameters approved by the permission gate
+     * @param traceSession optional trace session
+     * @param parentEventId optional parent trace event
+     * @param context immutable caller context
+     * @return future with the result
+     */
+    public CompletableFuture<ToolResult> execute(ToolCall toolCall, Map<String, Object> parameters,
+            AgentTraceSession traceSession, String parentEventId, ToolExecutionContext context) {
         LOG.debug("Executing tool with pre-parsed args: %s", toolCall.getName()); //$NON-NLS-1$
 
         ToolLogger toolLogger = ToolLogger.getInstance();
@@ -157,7 +174,7 @@ public class ToolExecutionService {
 
         try {
             return executeParsed(toolCall, approvedParameters, tool, toolLogger,
-                    traceSession, parentEventId);
+                    traceSession, parentEventId, context != null ? context : ToolExecutionContext.unscoped());
         } catch (Exception e) {
             LOG.error("Error executing tool %s: %s", toolCall.getName(), e.getMessage()); //$NON-NLS-1$
             ToolResult failResult = ToolResult.failure("Error executing tool: " + e.getMessage()); //$NON-NLS-1$
@@ -171,7 +188,8 @@ public class ToolExecutionService {
 
     private CompletableFuture<ToolResult> executeParsed(
             ToolCall toolCall, Map<String, Object> parameters, ITool tool,
-            ToolLogger toolLogger, AgentTraceSession traceSession, String parentEventId) {
+            ToolLogger toolLogger, AgentTraceSession traceSession, String parentEventId,
+            ToolExecutionContext context) {
         LOG.debug("Parsed parameters: %s", parameters); //$NON-NLS-1$
         final String traceToolCallEventId =
                 writeToolCallTrace(traceSession, parentEventId, toolCall, parameters, tool);
@@ -179,7 +197,7 @@ public class ToolExecutionService {
         int callId = toolLogger.logToolCallStart(toolCall.getName(), parameters);
         long startTime = System.currentTimeMillis();
 
-        return tool.execute(parameters)
+        return tool.execute(parameters, context)
                 .thenApply(result -> {
                     long duration = System.currentTimeMillis() - startTime;
                     toolLogger.logToolCallResult(callId, toolCall.getName(), result, duration);

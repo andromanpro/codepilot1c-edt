@@ -132,6 +132,12 @@ public abstract class AbstractTool implements ITool {
 
     @Override
     public final CompletableFuture<ToolResult> execute(Map<String, Object> parameters) {
+        return execute(parameters, ToolExecutionContext.unscoped());
+    }
+
+    @Override
+    public final CompletableFuture<ToolResult> execute(
+            Map<String, Object> parameters, ToolExecutionContext context) {
         try {
             // Run before interceptors
             Map<String, Object> effectiveArgs = parameters;
@@ -146,7 +152,10 @@ public abstract class AbstractTool implements ITool {
 
             long startTime = System.currentTimeMillis();
             ToolParameters params = new ToolParameters(effectiveArgs);
-            return doExecute(params).thenApply(result -> {
+            ToolExecutionContext effectiveContext = context != null
+                    ? context
+                    : ToolExecutionContext.unscoped();
+            return doExecute(params, effectiveContext).thenApply(result -> {
                 // Run after interceptors
                 long duration = System.currentTimeMillis() - startTime;
                 ToolResult effective = result;
@@ -173,6 +182,19 @@ public abstract class AbstractTool implements ITool {
      * @return a future containing the tool result
      */
     protected abstract CompletableFuture<ToolResult> doExecute(ToolParameters params);
+
+    /**
+     * Executes the tool with typed parameters and caller context. Existing
+     * tools keep their legacy implementation through this default bridge.
+     *
+     * @param params typed parameter wrapper
+     * @param context immutable caller context
+     * @return a future containing the tool result
+     */
+    protected CompletableFuture<ToolResult> doExecute(
+            ToolParameters params, ToolExecutionContext context) {
+        return doExecute(params);
+    }
 
     private ILog createLogger() {
         try {
