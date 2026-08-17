@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.eclipse.jface.preference.PreferencePage;
+import org.eclipse.osgi.util.NLS;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.events.ModifyListener;
 import org.eclipse.swt.layout.GridData;
@@ -145,10 +146,10 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
         for (McpHostSessionProfileChoices.Choice choice : profileChoices.choices()) {
             sessionProfileIds.add(choice.id());
             profileLabels.add(switch (choice.kind()) {
-                case UNSET -> "(не задан — профильный гейт выключен)"; //$NON-NLS-1$
+                case UNSET -> Messages.McpHostPreferencePage_SessionProfileUnset;
                 case REGISTERED -> choice.id();
-                case UNKNOWN -> choice.id()
-                        + " (неизвестен — все вызовы отклоняются)"; //$NON-NLS-1$
+                case UNKNOWN -> NLS.bind(
+                        Messages.McpHostPreferencePage_SessionProfileUnknown, choice.id());
             });
         }
         sessionProfileCombo.setItems(profileLabels.toArray(String[]::new));

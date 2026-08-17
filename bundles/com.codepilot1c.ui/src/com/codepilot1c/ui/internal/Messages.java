@@ -426,6 +426,8 @@ public class Messages extends NLS {
     public static String McpHostPreferencePage_MutationDeny;
     public static String McpHostPreferencePage_MutationAllow;
     public static String McpHostPreferencePage_SessionProfile;
+    public static String McpHostPreferencePage_SessionProfileUnset;
+    public static String McpHostPreferencePage_SessionProfileUnknown;
     public static String McpHostPreferencePage_ExposedTools;
     public static String McpHostPreferencePage_LocalOnlyInfo;
     public static String McpHostPreferencePage_NonLocalWarning;
