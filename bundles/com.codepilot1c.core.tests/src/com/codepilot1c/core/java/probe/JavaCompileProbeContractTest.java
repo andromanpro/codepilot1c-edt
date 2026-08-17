@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -13,6 +14,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.junit.Test;
 import org.junit.Assume;
@@ -24,6 +28,8 @@ import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
 import com.codepilot1c.core.agent.profiles.PlanAgentProfile;
 import com.codepilot1c.core.agent.profiles.ProfileCapabilities;
+import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
@@ -45,9 +51,11 @@ public class JavaCompileProbeContractTest {
         List<String> command = command(Path.of("/jdk/bin/javac"), Path.of("/tmp/a/Probe.java"), //$NON-NLS-1$ //$NON-NLS-2$
                 Path.of("/tmp/a/out")); //$NON-NLS-1$
 
-        assertEmptyOption(command, "-classpath"); //$NON-NLS-1$
+        assertEquals(Path.of("/tmp/a/classpath").toAbsolutePath().normalize().toString(), //$NON-NLS-1$
+                optionValue(command, "-classpath")); //$NON-NLS-1$
         assertEmptyOption(command, "-sourcepath"); //$NON-NLS-1$
-        assertEmptyOption(command, "-processorpath"); //$NON-NLS-1$
+        assertEquals(Path.of("/tmp/a/processorpath").toAbsolutePath().normalize().toString(), //$NON-NLS-1$
+                optionValue(command, "-processorpath")); //$NON-NLS-1$
         String joined = String.join(" ", command); //$NON-NLS-1$
         assertFalse(joined.contains("com.codepilot1c")); //$NON-NLS-1$
         assertFalse(joined.contains("com._1c")); //$NON-NLS-1$
@@ -55,25 +63,25 @@ public class JavaCompileProbeContractTest {
     }
 
     @Test
-    public void argvIsSingleVariableConstruction() {
-        String hostileOne = "1\n-Xplugin:evil -J-Dx='quoted value'"; //$NON-NLS-1$
-        String hostileTwo = "\" -processor malicious Processor"; //$NON-NLS-1$
+    public void argvOnlyVariesByGeneratedTemporaryPaths() {
         List<String> first = command(Path.of("/jdk/bin/javac"), //$NON-NLS-1$
                 Path.of("/tmp/one/Probe.java"), Path.of("/tmp/one/out")); //$NON-NLS-1$ //$NON-NLS-2$
         List<String> second = command(Path.of("/jdk/bin/javac"), //$NON-NLS-1$
                 Path.of("/tmp/two/Probe.java"), Path.of("/tmp/two/out")); //$NON-NLS-1$ //$NON-NLS-2$
+        Set<Integer> generatedPathIndexes = Set.of(
+                first.indexOf("-classpath") + 1, //$NON-NLS-1$
+                first.indexOf("-processorpath") + 1, //$NON-NLS-1$
+                first.indexOf("-d") + 1, //$NON-NLS-1$
+                first.size() - 1);
 
         assertEquals(first.size(), second.size());
         for (int i = 0; i < first.size(); i++) {
-            if (i == first.size() - 1 || i == first.size() - 2) {
+            if (generatedPathIndexes.contains(i)) {
                 assertNotEquals(first.get(i), second.get(i));
             } else {
                 assertEquals(first.get(i), second.get(i));
             }
         }
-        String joined = String.join(" ", first) + String.join(" ", second); //$NON-NLS-1$ //$NON-NLS-2$
-        assertFalse(joined.contains(hostileOne));
-        assertFalse(joined.contains(hostileTwo));
     }
 
     @Test
@@ -178,6 +186,27 @@ public class JavaCompileProbeContractTest {
     }
 
     @Test
+    public void runnerCreatesDedicatedEmptyClasspathDirectoriesInsideTempRoot() {
+        RecordingRunner commands = new RecordingRunner(null);
+        commands.resultFactory = command -> {
+            Path source = Path.of(command.get(command.size() - 1));
+            Path tempRoot = source.getParent();
+            Path classpath = Path.of(optionValue(command, "-classpath")); //$NON-NLS-1$
+            Path processorPath = Path.of(optionValue(command, "-processorpath")); //$NON-NLS-1$
+            assertTrue(classpath.startsWith(tempRoot));
+            assertTrue(processorPath.startsWith(tempRoot));
+            assertTrue(isEmptyDirectory(classpath));
+            assertTrue(isEmptyDirectory(processorPath));
+            return new CommandResult(0, "", "", false); //$NON-NLS-1$ //$NON-NLS-2$
+        };
+
+        ProbeOutcome outcome = runnerWith(commands).run(true, "1 + 1", SnippetKind.EXPRESSION); //$NON-NLS-1$
+
+        assertTrue(outcome.probeOk());
+        assertTrue(outcome.compiles());
+    }
+
+    @Test
     public void temporaryDirectoryIsRemovedAfterSuccessAndFailure() {
         RecordingRunner success = new RecordingRunner(new CommandResult(0, "", "", false)); //$NON-NLS-1$ //$NON-NLS-2$
         runnerWith(success).run(true, "1 + 1", SnippetKind.EXPRESSION); //$NON-NLS-1$
@@ -205,12 +234,14 @@ public class JavaCompileProbeContractTest {
         RecordingRunner commands = new RecordingRunner(null);
         commands.resultFactory = command -> {
             Path source = Path.of(command.get(command.size() - 1));
-            return new CommandResult(1, "", source + ":2: error: broken", false); //$NON-NLS-1$ //$NON-NLS-2$
+            Path out = Path.of(optionValue(command, "-d")); //$NON-NLS-1$
+            return new CommandResult(1, "", source + ":2: error: broken at " + out, false); //$NON-NLS-1$ //$NON-NLS-2$
         };
 
         ProbeOutcome outcome = runnerWith(commands).run(true, "broken", SnippetKind.EXPRESSION); //$NON-NLS-1$
 
-        assertEquals("snippet:1: error: broken", outcome.diagnostics()); //$NON-NLS-1$
+        assertTrue(outcome.diagnostics(), outcome.diagnostics().startsWith("snippet:1: error: broken at ")); //$NON-NLS-1$
+        assertTrue(outcome.diagnostics(), outcome.diagnostics().contains("snippet-temp")); //$NON-NLS-1$
         assertFalse(outcome.diagnostics().contains("cp1c-javaprobe")); //$NON-NLS-1$
         assertEquals(1, outcome.errorCount());
     }
@@ -347,6 +378,42 @@ public class JavaCompileProbeContractTest {
     }
 
     @Test
+    public void toolLogsStructuredLifecycleWithoutSnippetContent() throws Exception {
+        String snippet = "\"DO_NOT_LOG_SNIPPET_CONTENT\".length()"; //$NON-NLS-1$
+        List<VibeLogger.LogEntry> captured = new ArrayList<>();
+        Consumer<VibeLogger.LogEntry> listener = captured::add;
+        VibeLogger.getInstance().addListener(listener);
+        try {
+            JavaCompileProbeTool tool = toolWith(
+                    new RecordingRunner(new CommandResult(0, "", "", false)), true); //$NON-NLS-1$ //$NON-NLS-2$
+            tool.execute(Map.of("snippet", snippet, "snippet_kind", "EXPRESSION")).get(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        } finally {
+            VibeLogger.getInstance().removeListener(listener);
+        }
+
+        List<String> messages = captured.stream()
+                .filter(entry -> JavaCompileProbeTool.class.getSimpleName().equals(entry.getCategory()))
+                .map(VibeLogger.LogEntry::getMessage)
+                .toList();
+        assertEquals(2, messages.size());
+        assertTrue(messages.get(0), messages.get(0).contains(
+                "START java_compile_probe snippet_kind=EXPRESSION")); //$NON-NLS-1$
+        assertTrue(messages.get(0), messages.get(0).contains("error_code=none duration_ms=0 snippet_length=" //$NON-NLS-1$
+                + snippet.length()));
+        assertTrue(messages.get(1), messages.get(1).contains(
+                "DONE java_compile_probe snippet_kind=EXPRESSION")); //$NON-NLS-1$
+        assertTrue(messages.get(1), messages.get(1).contains("error_code=none duration_ms=")); //$NON-NLS-1$
+        assertTrue(messages.get(1), messages.get(1).endsWith("snippet_length=" + snippet.length())); //$NON-NLS-1$
+        assertFalse(String.join("\n", messages).contains(snippet)); //$NON-NLS-1$
+        Pattern opId = Pattern.compile("\\[(java-compile-probe-[^]]+)]"); //$NON-NLS-1$
+        Matcher startId = opId.matcher(messages.get(0));
+        Matcher doneId = opId.matcher(messages.get(1));
+        assertTrue(startId.find());
+        assertTrue(doneId.find());
+        assertEquals(startId.group(1), doneId.group(1));
+    }
+
+    @Test
     public void toolIsAbsentFromMutatingProfileAllowlists() {
         AgentProfileRegistry.getInstance().getAllProfiles().stream()
                 .filter(profile -> !profile.isReadOnly())
@@ -364,6 +431,17 @@ public class JavaCompileProbeContractTest {
         assertTrue(plan.getAllowedTools().contains("java_compile_probe")); //$NON-NLS-1$
         assertEquals(AgentCapability.READ_ONLY, ProfileCapabilities.executionCapability(explore));
         assertEquals(AgentCapability.READ_ONLY, ProfileCapabilities.executionCapability(plan));
+    }
+
+    @Test
+    public void exploreAndPlanPromptsDescribeDefaultOffCompileOnlyProbe() {
+        for (String prompt : List.of(
+                AgentPromptTemplates.buildExplorePrompt(),
+                AgentPromptTemplates.buildPlanPrompt())) {
+            assertTrue(prompt.contains("java_compile_probe")); //$NON-NLS-1$
+            assertTrue(prompt.contains("не исполняет код")); //$NON-NLS-1$
+            assertTrue(prompt.contains("probe_disabled")); //$NON-NLS-1$
+        }
     }
 
     @Test
@@ -387,13 +465,30 @@ public class JavaCompileProbeContractTest {
     }
 
     private static List<String> command(Path javac, Path source, Path out) {
-        return new JavacCommandBuilder(javac).build(source, out);
+        Path tempRoot = source.toAbsolutePath().normalize().getParent();
+        return new JavacCommandBuilder(javac).build(
+                source, out, tempRoot.resolve("classpath"), tempRoot.resolve("processorpath")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static void assertEmptyOption(List<String> command, String option) {
+        assertEquals("", optionValue(command, option)); //$NON-NLS-1$
+    }
+
+    private static String optionValue(List<String> command, String option) {
         int index = command.indexOf(option);
         assertTrue(option, index >= 0);
-        assertEquals("", command.get(index + 1)); //$NON-NLS-1$
+        return command.get(index + 1);
+    }
+
+    private static boolean isEmptyDirectory(Path directory) {
+        if (!Files.isDirectory(directory)) {
+            return false;
+        }
+        try (var entries = Files.list(directory)) {
+            return entries.findAny().isEmpty();
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private static JavaCompileProbeRunner runnerWith(CommandResult result) {

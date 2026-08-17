@@ -10,9 +10,12 @@ public final class DiagnosticsMapper {
     private DiagnosticsMapper() {
     }
 
-    public static MappedDiagnostics map(String raw, Path sourceFile, int preludeLines) {
+    public static MappedDiagnostics map(String raw, Path sourceFile, Path tempRoot,
+            int preludeLines) {
         String input = raw == null ? "" : raw; //$NON-NLS-1$
-        Pattern location = Pattern.compile(Pattern.quote(sourceFile.toAbsolutePath().normalize().toString())
+        String normalizedSource = sourceFile.toAbsolutePath().normalize().toString();
+        String normalizedTempRoot = tempRoot.toAbsolutePath().normalize().toString();
+        Pattern location = Pattern.compile(Pattern.quote(normalizedSource)
                 + ":(\\d+):"); //$NON-NLS-1$
         Matcher matcher = location.matcher(input);
         StringBuffer mapped = new StringBuffer();
@@ -28,7 +31,8 @@ public final class DiagnosticsMapper {
         matcher.appendTail(mapped);
 
         String text = mapped.toString()
-                .replace(sourceFile.toAbsolutePath().normalize().toString(), "snippet") //$NON-NLS-1$
+                .replace(normalizedSource, "snippet") //$NON-NLS-1$
+                .replace(normalizedTempRoot, "snippet-temp") //$NON-NLS-1$
                 .replace(sourceFile.getFileName().toString(), "snippet"); //$NON-NLS-1$
         return new MappedDiagnostics(
                 text,

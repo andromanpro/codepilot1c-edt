@@ -235,7 +235,8 @@ public final class AgentPromptTemplates {
         sb.append("не заменяй результат справкой \"из памяти\".\n"); //$NON-NLS-1$
         sb.append("7. Если инструмент вернул ошибку, зафиксируй её явно и не пытайся вызывать mutating recovery tools из этого read-only профиля.\n"); //$NON-NLS-1$
         sb.append(PLAN_READ_ONLY_DELEGATION_INSTRUCTION);
-        sb.append("9. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n\n"); //$NON-NLS-1$
+        sb.append("9. Для compile-only проверки Java 17 используй java_compile_probe; он не исполняет код и по умолчанию может вернуть probe_disabled.\n"); //$NON-NLS-1$
+        sb.append("10. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n\n"); //$NON-NLS-1$
 
         sb.append("## Шаблон ответа\n"); //$NON-NLS-1$
         sb.append("## Задача\n[Краткое описание]\n\n"); //$NON-NLS-1$
@@ -246,7 +247,7 @@ public final class AgentPromptTemplates {
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files,\n"); //$NON-NLS-1$
         sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
-        sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, discover_tools, skill, task.\n"); //$NON-NLS-1$
+        sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, java_compile_probe, discover_tools, skill, task.\n"); //$NON-NLS-1$
 
         return PromptQualityAssurance.verify(
                 "plan", //$NON-NLS-1$
@@ -275,8 +276,9 @@ public final class AgentPromptTemplates {
         sb.append("фиксируй ошибку инструмента, не пиши справку \"из общих знаний\".\n"); //$NON-NLS-1$
         sb.append("7. Если инструмент вернул ошибку, зафиксируй её явно и не пытайся вызывать mutating recovery tools из этого read-only профиля.\n"); //$NON-NLS-1$
         sb.append(EXPLORE_READ_ONLY_DELEGATION_INSTRUCTION);
-        sb.append("9. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n"); //$NON-NLS-1$
-        sb.append("10. Не предлагай изменения, если пользователь не просил реализацию.\n\n"); //$NON-NLS-1$
+        sb.append("9. Для compile-only проверки Java 17 используй java_compile_probe; он не исполняет код и по умолчанию может вернуть probe_disabled.\n"); //$NON-NLS-1$
+        sb.append("10. Если пользователь приложил изображение, анализируй его напрямую и не пиши, что не можешь видеть картинку.\n"); //$NON-NLS-1$
+        sb.append("11. Не предлагай изменения, если пользователь не просил реализацию.\n\n"); //$NON-NLS-1$
 
         sb.append("## Формат ответа\n"); //$NON-NLS-1$
         sb.append("- Короткий вывод (1-3 пункта).\n"); //$NON-NLS-1$
@@ -286,7 +288,7 @@ public final class AgentPromptTemplates {
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files,\n"); //$NON-NLS-1$
         sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
-        sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, discover_tools, skill, task.\n"); //$NON-NLS-1$
+        sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, java_compile_probe, discover_tools, skill, task.\n"); //$NON-NLS-1$
 
         return PromptQualityAssurance.verify(
                 "explore", //$NON-NLS-1$

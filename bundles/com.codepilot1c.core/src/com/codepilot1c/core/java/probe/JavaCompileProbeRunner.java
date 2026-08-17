@@ -71,6 +71,8 @@ public final class JavaCompileProbeRunner {
             tempDir = createTempDirectory();
             Path sourceFile = tempDir.resolve("Probe.java"); //$NON-NLS-1$
             Path outDir = Files.createDirectory(tempDir.resolve("out")); //$NON-NLS-1$
+            Path classpathDir = Files.createDirectory(tempDir.resolve("classpath")); //$NON-NLS-1$
+            Path processorPathDir = Files.createDirectory(tempDir.resolve("processorpath")); //$NON-NLS-1$
             JavacCommandBuilder commandBuilder = new JavacCommandBuilder(location.javac());
             List<SnippetKind> attempts = kind == SnippetKind.AUTO
                     ? SnippetWrapper.AUTO_ORDER : List.of(kind);
@@ -79,8 +81,10 @@ public final class JavaCompileProbeRunner {
                 SnippetWrapper.WrappedSnippet wrapped = SnippetWrapper.wrap(snippet, attemptKind);
                 Files.writeString(sourceFile, wrapped.source(), StandardCharsets.UTF_8);
                 CommandResult result = commandRunner.run(
-                        commandBuilder.build(sourceFile, outDir), ATTEMPT_TIMEOUT);
-                Attempt attempt = mapAttempt(result, sourceFile, wrapped.preludeLines(), attemptKind);
+                        commandBuilder.build(sourceFile, outDir, classpathDir, processorPathDir),
+                        ATTEMPT_TIMEOUT);
+                Attempt attempt = mapAttempt(result, sourceFile, tempDir,
+                        wrapped.preludeLines(), attemptKind);
                 if (result.timedOut()) {
                     return harnessFailure("timeout", attempt, location.source(), started); //$NON-NLS-1$
                 }
@@ -130,12 +134,13 @@ public final class JavaCompileProbeRunner {
         return tempDir;
     }
 
-    private static Attempt mapAttempt(CommandResult result, Path sourceFile,
+    private static Attempt mapAttempt(CommandResult result, Path sourceFile, Path tempRoot,
             int preludeLines, SnippetKind kind) {
         String raw = joinOutput(result.stderr(), result.stdout());
         boolean truncated = raw.length() > MAX_DIAGNOSTICS_CHARS;
         String capped = truncated ? raw.substring(0, MAX_DIAGNOSTICS_CHARS) : raw;
-        DiagnosticsMapper.MappedDiagnostics mapped = DiagnosticsMapper.map(capped, sourceFile, preludeLines);
+        DiagnosticsMapper.MappedDiagnostics mapped = DiagnosticsMapper.map(
+                capped, sourceFile, tempRoot, preludeLines);
         return new Attempt(mapped.text(), mapped.errorCount(), mapped.warningCount(),
                 truncated, result.exitCode(), kind);
     }

@@ -4,7 +4,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/** Builds the fixed Tier A0 javac command; only generated paths vary. */
+/** Builds the fixed Tier A0 javac command; only generated temporary paths vary. */
 public final class JavacCommandBuilder {
 
     private final Path javac;
@@ -13,9 +13,12 @@ public final class JavacCommandBuilder {
         this.javac = Objects.requireNonNull(javac, "javac").toAbsolutePath().normalize(); //$NON-NLS-1$
     }
 
-    public List<String> build(Path sourceFile, Path outDir) {
+    public List<String> build(Path sourceFile, Path outDir, Path classpathDir,
+            Path processorPathDir) {
         Objects.requireNonNull(sourceFile, "sourceFile"); //$NON-NLS-1$
         Objects.requireNonNull(outDir, "outDir"); //$NON-NLS-1$
+        Objects.requireNonNull(classpathDir, "classpathDir"); //$NON-NLS-1$
+        Objects.requireNonNull(processorPathDir, "processorPathDir"); //$NON-NLS-1$
         return List.of(
                 javac.toString(),
                 "-J-Xmx256m", //$NON-NLS-1$
@@ -26,9 +29,9 @@ public final class JavacCommandBuilder {
                 "-J-Dstderr.encoding=UTF-8", //$NON-NLS-1$
                 "--release", "17", //$NON-NLS-1$ //$NON-NLS-2$
                 "-proc:none", //$NON-NLS-1$
-                "-classpath", "", //$NON-NLS-1$ //$NON-NLS-2$
+                "-classpath", classpathDir.toAbsolutePath().normalize().toString(), //$NON-NLS-1$
                 "-sourcepath", "", //$NON-NLS-1$ //$NON-NLS-2$
-                "-processorpath", "", //$NON-NLS-1$ //$NON-NLS-2$
+                "-processorpath", processorPathDir.toAbsolutePath().normalize().toString(), //$NON-NLS-1$
                 "-implicit:none", //$NON-NLS-1$
                 "-nowarn", //$NON-NLS-1$
                 "-Xmaxerrs", "20", //$NON-NLS-1$ //$NON-NLS-2$
