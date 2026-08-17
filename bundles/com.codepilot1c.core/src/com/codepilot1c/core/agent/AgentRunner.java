@@ -56,6 +56,7 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
@@ -586,40 +587,11 @@ public class AgentRunner implements IAgentRunner {
         }
     }
 
-    /**
-     * Создаёт детерминированный permission payload. Поле {@code reason}
-     * сохранено для совместимости; новые потребители должны использовать
-     * {@code reason_code}.
-     */
     private ToolResult permissionDenied(
             String toolName, String profileId, String resource, String reasonCode,
             String layer, String ruleDescription) {
-        JsonObject data = new JsonObject();
-        data.addProperty("error", "permission_denied"); //$NON-NLS-1$ //$NON-NLS-2$
-        data.addProperty("tool", toolName); //$NON-NLS-1$
-        data.addProperty("profile", profileId); //$NON-NLS-1$
-        data.addProperty("reason", reasonCode); //$NON-NLS-1$
-        data.addProperty("reason_code", reasonCode); //$NON-NLS-1$
-        data.addProperty("layer", layer); //$NON-NLS-1$
-        data.addProperty("rule_description",
-                ruleDescription != null ? ruleDescription : ""); //$NON-NLS-1$ //$NON-NLS-2$
-        if (resource != null) {
-            data.addProperty("resource", resource); //$NON-NLS-1$
-        }
-
-        StringBuilder message = new StringBuilder()
-                .append("Инструмент запрещен политикой профиля: ").append(toolName) //$NON-NLS-1$
-                .append(" (profile=").append(profileId); //$NON-NLS-1$
-        if (resource != null) {
-            message.append(", resource=").append(resource); //$NON-NLS-1$
-        }
-        message.append(", reason_code=").append(reasonCode) //$NON-NLS-1$
-                .append(", layer=").append(layer); //$NON-NLS-1$
-        if (ruleDescription != null && !ruleDescription.isBlank()) {
-            message.append(", rule_description=").append(ruleDescription); //$NON-NLS-1$
-        }
-        message.append(')');
-        return ToolResult.failure(message.toString(), data);
+        return PermissionDenialPayload.denied(
+                toolName, profileId, resource, reasonCode, layer, ruleDescription);
     }
 
     /**
