@@ -126,6 +126,37 @@ public class AddCommandStubTest {
     }
 
     @Test
+    public void commandActionCompensationRoutesToCommandSlotRollback() throws Exception {
+        String source = Files.readString(locateServiceSource());
+        int methodStart = source.indexOf("private RollbackAttempt compensateHandlerSlot("); //$NON-NLS-1$
+        int methodEnd = source.indexOf("RollbackAttempt compensateHandlerSlot(\n            boolean", methodStart); //$NON-NLS-1$
+        assertTrue("compensateHandlerSlot end marker not found", methodEnd > methodStart); //$NON-NLS-1$
+        String method = source.substring(methodStart, methodEnd);
+        int commandStart = method.indexOf("if (pending.kind() == HandlerStubKind.COMMAND_ACTION)"); //$NON-NLS-1$
+        int commandEnd = method.indexOf("        }\n        return compensateHandlerSlot(", commandStart); //$NON-NLS-1$
+        assertTrue("command compensation branch not found", commandStart >= 0 && commandEnd > commandStart); //$NON-NLS-1$
+
+        String commandBranch = method.substring(commandStart, commandEnd);
+        assertTrue(commandBranch.contains("compensateCreatedCommandSlot(")); //$NON-NLS-1$
+        assertFalse(commandBranch.contains("compensateCreatedHandlerSlot(")); //$NON-NLS-1$
+        assertTrue(method.substring(commandEnd).contains("compensateCreatedHandlerSlot(")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void commandRollbackChecksReferencesBeforeRemovingSlot() throws Exception {
+        String source = Files.readString(locateServiceSource());
+        int methodStart = source.indexOf("private RollbackMutationResult rollbackCommandSlot"); //$NON-NLS-1$
+        int methodEnd = source.indexOf("boolean isCommandReferenced", methodStart); //$NON-NLS-1$
+        assertTrue("rollbackCommandSlot end marker not found", methodEnd > methodStart); //$NON-NLS-1$
+        String method = source.substring(methodStart, methodEnd);
+
+        int referenceCheck = method.indexOf("isCommandReferenced("); //$NON-NLS-1$
+        int removal = method.indexOf("getFormCommands().remove("); //$NON-NLS-1$
+        assertTrue("reference check must precede command removal", //$NON-NLS-1$
+                referenceCheck >= 0 && removal > referenceCheck);
+    }
+
+    @Test
     public void explicitInvalidActionHandlerNameIsRejectedBeforeMutation() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         Map<String, Object> operation = commandOperation("Run", "9bad name"); //$NON-NLS-1$ //$NON-NLS-2$
