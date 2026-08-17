@@ -382,6 +382,20 @@ public class ToolRegistry {
         return executionService().execute(toolCall, traceSession, parentEventId);
     }
 
+    /**
+     * Executes a tool call with arguments already parsed by the caller.
+     *
+     * @param toolCall the original tool call
+     * @param parameters the exact parsed parameters approved by the permission gate
+     * @param traceSession optional trace session
+     * @param parentEventId optional parent trace event
+     * @return future with the result
+     */
+    public CompletableFuture<ToolResult> execute(ToolCall toolCall, Map<String, Object> parameters,
+            AgentTraceSession traceSession, String parentEventId) {
+        return executionService().execute(toolCall, parameters, traceSession, parentEventId);
+    }
+
     private ToolSurfaceContext contextForTool(ITool tool, ToolSurfaceContext baseContext) {
         boolean builtIn = tool != null && tools.containsKey(tool.getName());
         return (baseContext != null ? baseContext : ToolSurfaceContext.passthrough())

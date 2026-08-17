@@ -8,14 +8,14 @@ import java.util.List;
 import org.junit.Test;
 
 import com.codepilot1c.core.permissions.PermissionDecision;
-import com.codepilot1c.core.permissions.PermissionManager;
+import com.codepilot1c.core.permissions.PermissionEvaluator;
 import com.codepilot1c.core.permissions.PermissionRule;
 
 /**
  * Tests for GSD phase-profile permission rules.
  *
  * <p>Verifies that EDT-protected profiles (Execute, Ship) deny
- * write_file for {@code **&#47;*.mdo} before the general ask rule,
+ * write_file and edit_file for {@code **&#47;*.mdo} before general ask rules,
  * mirroring the protection already enforced by the Execute profile.</p>
  */
 public class GsdProfilePermissionTest {
@@ -38,6 +38,15 @@ public class GsdProfilePermissionTest {
                 profile.getDefaultPermissions(), "write_file", "release-notes.md"); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("write_file for non-.mdo must be ASK in Ship profile", //$NON-NLS-1$
                 PermissionDecision.ASK, decision);
+    }
+
+    @Test
+    public void shipProfileDeniesEditFileForMdo() {
+        GsdShipProfile profile = new GsdShipProfile();
+        PermissionDecision decision = evaluateStrictestMatch(
+                profile.getDefaultPermissions(), "edit_file", //$NON-NLS-1$
+                "src/Configuration/Configuration.mdo"); //$NON-NLS-1$
+        assertEquals(PermissionDecision.DENY, decision);
     }
 
     @Test
@@ -82,22 +91,33 @@ public class GsdProfilePermissionTest {
                 PermissionDecision.ASK, decision);
     }
 
+    @Test
+    public void executeProfileDeniesEditFileForMdo() {
+        GsdExecuteProfile profile = new GsdExecuteProfile();
+        PermissionDecision decision = evaluateStrictestMatch(
+                profile.getDefaultPermissions(), "edit_file", //$NON-NLS-1$
+                "src/Configuration/Configuration.mdo"); //$NON-NLS-1$
+        assertEquals(PermissionDecision.DENY, decision);
+    }
+
     // ---- Helper --------------------------------------------------------
 
     /**
      * Evaluates rules against a tool/resource pair using the same logic as
-     * {@link PermissionManager#checkSync}: filter matching rules, sort by
+     * {@link PermissionEvaluator#firstMatch}: filter matching rules, sort by
      * priority descending, return first match's decision.
      */
     private static PermissionDecision evaluateFirstMatch(
             List<PermissionRule> rules, String toolName, String resource) {
-        List<PermissionRule> matched = rules.stream()
-                .filter(r -> r.matchesTool(toolName) && r.matches(resource))
-                .sorted((a, b) -> Integer.compare(b.getPriority(), a.getPriority()))
-                .toList();
-        if (matched.isEmpty()) {
-            return PermissionDecision.ASK;
-        }
-        return matched.get(0).getDecision();
+        return PermissionEvaluator.firstMatch(rules, toolName, resource)
+                .map(PermissionRule::getDecision)
+                .orElse(PermissionDecision.ASK);
+    }
+
+    private static PermissionDecision evaluateStrictestMatch(
+            List<PermissionRule> rules, String toolName, String resource) {
+        return PermissionEvaluator.strictestMatch(rules, toolName, resource)
+                .map(PermissionRule::getDecision)
+                .orElse(PermissionDecision.ASK);
     }
 }

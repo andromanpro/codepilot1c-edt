@@ -42,6 +42,10 @@ public final class GsdShipProfile extends GsdPhaseProfile {
                     .withDescription("Прямая запись .mdo запрещена; используй EDT mutation tools") //$NON-NLS-1$
                     .forResourcePattern("**/*.mdo") //$NON-NLS-1$
                     .build(),
+            PermissionRule.deny("edit_file") //$NON-NLS-1$
+                    .withDescription("Прямое редактирование .mdo запрещено; используй EDT mutation tools") //$NON-NLS-1$
+                    .forResourcePattern("**/*.mdo") //$NON-NLS-1$
+                    .build(),
             PermissionRule.ask("write_file") //$NON-NLS-1$
                     .withDescription("Создание release-артефактов") //$NON-NLS-1$
                     .forAllResources()

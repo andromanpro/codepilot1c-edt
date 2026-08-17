@@ -54,6 +54,10 @@ public final class GsdExecuteProfile extends GsdPhaseProfile {
                     .withDescription("Прямая запись .mdo и Configuration.mdo запрещена; используй EDT mutation tools") //$NON-NLS-1$
                     .forResourcePattern("**/*.mdo") //$NON-NLS-1$
                     .build(),
+            PermissionRule.deny("edit_file") //$NON-NLS-1$
+                    .withDescription("Прямое редактирование .mdo и Configuration.mdo запрещено; используй EDT mutation tools") //$NON-NLS-1$
+                    .forResourcePattern("**/*.mdo") //$NON-NLS-1$
+                    .build(),
             PermissionRule.ask("edit_file") //$NON-NLS-1$
                     .withDescription("Редактирование файлов проекта") //$NON-NLS-1$
                     .forAllResources(),
