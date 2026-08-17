@@ -33,6 +33,7 @@ public class AgentProfileRegistryTest {
         assertTrue("Explore must include bsl_analyze_method", tools.contains("bsl_analyze_method")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Explore must include bsl_module_context", tools.contains("bsl_module_context")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Explore must include bsl_module_exports", tools.contains("bsl_module_exports")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Explore must include java_compile_probe", tools.contains("java_compile_probe")); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Explore must NOT include write/mutate tools
         assertFalse("Explore must not include edit_file", tools.contains("edit_file")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -45,8 +46,8 @@ public class AgentProfileRegistryTest {
     public void exploreProfileToolCountWithinOptimalRange() {
         AgentProfile explore = new ExploreAgentProfile();
         int toolCount = explore.getAllowedTools().size();
-        assertTrue("Explore profile should have <= 30 tools for optimal LLM accuracy, has " + toolCount, //$NON-NLS-1$
-                toolCount <= 35);
+        assertTrue("Explore profile should have <= 36 tools for optimal LLM accuracy, has " + toolCount, //$NON-NLS-1$
+                toolCount <= 36);
     }
 
     @Test
