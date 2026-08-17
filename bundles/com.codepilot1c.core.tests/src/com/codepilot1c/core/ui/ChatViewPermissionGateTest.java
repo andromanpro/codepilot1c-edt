@@ -14,6 +14,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -259,6 +263,54 @@ public class ChatViewPermissionGateTest {
     }
 
     @Test
+    public void vanishedDynamicToolStillYieldsDeterministicDenial() {
+        String name = "w6_vanished_confirmation_tool"; //$NON-NLS-1$
+        CountingTool tool = new CountingTool(name, true, false);
+        ToolRegistry registry = ToolRegistry.getInstance();
+        registry.registerDynamicTool(tool);
+        AgentProfile profile = profile("vanished", Set.of(), List.of(), false); //$NON-NLS-1$
+        try {
+            ChatToolGate gate = gate(profile, List.of(), EMPTY_PARSER,
+                    registry.getDynamicToolNames(), true, false);
+            ToolCall call = call(name, "{}"); //$NON-NLS-1$
+            ITool resolved = registry.getTool(name);
+            ChatToolGate.Decision decision = gate.decide(call, resolved);
+
+            assertEquals(ChatToolGate.Action.CONFIRM, decision.action());
+            registry.unregisterDynamicTool(name);
+            assertNull(registry.getTool(name));
+            assertPayloadContract(decision.confirmationUnavailableDenial(),
+                    name, profile.getId(), null,
+                    "confirmation_unavailable_tool_policy", "tool", null); //$NON-NLS-1$ //$NON-NLS-2$
+        } finally {
+            registry.unregisterDynamicTool(name);
+        }
+    }
+
+    @Test
+    public void chatViewConfirmationRunnableAlwaysCompletesFuture() throws IOException {
+        String source = Files.readString(repositoryRoot().resolve(
+                "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"), //$NON-NLS-1$
+                StandardCharsets.UTF_8);
+        int start = source.indexOf("private CompletableFuture<String> processToolCalls("); //$NON-NLS-1$
+        int end = source.indexOf("private ChatToolGate activeToolGate()", start); //$NON-NLS-1$
+        assertTrue("processToolCalls region must exist", start >= 0 && end > start); //$NON-NLS-1$
+        String region = source.substring(start, end);
+
+        assertTrue(region.contains("resolvedTools.get(")); //$NON-NLS-1$
+        assertEquals(1, occurrences(region, "registry.getTool(")); //$NON-NLS-1$
+        int nullGuard = region.indexOf("if (tool == null)"); //$NON-NLS-1$
+        int descriptionRead = region.indexOf("tool.getDescription()"); //$NON-NLS-1$
+        assertTrue("null guard must precede tool dereference", //$NON-NLS-1$
+                nullGuard >= 0 && descriptionRead > nullGuard);
+        int asyncExec = region.indexOf("display.asyncExec(() ->", descriptionRead - 1000); //$NON-NLS-1$
+        int throwableGuard = region.indexOf("catch (Throwable", asyncExec); //$NON-NLS-1$
+        int completion = region.indexOf("confirmedFuture.complete(", throwableGuard); //$NON-NLS-1$
+        assertTrue("confirmation runnable must catch Throwable and complete its future", //$NON-NLS-1$
+                asyncExec >= 0 && throwableGuard > asyncExec && completion > throwableGuard);
+    }
+
+    @Test
     public void skipConfirmationsPreferenceAutoApprovesAskDecision() {
         ChatToolGate.Decision decision = gate(new GsdExecuteProfile(), List.of(),
                 new ToolArgumentParser()::parseArguments, Set.of(), true, true)
@@ -439,6 +491,30 @@ public class ChatViewPermissionGateTest {
 
     private static ToolCall call(String name, String arguments) {
         return new ToolCall("call-" + name, name, arguments); //$NON-NLS-1$
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int index = 0; (index = text.indexOf(needle, index)) >= 0; index += needle.length()) {
+            count++;
+        }
+        return count;
+    }
+
+    private static Path repositoryRoot() {
+        String configured = System.getProperty("maven.multiModuleProjectDirectory"); //$NON-NLS-1$
+        Path current = configured != null && !configured.isBlank()
+                ? Path.of(configured).toAbsolutePath().normalize()
+                : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize(); //$NON-NLS-1$
+        while (current != null) {
+            if (Files.isRegularFile(current.resolve("pom.xml")) //$NON-NLS-1$
+                    && Files.isRegularFile(current.resolve(
+                            "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"))) { //$NON-NLS-1$
+                return current;
+            }
+            current = current.getParent();
+        }
+        throw new IllegalStateException("Cannot locate repository root"); //$NON-NLS-1$
     }
 
     private static void executeOnlyWhenApproved(

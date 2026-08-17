@@ -1776,13 +1776,15 @@ public class ChatView extends ViewPart {
         ChatToolGate gate = activeToolGate();
         ToolRegistry registry = ToolRegistry.getInstance();
         Map<String, ChatToolGate.Decision> decisions = new LinkedHashMap<>();
+        Map<String, ITool> resolvedTools = new HashMap<>();
         List<ToolCall> deniedCalls = new ArrayList<>();
         List<ToolCall> editCalls = new ArrayList<>();
         List<ToolCall> otherCalls = new ArrayList<>();
 
         for (ToolCall call : toolCalls) {
-            ChatToolGate.Decision decision = gate.decide(
-                    call, registry.getTool(call.getName()));
+            ITool resolved = registry.getTool(call.getName());
+            resolvedTools.put(call.getId(), resolved);
+            ChatToolGate.Decision decision = gate.decide(call, resolved);
             decisions.put(call.getId(), decision);
             if (decision.action() == ChatToolGate.Action.DENY) {
                 deniedCalls.add(call);
@@ -1882,7 +1884,7 @@ public class ChatView extends ViewPart {
         }
 
         for (ToolCall call : otherCalls) {
-            ITool tool = registry.getTool(call.getName());
+            ITool tool = resolvedTools.get(call.getId());
             ChatToolGate.Decision decision = decisions.get(call.getId());
             executedCalls.add(call);
 
@@ -1896,36 +1898,47 @@ public class ChatView extends ViewPart {
                     confirmedFuture.complete(decision.confirmationUnavailableDenial());
                 } else {
                     display.asyncExec(() -> {
-                        if (isDisposed() || getShell() == null) {
-                            confirmedFuture.complete(decision.confirmationUnavailableDenial());
-                            return;
-                        }
+                        try {
+                            if (isDisposed() || getShell() == null) {
+                                confirmedFuture.complete(decision.confirmationUnavailableDenial());
+                                return;
+                            }
+                            if (tool == null) {
+                                confirmedFuture.complete(decision.confirmationUnavailableDenial());
+                                return;
+                            }
 
-                        ToolConfirmationDialog dialog = new ToolConfirmationDialog(
-                                getShell(),
-                                call,
-                                tool.getDescription(),
-                                tool.isDestructive(),
-                                decision.arguments()
-                        );
+                            ToolConfirmationDialog dialog = new ToolConfirmationDialog(
+                                    getShell(),
+                                    call,
+                                    tool.getDescription(),
+                                    tool.isDestructive(),
+                                    decision.arguments()
+                            );
 
-                        if (dialog.openAndConfirm()) {
-                            // User confirmed - execute the tool
-                            registry.execute(call, decision.arguments(), null, null, decision.context())
-                                    .thenAccept(confirmedFuture::complete)
-                                    .exceptionally(e -> {
-                                        confirmedFuture.complete(ToolResult.failure("Error: " + e.getMessage())); //$NON-NLS-1$
-                                        return null;
-                                    });
-                        } else if (dialog.wasSkipped()) {
-                            // User skipped - return skip message
-                            confirmedFuture.complete(ToolResult.success(
-                                    "Операция пропущена пользователем", //$NON-NLS-1$
-                                    ToolResult.ToolResultType.CONFIRMATION));
-                        } else {
-                            // User cancelled - return cancelled message
+                            if (dialog.openAndConfirm()) {
+                                // User confirmed - execute the tool
+                                registry.execute(call, decision.arguments(), null, null, decision.context())
+                                        .thenAccept(confirmedFuture::complete)
+                                        .exceptionally(e -> {
+                                            confirmedFuture.complete(ToolResult.failure("Error: " + e.getMessage())); //$NON-NLS-1$
+                                            return null;
+                                        });
+                            } else if (dialog.wasSkipped()) {
+                                // User skipped - return skip message
+                                confirmedFuture.complete(ToolResult.success(
+                                        "Операция пропущена пользователем", //$NON-NLS-1$
+                                        ToolResult.ToolResultType.CONFIRMATION));
+                            } else {
+                                // User cancelled - return cancelled message
+                                confirmedFuture.complete(ToolResult.failure(
+                                        "Операция отменена пользователем")); //$NON-NLS-1$
+                            }
+                        } catch (Throwable t) { // NOSONAR future must complete on every runnable exit
+                            LOG.error(String.format(Locale.ROOT,
+                                    "tool confirmation failed for %s", call.getName()), t); //$NON-NLS-1$
                             confirmedFuture.complete(ToolResult.failure(
-                                    "Операция отменена пользователем")); //$NON-NLS-1$
+                                    "Ошибка подтверждения инструмента: " + call.getName())); //$NON-NLS-1$
                         }
                     });
                 }
