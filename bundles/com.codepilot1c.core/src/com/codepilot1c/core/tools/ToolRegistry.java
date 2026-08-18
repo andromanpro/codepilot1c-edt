@@ -171,6 +171,7 @@ public class ToolRegistry {
         register(new GetOneCProcessesTool());
         register(new GetInfobaseLocksTool());
         register(new QueryEventLogTool());
+        register(new ChangeScopeGuardTool());
         register(new GetStandaloneServerStatusTool());
         register(new ResolveWebClientUrlTool());
         register(new GetInfobaseCredentialsTool());
