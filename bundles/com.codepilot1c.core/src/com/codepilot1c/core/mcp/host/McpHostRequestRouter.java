@@ -369,9 +369,30 @@ public class McpHostRequestRouter {
             item.put("name", tool.getName()); //$NON-NLS-1$
             item.put("description", effectiveTool.getDescription()); //$NON-NLS-1$
             item.put("inputSchema", parseSchema(effectiveTool.getParametersSchema())); //$NON-NLS-1$
+            addToolContractMetadata(item, tool);
             out.add(item);
         }
         return out;
+    }
+
+    private void addToolContractMetadata(Map<String, Object> item, ITool tool) {
+        Map<String, Object> annotations = new LinkedHashMap<>();
+        boolean destructive = tool.isDestructive();
+        if (destructive) {
+            annotations.put("destructiveHint", Boolean.TRUE); //$NON-NLS-1$
+        }
+        Set<String> tags = tool.getTags();
+        if (!destructive && !tool.isMutating()
+                && tags != null && tags.contains("read-only")) { //$NON-NLS-1$
+            annotations.put("readOnlyHint", Boolean.TRUE); //$NON-NLS-1$
+        }
+        if (!annotations.isEmpty()) {
+            item.put("annotations", annotations); //$NON-NLS-1$
+        }
+        if (tool.requiresConfirmation()) {
+            item.put("_meta", Map.of( //$NON-NLS-1$
+                    "codepilot1c/requiresConfirmation", Boolean.TRUE)); //$NON-NLS-1$
+        }
     }
 
     private List<McpResource> listResources(McpHostSession session) {
