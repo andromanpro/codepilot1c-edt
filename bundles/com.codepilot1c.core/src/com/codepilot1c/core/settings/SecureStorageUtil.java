@@ -26,6 +26,52 @@ public final class SecureStorageUtil {
         // Utility class
     }
 
+    /** Outcome of reading an API key from secure storage. */
+    public enum ApiKeyReadStatus {
+        PRESENT,
+        ABSENT,
+        READ_FAILED
+    }
+
+    /**
+     * Result of an API-key read. A failed read is deliberately distinct from an absent key so
+     * callers cannot safely mutate configuration based on an unknown previous credential.
+     */
+    public record ApiKeyReadResult(ApiKeyReadStatus status, String value) {
+        public ApiKeyReadResult {
+            if (status == null) {
+                throw new IllegalArgumentException("status must not be null"); //$NON-NLS-1$
+            }
+            value = value != null ? value : ""; //$NON-NLS-1$
+            if (status != ApiKeyReadStatus.PRESENT && !value.isEmpty()) {
+                throw new IllegalArgumentException("only a present result may contain a value"); //$NON-NLS-1$
+            }
+        }
+
+        public static ApiKeyReadResult present(String value) {
+            if (value == null || value.isEmpty()) {
+                return absent();
+            }
+            return new ApiKeyReadResult(ApiKeyReadStatus.PRESENT, value);
+        }
+
+        public static ApiKeyReadResult absent() {
+            return new ApiKeyReadResult(ApiKeyReadStatus.ABSENT, ""); //$NON-NLS-1$
+        }
+
+        public static ApiKeyReadResult readFailed() {
+            return new ApiKeyReadResult(ApiKeyReadStatus.READ_FAILED, ""); //$NON-NLS-1$
+        }
+
+        public boolean isPresent() {
+            return status == ApiKeyReadStatus.PRESENT;
+        }
+
+        public boolean isReadFailed() {
+            return status == ApiKeyReadStatus.READ_FAILED;
+        }
+    }
+
     /**
      * Stores a value securely.
      *
@@ -110,10 +156,30 @@ public final class SecureStorageUtil {
      * Retrieves an API key from secure storage.
      *
      * @param providerId the provider ID
-     * @return the API key or empty string if not found
+     * @return a result distinguishing a present key, an absent key, and a failed read
+     */
+    public static ApiKeyReadResult readApiKey(String providerId) {
+        try {
+            ISecurePreferences root = SecurePreferencesFactory.getDefault();
+            ISecurePreferences node = root.node(SECURE_NODE_PATH);
+            String value = node.get(providerId + ".apiKey", null); //$NON-NLS-1$
+            return ApiKeyReadResult.present(value);
+        } catch (Exception e) {
+            // The caller owns sanitized, rate-limited diagnostics for provider credentials.
+            return ApiKeyReadResult.readFailed();
+        }
+    }
+
+    /**
+     * Retrieves an API key, preserving the legacy empty-string fallback for external callers.
+     * Transactional configuration code must use {@link #readApiKey(String)} instead.
+     *
+     * @param providerId the provider ID
+     * @return the API key or an empty string when absent or unreadable
      */
     public static String retrieveApiKey(String providerId) {
-        return retrieveSecurely(providerId + ".apiKey", ""); //$NON-NLS-1$ //$NON-NLS-2$
+        ApiKeyReadResult result = readApiKey(providerId);
+        return result.isPresent() ? result.value() : ""; //$NON-NLS-1$
     }
 
     /**

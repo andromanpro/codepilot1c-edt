@@ -17,6 +17,8 @@ import org.osgi.service.prefs.BackingStoreException;
 
 import com.codepilot1c.core.provider.config.LlmProviderConfigStore.ApiKeyStorage;
 import com.codepilot1c.core.provider.config.LlmProviderConfigStore.PreferenceAccess;
+import com.codepilot1c.core.settings.SecureStorageUtil.ApiKeyReadResult;
+import com.codepilot1c.core.settings.SecureStorageUtil.ApiKeyReadStatus;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.google.gson.Gson;
 
@@ -239,6 +241,94 @@ public class LlmProviderConfigStoreMigrationTest {
     }
 
     @Test
+    public void unreadableOldKeyAbortsClearReplacementTransitionAndDelete() {
+        for (CredentialOperation operation : CredentialOperation.values()) {
+            String id = "unreadable-" + operation.name().toLowerCase(); //$NON-NLS-1$
+            LlmProviderConfig original = configured(id, null);
+            FakePreferences preferences = legacyPreferences(2, original);
+            preferences.put(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, id);
+            String beforeJson = preferences.providersJson();
+            FakeApiKeyStorage storage = new FakeApiKeyStorage();
+            storage.keys.put(id, SECRET_A);
+            storage.failReads.add(id);
+            List<String> warnings = new ArrayList<>();
+            LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, warnings::add);
+
+            LlmProviderConfig changed = store.getProviders().get(0).copy();
+            switch (operation) {
+            case CLEAR:
+                changed.setApiKey(""); //$NON-NLS-1$
+                store.saveProviders(List.of(changed));
+                break;
+            case REPLACE:
+                changed.setApiKey(SECRET_B);
+                store.saveProviders(List.of(changed));
+                break;
+            case ENDPOINT:
+                changed.setBaseUrl("https://other.example/v1"); //$NON-NLS-1$
+                store.saveProviders(List.of(changed));
+                break;
+            case TYPE:
+                changed.setType(ProviderType.ANTHROPIC);
+                store.saveProviders(List.of(changed));
+                break;
+            case DELETE:
+                store.removeProvider(id);
+                break;
+            default:
+                throw new AssertionError(operation);
+            }
+
+            assertEquals(beforeJson, preferences.providersJson());
+            assertEquals(id, preferences.get(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, "")); //$NON-NLS-1$
+            assertEquals(2, preferences.getInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, -1));
+            assertEquals(SECRET_A, storage.keys.get(id));
+            assertEquals(1, warnings.size());
+
+            storage.failReads.remove(id);
+            store.refresh();
+
+            LlmProviderConfig recovered = store.getProviders().get(0);
+            assertEquals(ProviderType.OPENAI_COMPATIBLE, recovered.getType());
+            assertEquals("https://example.com/v1", recovered.getBaseUrl()); //$NON-NLS-1$
+            assertEquals(SECRET_A, recovered.getApiKey());
+            assertEquals(SECRET_A, LlmProviderConfigStore.resolveApiKey(recovered, storage));
+        }
+    }
+
+    @Test
+    public void absentOldKeyRemainsDistinctAndAllowsEndpointTransition() {
+        String id = "absent-transition"; //$NON-NLS-1$
+        FakePreferences preferences = legacyPreferences(2, configured(id, null));
+        FakeApiKeyStorage storage = new FakeApiKeyStorage();
+        LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, message -> { });
+        LlmProviderConfig changed = store.getProviders().get(0).copy();
+        changed.setBaseUrl("https://other.example/v1"); //$NON-NLS-1$
+        changed.setApiKey(""); //$NON-NLS-1$
+
+        assertEquals(ApiKeyReadStatus.ABSENT, storage.retrieveApiKey(id).status());
+        store.saveProviders(List.of(changed));
+
+        assertEquals("https://other.example/v1", store.getProviders().get(0).getBaseUrl()); //$NON-NLS-1$
+        assertTrue(preferences.providersJson().contains("https://other.example/v1")); //$NON-NLS-1$
+        assertFalse(storage.keys.containsKey(id));
+    }
+
+    @Test
+    public void unreadableStoragePreservesVersionZeroPlaintextForRetry() {
+        FakePreferences preferences = legacyPreferences(0, configured("migration-read", SECRET_A)); //$NON-NLS-1$
+        String beforeJson = preferences.providersJson();
+        FakeApiKeyStorage storage = new FakeApiKeyStorage();
+        storage.failReads.add("migration-read"); //$NON-NLS-1$
+        storage.failStores.add("migration-read"); //$NON-NLS-1$
+        LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, message -> { });
+
+        assertEquals(SECRET_A, store.getProviders().get(0).getApiKey());
+        assertEquals(beforeJson, preferences.providersJson());
+        assertEquals(0, preferences.getInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, -1));
+    }
+
+    @Test
     public void storageFailureDiagnosticsNeverContainSecretMaterial() {
         FakePreferences preferences = legacyPreferences(0, configured("diagnostic", SECRET_A)); //$NON-NLS-1$
         FakeApiKeyStorage storage = new FakeApiKeyStorage();
@@ -264,6 +354,14 @@ public class LlmProviderConfigStoreMigrationTest {
     private static LlmProviderConfig configured(String id, String apiKey) {
         return new LlmProviderConfig(id, id, ProviderType.OPENAI_COMPATIBLE,
                 "https://example.com/v1", apiKey, "model", 4096); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private enum CredentialOperation {
+        CLEAR,
+        REPLACE,
+        ENDPOINT,
+        TYPE,
+        DELETE
     }
 
     private static final class FakePreferences implements PreferenceAccess {
@@ -304,6 +402,7 @@ public class LlmProviderConfigStoreMigrationTest {
         final Map<String, String> keys = new HashMap<>();
         final Map<String, Integer> storeAttempts = new HashMap<>();
         final Set<String> failStores = new HashSet<>();
+        final Set<String> failReads = new HashSet<>();
         final List<String> removeAttempts = new ArrayList<>();
         final Set<String> failRemoves = new HashSet<>();
         RuntimeException throwOnStore;
@@ -322,8 +421,11 @@ public class LlmProviderConfigStoreMigrationTest {
         }
 
         @Override
-        public String retrieveApiKey(String providerId) {
-            return keys.getOrDefault(providerId, ""); //$NON-NLS-1$
+        public ApiKeyReadResult retrieveApiKey(String providerId) {
+            if (failReads.contains(providerId)) {
+                return ApiKeyReadResult.readFailed();
+            }
+            return ApiKeyReadResult.present(keys.get(providerId));
         }
 
         @Override

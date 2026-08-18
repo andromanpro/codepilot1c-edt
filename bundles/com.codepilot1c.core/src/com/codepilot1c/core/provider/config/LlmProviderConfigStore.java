@@ -9,6 +9,7 @@ package com.codepilot1c.core.provider.config;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,6 +25,7 @@ import org.osgi.service.prefs.BackingStoreException;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.settings.SecureStorageUtil;
+import com.codepilot1c.core.settings.SecureStorageUtil.ApiKeyReadResult;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -47,6 +49,8 @@ public class LlmProviderConfigStore {
             "Provider preferences were not saved because an API key could not be stored securely."; //$NON-NLS-1$
     private static final String DELETE_WARNING =
             "Provider was not deleted because its secure API key could not be removed."; //$NON-NLS-1$
+    private static final String READ_WARNING =
+            "Provider preferences were not saved because the previous API key could not be read securely."; //$NON-NLS-1$
     static final String RESERVED_BACKEND_PROVIDER_ID = "backend"; //$NON-NLS-1$
     private static LlmProviderConfigStore instance;
 
@@ -64,6 +68,7 @@ public class LlmProviderConfigStore {
     private List<LlmProviderConfig> cachedConfigs;
     private String cachedActiveProviderId;
     private Map<String, CredentialBinding> credentialBindings = new LinkedHashMap<>();
+    private Set<String> unsecuredPlaintextProviderIds = new HashSet<>();
     private final List<ProviderConfigChangeListener> listeners = new CopyOnWriteArrayList<>();
     private boolean migrationWarningLogged;
 
@@ -232,6 +237,7 @@ public class LlmProviderConfigStore {
         cachedConfigs = null;
         cachedActiveProviderId = null;
         credentialBindings = new LinkedHashMap<>();
+        unsecuredPlaintextProviderIds = new HashSet<>();
         loadFromPreferences();
     }
 
@@ -257,6 +263,7 @@ public class LlmProviderConfigStore {
             cachedActiveProviderId = sanitized.activeProviderId();
 
             int storedVersion = preferences.getInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, 0);
+            Set<String> plaintextProviderIds = plaintextProviderIds(loadedConfigs);
             MigrationResult migration = resolveAndMigrateKeys(loadedConfigs, storedVersion < CURRENT_CONFIG_VERSION);
             if (storedVersion < CURRENT_CONFIG_VERSION) {
                 if (migration.allPlaintextSecured()) {
@@ -270,12 +277,15 @@ public class LlmProviderConfigStore {
             }
             applyResolvedKeys(loadedConfigs, migration.resolvedKeys());
             cachedConfigs = loadedConfigs;
+            unsecuredPlaintextProviderIds = migration.unsecuredPlaintextConfigs().isEmpty()
+                    ? new HashSet<>() : plaintextProviderIds;
             rememberBindings(loadedConfigs);
         } catch (Exception e) {
             warningSink.warn("Failed to parse provider configs; using an empty configuration."); //$NON-NLS-1$
             cachedConfigs = new ArrayList<>();
             cachedActiveProviderId = preferences.get(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, ""); //$NON-NLS-1$
             credentialBindings = new LinkedHashMap<>();
+            unsecuredPlaintextProviderIds = new HashSet<>();
         }
     }
 
@@ -313,17 +323,26 @@ public class LlmProviderConfigStore {
         List<LlmProviderConfig> candidate = copies(candidateConfigs);
         Map<String, LlmProviderConfig> currentById = byId(cachedConfigs);
         List<KeyMutation> mutations = new ArrayList<>();
-        Set<String> candidateIds = new java.util.HashSet<>();
+        Set<String> candidateIds = new HashSet<>();
 
         for (LlmProviderConfig config : candidate) {
             candidateIds.add(config.getId());
             LlmProviderConfig current = currentById.get(config.getId());
-            String before = safeRetrieveApiKey(config.getId());
-            String oldEffective = !before.isEmpty() ? before
+            ApiKeyReadResult beforeRead = safeRetrieveApiKey(config.getId());
+            String before = beforeRead.value();
+            String oldEffective = beforeRead.isPresent() ? before
                     : current != null && current.getApiKey() != null ? current.getApiKey() : ""; //$NON-NLS-1$
             CredentialBinding binding = credentialBindings.get(config.getId());
             boolean transitioned = binding != null && !binding.matches(config);
             String incoming = config.getApiKey();
+            boolean credentialChangeRequested = current == null
+                    || transitioned
+                    || incoming != null && !Objects.equals(incoming, current.getApiKey())
+                    || unsecuredPlaintextProviderIds.contains(config.getId());
+            if (beforeRead.isReadFailed() && credentialChangeRequested) {
+                warningSink.warn(READ_WARNING);
+                return false;
+            }
             String desired;
             if (config.getType() == null || !config.getType().requiresStaticApiKey()) {
                 desired = ""; //$NON-NLS-1$
@@ -336,13 +355,18 @@ public class LlmProviderConfigStore {
                 desired = incoming == null ? oldEffective : incoming;
             }
             config.setApiKey(desired);
-            if (!before.equals(desired)) {
+            if (!beforeRead.isReadFailed() && !before.equals(desired)) {
                 mutations.add(new KeyMutation(config.getId(), before, desired));
             }
         }
         for (LlmProviderConfig current : currentById.values()) {
             if (!candidateIds.contains(current.getId())) {
-                String before = safeRetrieveApiKey(current.getId());
+                ApiKeyReadResult beforeRead = safeRetrieveApiKey(current.getId());
+                if (beforeRead.isReadFailed()) {
+                    warningSink.warn(READ_WARNING);
+                    return false;
+                }
+                String before = beforeRead.value();
                 if (!before.isEmpty()) {
                     mutations.add(new KeyMutation(current.getId(), before, "")); //$NON-NLS-1$
                 }
@@ -367,6 +391,7 @@ public class LlmProviderConfigStore {
         }
         cachedConfigs = candidate;
         cachedActiveProviderId = candidateActiveId != null ? candidateActiveId : ""; //$NON-NLS-1$
+        unsecuredPlaintextProviderIds = new HashSet<>();
         rememberBindings(candidate);
         notifyListeners();
         return true;
@@ -435,6 +460,16 @@ public class LlmProviderConfigStore {
         return result;
     }
 
+    private static Set<String> plaintextProviderIds(List<LlmProviderConfig> configs) {
+        Set<String> result = new HashSet<>();
+        for (LlmProviderConfig config : configs) {
+            if (config.getApiKey() != null && !config.getApiKey().isEmpty()) {
+                result.add(config.getId());
+            }
+        }
+        return result;
+    }
+
     private void notifyListeners() {
         for (ProviderConfigChangeListener listener : listeners) {
             try {
@@ -454,11 +489,13 @@ public class LlmProviderConfigStore {
         for (LlmProviderConfig config : configs) {
             String plaintext = config.getApiKey();
             boolean hasPlaintext = plaintext != null && !plaintext.isEmpty();
+            ApiKeyReadResult secureRead;
             String secureKey = ""; //$NON-NLS-1$
 
             if (config.getType() == null || !config.getType().requiresStaticApiKey()) {
-                secureKey = safeRetrieveApiKey(config.getId());
-                boolean removed = secureKey.isEmpty() || safeRemoveApiKey(config.getId());
+                secureRead = safeRetrieveApiKey(config.getId());
+                boolean removed = !secureRead.isReadFailed()
+                        && (!secureRead.isPresent() || safeRemoveApiKey(config.getId()));
                 if (hasPlaintext) {
                     if (removed) securedPlaintext.add(config);
                     else unsecuredPlaintext.add(config);
@@ -466,6 +503,9 @@ public class LlmProviderConfigStore {
                 if (!removed) {
                     allPlaintextSecured = false;
                     warnMigrationOnce();
+                }
+                if (secureRead.isReadFailed()) {
+                    allPlaintextSecured = false;
                 }
                 resolved.put(config, ""); //$NON-NLS-1$
                 continue;
@@ -478,12 +518,15 @@ public class LlmProviderConfigStore {
                 } else {
                     allPlaintextSecured = false;
                     unsecuredPlaintext.add(config);
-                    secureKey = safeRetrieveApiKey(config.getId());
+                    secureRead = safeRetrieveApiKey(config.getId());
+                    secureKey = secureRead.isPresent() ? secureRead.value() : ""; //$NON-NLS-1$
                 }
             } else {
-                secureKey = safeRetrieveApiKey(config.getId());
+                secureRead = safeRetrieveApiKey(config.getId());
+                secureKey = secureRead.isPresent() ? secureRead.value() : ""; //$NON-NLS-1$
                 if (hasPlaintext) {
-                    if (!secureKey.isEmpty() || safeStoreApiKey(config.getId(), plaintext)) {
+                    if (secureRead.isPresent()
+                            || !secureRead.isReadFailed() && safeStoreApiKey(config.getId(), plaintext)) {
                         securedPlaintext.add(config);
                         if (secureKey.isEmpty()) {
                             secureKey = plaintext;
@@ -493,6 +536,9 @@ public class LlmProviderConfigStore {
                         unsecuredPlaintext.add(config);
                         warnMigrationOnce();
                     }
+                } else if (forceLegacyWrites && secureRead.isReadFailed()) {
+                    allPlaintextSecured = false;
+                    warnMigrationOnce();
                 }
             }
 
@@ -507,15 +553,15 @@ public class LlmProviderConfigStore {
         }
     }
 
-    private String safeRetrieveApiKey(String providerId) {
+    private ApiKeyReadResult safeRetrieveApiKey(String providerId) {
         if (providerId == null || providerId.isEmpty()) {
-            return ""; //$NON-NLS-1$
+            return ApiKeyReadResult.absent();
         }
         try {
-            String value = apiKeyStorage.retrieveApiKey(providerId);
-            return value != null ? value : ""; //$NON-NLS-1$
+            ApiKeyReadResult result = apiKeyStorage.retrieveApiKey(providerId);
+            return result != null ? result : ApiKeyReadResult.readFailed();
         } catch (RuntimeException e) {
-            return ""; //$NON-NLS-1$
+            return ApiKeyReadResult.readFailed();
         }
     }
 
@@ -595,19 +641,21 @@ public class LlmProviderConfigStore {
         }
         String providerId = config.getId();
         String plaintext = config.getApiKey();
-        String secureKey = ""; //$NON-NLS-1$
+        ApiKeyReadResult secureRead = ApiKeyReadResult.absent();
         if (providerId != null && !providerId.isEmpty()) {
             try {
-                String stored = storage.retrieveApiKey(providerId);
-                secureKey = stored != null ? stored : ""; //$NON-NLS-1$
+                ApiKeyReadResult stored = storage.retrieveApiKey(providerId);
+                secureRead = stored != null ? stored : ApiKeyReadResult.readFailed();
             } catch (RuntimeException e) {
-                secureKey = ""; //$NON-NLS-1$
+                secureRead = ApiKeyReadResult.readFailed();
             }
         }
-        if (!secureKey.isEmpty()) {
-            return secureKey;
+        if (secureRead.isPresent()) {
+            return secureRead.value();
         }
-        if (plaintext != null && !plaintext.isEmpty() && providerId != null && !providerId.isEmpty()) {
+        if (!secureRead.isReadFailed()
+                && plaintext != null && !plaintext.isEmpty()
+                && providerId != null && !providerId.isEmpty()) {
             try {
                 storage.storeApiKey(providerId, plaintext);
             } catch (RuntimeException e) {
@@ -632,7 +680,7 @@ public class LlmProviderConfigStore {
     interface ApiKeyStorage {
         boolean storeApiKey(String providerId, String apiKey);
 
-        String retrieveApiKey(String providerId);
+        ApiKeyReadResult retrieveApiKey(String providerId);
 
         boolean removeApiKey(String providerId);
     }
@@ -678,8 +726,8 @@ public class LlmProviderConfigStore {
         }
 
         @Override
-        public String retrieveApiKey(String providerId) {
-            return SecureStorageUtil.retrieveApiKey(providerId);
+        public ApiKeyReadResult retrieveApiKey(String providerId) {
+            return SecureStorageUtil.readApiKey(providerId);
         }
 
         @Override
