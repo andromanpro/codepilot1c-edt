@@ -3,8 +3,8 @@ package com.codepilot1c.cli.command;
 
 import java.util.Map;
 
-import com.codepilot1c.cli.output.JsonWriter;
-import com.codepilot1c.cli.output.OutputMode;
+import com.codepilot1c.cli.render.JsonWriter;
+import com.codepilot1c.cli.render.OutputMode;
 
 final class CommandOutput {
     private CommandOutput() { }

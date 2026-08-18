@@ -5,7 +5,7 @@ import java.util.concurrent.Callable;
 
 import com.codepilot1c.cli.CliServices;
 import com.codepilot1c.cli.ExitCodes;
-import com.codepilot1c.cli.output.OutputMode;
+import com.codepilot1c.cli.render.OutputMode;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
