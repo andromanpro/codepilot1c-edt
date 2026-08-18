@@ -114,6 +114,8 @@ public final class VibePreferenceConstants {
     public static final String PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION =
         "mcp.host.policy.defaultMutationDecision"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_POLICY_EXPOSED_TOOLS = "mcp.host.policy.exposedTools"; //$NON-NLS-1$
+    public static final String PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS =
+        "mcp.host.session.idleTimeoutSeconds"; //$NON-NLS-1$
 
     // Feature flags
     /** Feature flag: enable LLM-based history compaction instead of lossy truncation. */

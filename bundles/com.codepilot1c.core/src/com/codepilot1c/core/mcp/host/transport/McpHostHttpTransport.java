@@ -5,11 +5,19 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
@@ -41,20 +49,44 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     private final McpHostOAuthService oauthService;
     private final McpHostRequestRouter router;
     private final com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode;
+    private final Duration sessionIdleTimeout;
+    private final Clock clock;
     private final Gson gson = new Gson();
     private final Map<String, McpHostSession> sessions = new ConcurrentHashMap<>();
     private final RemoteWebController remoteWebController;
 
     private HttpServer server;
+    private ScheduledExecutorService sessionCleanupExecutor;
     private volatile boolean running;
 
     public McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
             McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode) {
+        this(bindAddress, port, oauthService, router, authMode,
+                Duration.ofSeconds(com.codepilot1c.core.mcp.host.McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS));
+    }
+
+    /**
+     * Creates a transport with a bounded lifetime for inactive HTTP sessions.
+     */
+    public McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
+            McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
+            Duration sessionIdleTimeout) {
+        this(bindAddress, port, oauthService, router, authMode, sessionIdleTimeout, Clock.systemUTC());
+    }
+
+    McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
+            McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
+            Duration sessionIdleTimeout, Clock clock) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.oauthService = oauthService;
         this.router = router;
         this.authMode = authMode != null ? authMode : com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode.OAUTH_OR_BEARER;
+        this.sessionIdleTimeout = sessionIdleTimeout != null && !sessionIdleTimeout.isZero()
+                && !sessionIdleTimeout.isNegative()
+            ? sessionIdleTimeout
+            : Duration.ofSeconds(com.codepilot1c.core.mcp.host.McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS);
+        this.clock = clock != null ? clock : Clock.systemUTC();
         this.remoteWebController = new RemoteWebController(oauthService, this.authMode, AgentSessionController.getInstance());
     }
 
@@ -87,6 +119,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
             server.start();
             running = true;
+            startSessionCleanup();
             LOG.info("MCP host HTTP transport started on %s:%d", bindAddress, Integer.valueOf(port)); //$NON-NLS-1$
         } catch (IOException e) {
             throw new IllegalStateException("Failed to start MCP host HTTP transport", e); //$NON-NLS-1$
@@ -99,6 +132,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             return;
         }
         running = false;
+        stopSessionCleanup();
         if (server != null) {
             server.stop(0);
             server = null;
@@ -119,6 +153,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     }
 
     public List<McpHostSession> getSessionsSnapshot() {
+        cleanupInactiveSessions();
         return new ArrayList<>(sessions.values());
     }
 
@@ -148,10 +183,14 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             try {
                 String requestMethod = exchange.getRequestMethod();
                 if ("GET".equalsIgnoreCase(requestMethod) && acceptsSse(exchange)) { //$NON-NLS-1$
+                    if (!hasSupportedProtocolVersion(exchange)) {
+                        writeUnsupportedProtocolVersion(exchange);
+                        return;
+                    }
                     writeSseReady(exchange);
                     return;
                 }
-                if (!"POST".equalsIgnoreCase(requestMethod)) { //$NON-NLS-1$
+                if (!"POST".equalsIgnoreCase(requestMethod) && !"DELETE".equalsIgnoreCase(requestMethod)) { //$NON-NLS-1$ //$NON-NLS-2$
                     writeJson(exchange, 405, Map.of("error", "method_not_allowed")); //$NON-NLS-1$ //$NON-NLS-2$
                     return;
                 }
@@ -162,6 +201,16 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                         "error_description", "Bearer token is missing, invalid or expired")); //$NON-NLS-1$ //$NON-NLS-2$
                     return;
                 }
+                if (!hasSupportedProtocolVersion(exchange)) {
+                    writeUnsupportedProtocolVersion(exchange);
+                    return;
+                }
+
+                cleanupInactiveSessions();
+                if ("DELETE".equalsIgnoreCase(requestMethod)) { //$NON-NLS-1$
+                    deleteSession(exchange);
+                    return;
+                }
 
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 McpMessage request = gson.fromJson(body, McpMessage.class);
@@ -169,42 +218,53 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                 McpHostSession session;
                 String responseSessionId;
                 if (requestedSessionId != null && !requestedSessionId.isBlank()) {
-                    session = sessions.computeIfAbsent(requestedSessionId, id -> createSession(id, exchange));
+                    session = sessions.get(requestedSessionId);
+                    if (session == null) {
+                        writeJson(exchange, 404, Map.of("error", "session_not_found")); //$NON-NLS-1$ //$NON-NLS-2$
+                        return;
+                    }
                     responseSessionId = requestedSessionId;
                 } else {
                     session = createSession(null, exchange);
                     responseSessionId = session.getSessionId();
-                    sessions.put(responseSessionId, session);
+                    sessions.putIfAbsent(responseSessionId, session);
                 }
-                updateSessionRequestMetadata(session, exchange);
-                exchange.getResponseHeaders().add("Mcp-Session-Id", responseSessionId); //$NON-NLS-1$
-                McpMessage response = router.route(request, session);
-                if (request != null && request.isNotification()) {
-                    // JSON-RPC notifications must not produce a response message body.
-                    exchange.sendResponseHeaders(202, -1);
-                    return;
-                }
-                String json = gson.toJson(response);
-                String accept = exchange.getRequestHeaders().getFirst("Accept"); //$NON-NLS-1$
-                boolean wantsSse = accept != null && accept.contains("text/event-stream"); //$NON-NLS-1$
-                boolean initializeRequest = request != null && "initialize".equals(request.getMethod()); //$NON-NLS-1$
+                synchronized (session) {
+                    // A DELETE or TTL cleanup may have removed the session after get().
+                    if (sessions.get(responseSessionId) != session) {
+                        writeJson(exchange, 404, Map.of("error", "session_not_found")); //$NON-NLS-1$ //$NON-NLS-2$
+                        return;
+                    }
+                    updateSessionRequestMetadata(session, exchange);
+                    exchange.getResponseHeaders().add("Mcp-Session-Id", responseSessionId); //$NON-NLS-1$
+                    McpMessage response = router.route(request, session);
+                    if (request != null && request.isNotification()) {
+                        // JSON-RPC notifications must not produce a response message body.
+                        exchange.sendResponseHeaders(202, -1);
+                        return;
+                    }
+                    String json = gson.toJson(response);
+                    String accept = exchange.getRequestHeaders().getFirst("Accept"); //$NON-NLS-1$
+                    boolean wantsSse = accept != null && accept.contains("text/event-stream"); //$NON-NLS-1$
+                    boolean initializeRequest = request != null && "initialize".equals(request.getMethod()); //$NON-NLS-1$
 
-                byte[] bytes;
-                if (wantsSse && !initializeRequest) {
-                    // Keep SSE framing for streamable-http clients.
-                    // Initialize remains plain JSON because some clients (Codex MCP)
-                    // reject SSE-framed initialize responses.
-                    String sse = "event: message\n" //$NON-NLS-1$
-                            + "data: " + json + "\n\n"; //$NON-NLS-1$ //$NON-NLS-2$
-                    exchange.getResponseHeaders().add("Content-Type", "text/event-stream"); //$NON-NLS-1$ //$NON-NLS-2$
-                    bytes = sse.getBytes(StandardCharsets.UTF_8);
-                } else {
-                    exchange.getResponseHeaders().add("Content-Type", "application/json"); //$NON-NLS-1$ //$NON-NLS-2$
-                    bytes = json.getBytes(StandardCharsets.UTF_8);
-                }
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(bytes);
+                    byte[] bytes;
+                    if (wantsSse && !initializeRequest) {
+                        // Keep SSE framing for streamable-http clients.
+                        // Initialize remains plain JSON because some clients (Codex MCP)
+                        // reject SSE-framed initialize responses.
+                        String sse = "event: message\n" //$NON-NLS-1$
+                                + "data: " + json + "\n\n"; //$NON-NLS-1$ //$NON-NLS-2$
+                        exchange.getResponseHeaders().add("Content-Type", "text/event-stream"); //$NON-NLS-1$ //$NON-NLS-2$
+                        bytes = sse.getBytes(StandardCharsets.UTF_8);
+                    } else {
+                        exchange.getResponseHeaders().add("Content-Type", "application/json"); //$NON-NLS-1$ //$NON-NLS-2$
+                        bytes = json.getBytes(StandardCharsets.UTF_8);
+                    }
+                    exchange.sendResponseHeaders(200, bytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(bytes);
+                    }
                 }
             } catch (JsonSyntaxException e) {
                 McpMessage error = new McpMessage();
@@ -301,8 +361,86 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         return accept != null && accept.contains("text/event-stream"); //$NON-NLS-1$
     }
 
+    private boolean hasSupportedProtocolVersion(HttpExchange exchange) {
+        String protocolVersion = exchange.getRequestHeaders().getFirst("MCP-Protocol-Version"); //$NON-NLS-1$
+        return protocolVersion == null || protocolVersion.isBlank()
+            || McpHostRequestRouter.isSupportedProtocolVersion(protocolVersion);
+    }
+
+    private void writeUnsupportedProtocolVersion(HttpExchange exchange) throws IOException {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("error", "unsupported_protocol_version"); //$NON-NLS-1$ //$NON-NLS-2$
+        error.put("message", "Unsupported MCP-Protocol-Version"); //$NON-NLS-1$ //$NON-NLS-2$
+        error.put("supported", McpHostRequestRouter.supportedProtocolVersions()); //$NON-NLS-1$
+        writeJson(exchange, 400, error);
+    }
+
+    private void deleteSession(HttpExchange exchange) throws IOException {
+        String sessionId = exchange.getRequestHeaders().getFirst("Mcp-Session-Id"); //$NON-NLS-1$
+        if (sessionId == null || sessionId.isBlank()) {
+            writeJson(exchange, 400, Map.of("error", "missing_session_id")); //$NON-NLS-1$ //$NON-NLS-2$
+            return;
+        }
+        McpHostSession session = sessions.get(sessionId);
+        if (session == null) {
+            writeJson(exchange, 404, Map.of("error", "session_not_found")); //$NON-NLS-1$ //$NON-NLS-2$
+            return;
+        }
+        synchronized (session) {
+            if (!sessions.remove(sessionId, session)) {
+                writeJson(exchange, 404, Map.of("error", "session_not_found")); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
+            closeTraceSession(session);
+        }
+        exchange.sendResponseHeaders(204, -1);
+        exchange.close();
+    }
+
+    private synchronized void startSessionCleanup() {
+        if (sessionCleanupExecutor != null) {
+            return;
+        }
+        ThreadFactory threadFactory = runnable -> {
+            Thread thread = new Thread(runnable, "mcp-session-cleanup"); //$NON-NLS-1$
+            thread.setDaemon(true);
+            return thread;
+        };
+        sessionCleanupExecutor = Executors.newSingleThreadScheduledExecutor(threadFactory);
+        long intervalMillis = Math.max(10L, sessionIdleTimeout.toMillis() / 2L);
+        sessionCleanupExecutor.scheduleWithFixedDelay(this::cleanupInactiveSessions,
+                intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void stopSessionCleanup() {
+        if (sessionCleanupExecutor != null) {
+            sessionCleanupExecutor.shutdownNow();
+            sessionCleanupExecutor = null;
+        }
+    }
+
+    void cleanupInactiveSessions() {
+        Instant cutoff = clock.instant().minus(sessionIdleTimeout);
+        for (Map.Entry<String, McpHostSession> entry : sessions.entrySet()) {
+            McpHostSession session = entry.getValue();
+            Instant observedActivity = session.getLastActivityAt();
+            long observedActivityVersion = session.getActivityVersion();
+            if (observedActivity.isAfter(cutoff)) {
+                continue;
+            }
+            synchronized (session) {
+                // A touch after this pass observed the session wins over expiry.
+                if (observedActivityVersion == session.getActivityVersion()
+                        && observedActivity.equals(session.getLastActivityAt())
+                        && sessions.remove(entry.getKey(), session)) {
+                    closeTraceSession(session);
+                }
+            }
+        }
+    }
+
     private McpHostSession createSession(String sessionId, HttpExchange exchange) {
-        McpHostSession session = sessionId != null ? new McpHostSession(sessionId) : new McpHostSession();
+        McpHostSession session = new McpHostSession(sessionId, clock);
         session.setTransport("http"); //$NON-NLS-1$
         session.setRemoteAddress(exchange != null && exchange.getRemoteAddress() != null
                 ? String.valueOf(exchange.getRemoteAddress())
@@ -332,6 +470,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         }
         session.setLastRequestPath(exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : null);
         session.setRemoteAddress(exchange.getRemoteAddress() != null ? String.valueOf(exchange.getRemoteAddress()) : null);
+        session.touch();
         session.incrementRequestCount();
     }
 

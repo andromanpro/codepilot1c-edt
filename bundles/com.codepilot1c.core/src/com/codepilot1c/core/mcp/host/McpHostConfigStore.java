@@ -39,6 +39,9 @@ public class McpHostConfigStore {
         cfg.setExposedToolsFilter(prefs.get(
             VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS,
             cfg.getExposedToolsFilter()));
+        cfg.setSessionIdleTimeoutSeconds(prefs.getInt(
+            VibePreferenceConstants.PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS,
+            cfg.getSessionIdleTimeoutSeconds()));
 
         String token = SecureStorageUtil.retrieveSecurely(TOKEN_SECURE_KEY, ""); //$NON-NLS-1$
         if (token.isBlank()) {
@@ -93,6 +96,15 @@ public class McpHostConfigStore {
             cfg.setExposedToolsFilter(exposedTools.trim());
         }
 
+        String sessionIdleTimeout = System.getProperty("codepilot.mcp.host.session.idleTimeoutSeconds"); //$NON-NLS-1$
+        if (sessionIdleTimeout != null && !sessionIdleTimeout.isBlank()) {
+            try {
+                cfg.setSessionIdleTimeoutSeconds(Integer.parseInt(sessionIdleTimeout.trim()));
+            } catch (NumberFormatException ignored) {
+                // keep preference value
+            }
+        }
+
         String bearer = System.getProperty("codepilot.mcp.host.http.bearerToken"); //$NON-NLS-1$
         if (bearer != null && !bearer.isBlank()) {
             cfg.setBearerToken(bearer.trim());
@@ -112,6 +124,8 @@ public class McpHostConfigStore {
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, cfg.getExposedToolsFilter());
+        prefs.putInt(VibePreferenceConstants.PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS,
+            cfg.getSessionIdleTimeoutSeconds());
         SecureStorageUtil.storeSecurely(TOKEN_SECURE_KEY, cfg.getBearerToken());
 
         try {

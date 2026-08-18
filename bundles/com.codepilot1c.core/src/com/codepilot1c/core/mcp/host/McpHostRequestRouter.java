@@ -292,10 +292,24 @@ public class McpHostRequestRouter {
     }
 
     private String negotiateProtocol(String requested) {
-        if (requested != null && SUPPORTED_PROTOCOLS.contains(requested)) {
+        if (isSupportedProtocolVersion(requested)) {
             return requested;
         }
         return SUPPORTED_PROTOCOLS.get(0);
+    }
+
+    /**
+     * Returns whether an MCP protocol version can be negotiated by this host.
+     */
+    public static boolean isSupportedProtocolVersion(String protocolVersion) {
+        return protocolVersion != null && SUPPORTED_PROTOCOLS.contains(protocolVersion);
+    }
+
+    /**
+     * Returns the versions accepted by the streamable HTTP transport.
+     */
+    public static List<String> supportedProtocolVersions() {
+        return SUPPORTED_PROTOCOLS;
     }
 
     @SuppressWarnings("unchecked")

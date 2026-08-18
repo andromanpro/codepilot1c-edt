@@ -1,5 +1,6 @@
 package com.codepilot1c.core.mcp.host;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +64,8 @@ public class McpHostServer implements IMcpHostServer {
                 config.getPort(),
                 oauthService,
                 router,
-                config.getAuthMode()
+                config.getAuthMode(),
+                Duration.ofSeconds(config.getSessionIdleTimeoutSeconds())
             );
             httpTransport.start();
         }
