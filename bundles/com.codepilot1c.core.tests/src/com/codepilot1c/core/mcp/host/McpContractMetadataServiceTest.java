@@ -28,12 +28,9 @@ public class McpContractMetadataServiceTest {
         assertEquals("/workspace", codepilot.get("workspace")); //$NON-NLS-1$
 
         @SuppressWarnings("unchecked")
-        Map<String, String> services = (Map<String, String>) ((Map<String, Object>) codepilot.get("readiness")).get("services"); //$NON-NLS-1$
-        assertEquals(Map.of("mcp", "ready", "edt", "ready"), services); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        assertEquals(java.util.List.of("ready"), ((Map<String, Object>) codepilot.get("readiness")).get("projects")); //$NON-NLS-1$
-
-        @SuppressWarnings("unchecked")
         Map<String, Object> readiness = (Map<String, Object>) codepilot.get("readiness"); //$NON-NLS-1$
+        assertEquals("ready", readiness.get("services")); //$NON-NLS-1$
+        assertEquals(java.util.List.of(), readiness.get("projects")); //$NON-NLS-1$
         assertEquals("ready", readiness.get("status")); //$NON-NLS-1$
         assertEquals(Boolean.TRUE, readiness.get("ready")); //$NON-NLS-1$
         assertFalse(readiness.containsKey("reason")); //$NON-NLS-1$
@@ -54,18 +51,30 @@ public class McpContractMetadataServiceTest {
         Map<String, Object> codepilot = (Map<String, Object>) service.experimentalMetadata().get("codepilot"); //$NON-NLS-1$
         @SuppressWarnings("unchecked")
         Map<String, Object> readinessMetadata = (Map<String, Object>) codepilot.get("readiness"); //$NON-NLS-1$
-        assertEquals(Map.of("mcp", "ready", "edt", "degraded"), readinessMetadata.get("services")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        assertEquals(java.util.List.of("degraded"), readinessMetadata.get("projects")); //$NON-NLS-1$
+        assertEquals("degraded", readinessMetadata.get("services")); //$NON-NLS-1$
+        assertEquals(java.util.List.of(), readinessMetadata.get("projects")); //$NON-NLS-1$
         assertTrue(health.keySet().containsAll(java.util.List.of("status", "ready", "reason"))); //$NON-NLS-1$
     }
 
     @Test
     public void readinessStatesAreLimitedToApprovedEnums() {
-        assertEquals(Map.of("mcp", "ready", "edt", "starting"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("starting", //$NON-NLS-1$
                 McpReadiness.starting("EDT is starting").services()); //$NON-NLS-1$
-        assertEquals(java.util.List.of("starting"), McpReadiness.starting("EDT is starting").projects()); //$NON-NLS-1$
-        assertEquals(Map.of("mcp", "ready", "edt", "ready"), McpReadiness.available().services()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        assertEquals(java.util.List.of("ready"), McpReadiness.available().projects()); //$NON-NLS-1$
+        assertEquals("ready", McpReadiness.available().services()); //$NON-NLS-1$
+        assertEquals(java.util.List.of(), McpReadiness.available().projects());
+
+        ProjectReadiness project = new ProjectReadiness("Demo", "imported"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(Map.of("name", "Demo", "state", "imported"), project.asMap()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        McpReadiness projectReadiness = new McpReadiness(true, "", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                java.util.List.of(
+                        new ProjectReadiness("Imported", "imported"), //$NON-NLS-1$ //$NON-NLS-2$
+                        new ProjectReadiness("Building", "building"), //$NON-NLS-1$ //$NON-NLS-2$
+                        new ProjectReadiness("Ready", "ready"))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(java.util.List.of(
+                Map.of("name", "Imported", "state", "imported"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                Map.of("name", "Building", "state", "building"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                Map.of("name", "Ready", "state", "ready")), //$NON-NLS-1$ //$NON-NLS-2$
+                projectReadiness.asMetadata().get("projects")); //$NON-NLS-1$
     }
 
     @Test
@@ -113,17 +122,27 @@ public class McpContractMetadataServiceTest {
 
     @Test
     public void defaultRuntimeModeUsesExplicitHeadlessSignal() {
-        String previous = System.getProperty("codepilot.headless"); //$NON-NLS-1$
+        String previousHeadless = System.getProperty("codepilot1c.headless"); //$NON-NLS-1$
+        String previousApplication = System.getProperty("eclipse.application"); //$NON-NLS-1$
         try {
-            System.clearProperty("codepilot.headless"); //$NON-NLS-1$
+            System.clearProperty("codepilot1c.headless"); //$NON-NLS-1$
+            System.clearProperty("eclipse.application"); //$NON-NLS-1$
             assertEquals("gui", new DefaultMcpRuntimeInfoGateway().mode()); //$NON-NLS-1$
-            System.setProperty("codepilot.headless", "true"); //$NON-NLS-1$ //$NON-NLS-2$
+            System.setProperty("codepilot1c.headless", "true"); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals("headless", new DefaultMcpRuntimeInfoGateway().mode()); //$NON-NLS-1$
+            System.clearProperty("codepilot1c.headless"); //$NON-NLS-1$
+            System.setProperty("eclipse.application", "com.codepilot1c.core.headless"); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals("headless", new DefaultMcpRuntimeInfoGateway().mode()); //$NON-NLS-1$
         } finally {
-            if (previous == null) {
-                System.clearProperty("codepilot.headless"); //$NON-NLS-1$
+            if (previousHeadless == null) {
+                System.clearProperty("codepilot1c.headless"); //$NON-NLS-1$
             } else {
-                System.setProperty("codepilot.headless", previous); //$NON-NLS-1$
+                System.setProperty("codepilot1c.headless", previousHeadless); //$NON-NLS-1$
+            }
+            if (previousApplication == null) {
+                System.clearProperty("eclipse.application"); //$NON-NLS-1$
+            } else {
+                System.setProperty("eclipse.application", previousApplication); //$NON-NLS-1$
             }
         }
     }

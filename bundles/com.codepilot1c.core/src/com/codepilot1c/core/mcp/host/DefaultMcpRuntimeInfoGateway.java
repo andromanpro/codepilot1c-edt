@@ -54,9 +54,14 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
 
     @Override
     public String mode() {
-        return Boolean.parseBoolean(System.getProperty("codepilot.headless", "false")) //$NON-NLS-1$ //$NON-NLS-2$
+        return isHeadless()
             ? "headless" //$NON-NLS-1$
             : "gui"; //$NON-NLS-1$
+    }
+
+    private boolean isHeadless() {
+        return Boolean.parseBoolean(System.getProperty("codepilot1c.headless", "false")) //$NON-NLS-1$ //$NON-NLS-2$
+                || "com.codepilot1c.core.headless".equals(System.getProperty("eclipse.application")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Override
