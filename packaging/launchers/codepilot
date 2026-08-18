@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+# CodePilot distribution launcher for Linux and macOS.
+# Keep CODEPILOT_JAVA as a single executable path; arguments belong in the CLI
+# invocation, not in an environment variable. This intentionally never uses
+# eval or a shell command string.
+set -eu
+
+script_path=$0
+link_count=0
+while [ -L "$script_path" ]; do
+    link_count=$((link_count + 1))
+    if [ "$link_count" -gt 40 ]; then
+        echo "codepilot: too many symlink hops" >&2
+        exit 64
+    fi
+    link_target=$(readlink "$script_path")
+    case "$link_target" in
+        /*) script_path=$link_target ;;
+        *) script_path=$(dirname "$script_path")/$link_target ;;
+    esac
+done
+
+script_dir=$(CDPATH= cd "$(dirname "$script_path")" && pwd -P)
+jar="$script_dir/../lib/codepilot-cli.jar"
+if [ ! -f "$jar" ]; then
+    echo "codepilot: distribution jar not found: $jar" >&2
+    exit 64
+fi
+
+if [ -n "${CODEPILOT_JAVA:-}" ]; then
+    java_command=$CODEPILOT_JAVA
+elif [ -n "${JAVA_HOME:-}" ]; then
+    java_command=$JAVA_HOME/bin/java
+else
+    java_command=java
+fi
+
+if [ "$java_command" != "java" ] && [ ! -x "$java_command" ]; then
+    echo "codepilot: Java executable is not executable: $java_command" >&2
+    exit 64
+fi
+
+exec "$java_command" -jar "$jar" "$@"

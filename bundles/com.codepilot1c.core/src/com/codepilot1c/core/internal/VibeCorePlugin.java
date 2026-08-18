@@ -143,14 +143,17 @@ public class VibeCorePlugin extends Plugin {
             }
         });
 
-        // Start inbound MCP host (for external clients) if enabled.
-        CompletableFuture.runAsync(() -> {
-            try {
-                McpHostManager.getInstance().startIfEnabled();
-            } catch (Exception e) {
-                vibeLogger.error("Core", "Failed to start MCP host", e); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-        });
+        // The official headless application owns its host lease. GUI startup keeps using the
+        // existing UI startup path, while core remains the lifecycle owner for shutdown.
+        if (!isHeadlessApplication()) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    McpHostManager.getInstance().startIfEnabled();
+                } catch (Exception e) {
+                    vibeLogger.error("Core", "Failed to start MCP host", e); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+            });
+        }
 
         // EDT runtime services for AST/BM integrations.
         configurationProviderTracker = new ServiceTracker<>(context, IConfigurationProvider.class, null);
@@ -313,6 +316,20 @@ public class VibeCorePlugin extends Plugin {
      */
     public static VibeCorePlugin getDefault() {
         return plugin;
+    }
+
+    /** Starts the existing MCP host through the core plug-in lifecycle for the headless app. */
+    public static McpHostManager.ApplicationHostLease startHeadlessMcpHost() {
+        if (plugin == null) {
+            throw new IllegalStateException("Core plug-in is not active"); //$NON-NLS-1$
+        }
+        return McpHostManager.getInstance().startForApplication();
+    }
+
+    private static boolean isHeadlessApplication() {
+        return Boolean.parseBoolean(System.getProperty(HeadlessModeSignal.HEADLESS_PROPERTY, "false")) //$NON-NLS-1$
+                || HeadlessModeSignal.APPLICATION_ID.equals(
+                        System.getProperty(HeadlessModeSignal.ECLIPSE_APPLICATION_PROPERTY));
     }
 
     /**

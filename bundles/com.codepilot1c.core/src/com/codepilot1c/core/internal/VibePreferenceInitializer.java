@@ -88,6 +88,8 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION,
             McpHostConfig.MutationPolicy.ALLOW.name());
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, "*"); //$NON-NLS-1$
+        defaults.putInt(VibePreferenceConstants.PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS,
+            McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS);
 
         // Completion/review are not part of OSS edition; their preferences are not initialized here.
         

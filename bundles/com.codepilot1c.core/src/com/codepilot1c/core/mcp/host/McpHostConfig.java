@@ -9,6 +9,8 @@ import java.util.Random;
  */
 public class McpHostConfig {
 
+    public static final int DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60;
+
     public enum AuthMode {
         OAUTH_OR_BEARER,
         OAUTH_ONLY,
@@ -53,6 +55,7 @@ public class McpHostConfig {
     private MutationPolicy mutationPolicy;
     private String sessionProfileId;
     private String exposedToolsFilter;
+    private int sessionIdleTimeoutSeconds;
 
     public static McpHostConfig defaults() {
         McpHostConfig cfg = new McpHostConfig();
@@ -65,6 +68,7 @@ public class McpHostConfig {
         cfg.mutationPolicy = MutationPolicy.ALLOW;
         cfg.sessionProfileId = ""; //$NON-NLS-1$
         cfg.exposedToolsFilter = "*"; //$NON-NLS-1$
+        cfg.sessionIdleTimeoutSeconds = DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS;
         return cfg;
     }
 
@@ -198,5 +202,22 @@ public class McpHostConfig {
 
     public void setExposedToolsFilter(String exposedToolsFilter) {
         this.exposedToolsFilter = exposedToolsFilter;
+    }
+
+    /**
+     * Returns how long an inactive HTTP MCP session is retained.
+     */
+    public int getSessionIdleTimeoutSeconds() {
+        return sessionIdleTimeoutSeconds;
+    }
+
+    /**
+     * Sets the inactive HTTP MCP session timeout. Non-positive values keep the
+     * safe default so an invalid preference cannot disable cleanup.
+     */
+    public void setSessionIdleTimeoutSeconds(int sessionIdleTimeoutSeconds) {
+        this.sessionIdleTimeoutSeconds = sessionIdleTimeoutSeconds > 0
+            ? sessionIdleTimeoutSeconds
+            : DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS;
     }
 }

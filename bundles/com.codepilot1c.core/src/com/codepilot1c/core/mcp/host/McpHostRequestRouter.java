@@ -70,13 +70,15 @@ public class McpHostRequestRouter {
     private final AgentProfile sessionProfile;
     private final boolean profileGateEnabled;
     private final ToolExecutionContext executionContext;
+    private final McpContractMetadataService contractMetadataService;
 
     public McpHostRequestRouter(
             McpToolExposurePolicy exposurePolicy,
             List<IMcpResourceProvider> resourceProviders,
             IMcpPromptProvider promptProvider,
             McpHostConfig.MutationPolicy defaultMutationPolicy) {
-        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, ""); //$NON-NLS-1$
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, "", //$NON-NLS-1$
+                new McpContractMetadataService());
     }
 
     public McpHostRequestRouter(
@@ -85,6 +87,27 @@ public class McpHostRequestRouter {
             IMcpPromptProvider promptProvider,
             McpHostConfig.MutationPolicy defaultMutationPolicy,
             String sessionProfileId) {
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy,
+                sessionProfileId, new McpContractMetadataService());
+    }
+
+    public McpHostRequestRouter(
+            McpToolExposurePolicy exposurePolicy,
+            List<IMcpResourceProvider> resourceProviders,
+            IMcpPromptProvider promptProvider,
+            McpHostConfig.MutationPolicy defaultMutationPolicy,
+            McpContractMetadataService contractMetadataService) {
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, "", //$NON-NLS-1$
+                contractMetadataService);
+    }
+
+    public McpHostRequestRouter(
+            McpToolExposurePolicy exposurePolicy,
+            List<IMcpResourceProvider> resourceProviders,
+            IMcpPromptProvider promptProvider,
+            McpHostConfig.MutationPolicy defaultMutationPolicy,
+            String sessionProfileId,
+            McpContractMetadataService contractMetadataService) {
         this.exposurePolicy = exposurePolicy;
         this.resourceProviders = resourceProviders;
         this.promptProvider = promptProvider;
@@ -109,6 +132,9 @@ public class McpHostRequestRouter {
                         configuredProfileId);
             }
         }
+        this.contractMetadataService = contractMetadataService != null
+            ? contractMetadataService
+            : new McpContractMetadataService();
     }
 
     public McpMessage route(McpMessage request, McpHostSession session) {
@@ -157,14 +183,22 @@ public class McpHostRequestRouter {
 
         Map<String, Object> result = new HashMap<>();
         result.put("protocolVersion", negotiated); //$NON-NLS-1$
-        result.put("capabilities", Map.of( //$NON-NLS-1$
-            "tools", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "resources", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "prompts", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "logging", Map.of() //$NON-NLS-1$
-        ));
+        Map<String, Object> capabilities = new LinkedHashMap<>();
+        capabilities.put("tools", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("resources", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("prompts", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("logging", Map.of()); //$NON-NLS-1$
+        capabilities.put("experimental", contractMetadataService.experimentalMetadata()); //$NON-NLS-1$
+        result.put("capabilities", capabilities); //$NON-NLS-1$
         result.put("serverInfo", Map.of("name", SERVER_NAME, "version", SERVER_VERSION)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         return ok(request, result);
+    }
+
+    /**
+     * Returns the current readiness snapshot for the HTTP health handler.
+     */
+    public McpReadiness readiness() {
+        return contractMetadataService.readiness();
     }
 
     private McpMessage handleInitialized(McpMessage request, McpHostSession session) {
@@ -366,10 +400,24 @@ public class McpHostRequestRouter {
     }
 
     private String negotiateProtocol(String requested) {
-        if (requested != null && SUPPORTED_PROTOCOLS.contains(requested)) {
+        if (isSupportedProtocolVersion(requested)) {
             return requested;
         }
         return SUPPORTED_PROTOCOLS.get(0);
+    }
+
+    /**
+     * Returns whether an MCP protocol version can be negotiated by this host.
+     */
+    public static boolean isSupportedProtocolVersion(String protocolVersion) {
+        return protocolVersion != null && SUPPORTED_PROTOCOLS.contains(protocolVersion);
+    }
+
+    /**
+     * Returns the versions accepted by the streamable HTTP transport.
+     */
+    public static List<String> supportedProtocolVersions() {
+        return SUPPORTED_PROTOCOLS;
     }
 
     @SuppressWarnings("unchecked")

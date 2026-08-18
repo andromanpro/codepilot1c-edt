@@ -1,5 +1,6 @@
 package com.codepilot1c.core.mcp.host;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -10,6 +11,8 @@ import com.codepilot1c.core.mcp.host.resource.IMcpResourceProvider;
 import com.codepilot1c.core.mcp.host.resource.StateResourceProvider;
 import com.codepilot1c.core.mcp.host.resource.WorkspaceResourceProvider;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
+import com.codepilot1c.core.mcp.host.discovery.McpHostInstanceRegistryPublisher;
+import com.codepilot1c.core.mcp.host.discovery.McpHostInstanceEndpoint;
 import com.codepilot1c.core.mcp.host.transport.McpHostHttpTransport;
 import com.codepilot1c.core.mcp.host.transport.McpHostOAuthService;
 
@@ -20,6 +23,7 @@ public class McpHostServer implements IMcpHostServer {
     private McpHostConfig config;
     private McpHostHttpTransport httpTransport;
     private McpHostRequestRouter router;
+    private McpHostInstanceRegistryPublisher instanceRegistryPublisher;
     private volatile boolean running;
 
     public McpHostServer(McpHostConfig config) {
@@ -64,9 +68,11 @@ public class McpHostServer implements IMcpHostServer {
                 config.getPort(),
                 oauthService,
                 router,
-                config.getAuthMode()
+                config.getAuthMode(),
+                Duration.ofSeconds(config.getSessionIdleTimeoutSeconds())
             );
             httpTransport.start();
+            publishInstanceAfterBind();
         }
 
         running = true;
@@ -83,9 +89,13 @@ public class McpHostServer implements IMcpHostServer {
         if (!running) {
             return;
         }
-        if (httpTransport != null) {
-            httpTransport.stop();
-            httpTransport = null;
+        try {
+            if (httpTransport != null) {
+                httpTransport.stop();
+                httpTransport = null;
+            }
+        } finally {
+            unpublishInstance();
         }
         running = false;
         LOG.info("MCP host server stopped"); //$NON-NLS-1$
@@ -117,5 +127,52 @@ public class McpHostServer implements IMcpHostServer {
             return List.of();
         }
         return List.copyOf(httpTransport.getSessionsSnapshot());
+    }
+
+    private void publishInstanceAfterBind() {
+        String opId = java.util.UUID.randomUUID().toString();
+        try {
+            McpHostInstanceRegistryPublisher publisher = McpHostInstanceRegistryPublisher.fromSystemProperties();
+            McpContractMetadata metadata = new DefaultMcpContractMetadataProvider().snapshot();
+            int boundPort = httpTransport.getBoundPort();
+            boolean written = publisher.publish(boundPort,
+                    McpHostInstanceEndpoint.localBaseUrl(config.getBindAddress(), boundPort),
+                    metadata.workspace(), edtHome(), metadata.mode(), metadata.pluginVersion(),
+                    config.getAuthMode().name());
+            if (written) {
+                instanceRegistryPublisher = publisher;
+                LOG.info("[opId=%s] MCP host instance registry published", opId); //$NON-NLS-1$
+            } else {
+                LOG.warn("[opId=%s] MCP host instance registry publish failed", opId); //$NON-NLS-1$
+            }
+        } catch (RuntimeException e) {
+            // Discovery is additive: a malformed supervisor setting or an unavailable home
+            // directory must never prevent the already-bound MCP host from serving requests.
+            LOG.warn("[opId=%s] MCP host instance registry unavailable: %s", opId, //$NON-NLS-1$
+                    e.getMessage());
+        }
+    }
+
+    private void unpublishInstance() {
+        McpHostInstanceRegistryPublisher publisher = instanceRegistryPublisher;
+        instanceRegistryPublisher = null;
+        if (publisher == null) {
+            return;
+        }
+        String opId = java.util.UUID.randomUUID().toString();
+        if (publisher.unpublish()) {
+            LOG.info("[opId=%s] MCP host instance registry removed", opId); //$NON-NLS-1$
+        } else {
+            LOG.warn("[opId=%s] MCP host instance registry cleanup skipped or failed", opId); //$NON-NLS-1$
+        }
+    }
+
+    private static String edtHome() {
+        String configured = System.getProperty("edt.home"); //$NON-NLS-1$
+        if (configured != null && !configured.isBlank()) {
+            return configured;
+        }
+        String installArea = System.getProperty("osgi.install.area"); //$NON-NLS-1$
+        return installArea == null || installArea.isBlank() ? "unknown" : installArea; //$NON-NLS-1$
     }
 }
