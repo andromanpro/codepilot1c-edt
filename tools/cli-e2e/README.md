@@ -7,8 +7,9 @@ session DELETE, then `edt stop`. In fake mode it also stages the production
 POSIX distribution launcher and shaded jar under a path containing spaces.
 Two dumb-terminal/stdin shell invocations exercise connected broker discovery,
 an annotated mutating tool approval (`y`), scripted SSE tool/result turns,
-`/sessions`, `/resume`, `/status`, and `/exit`. It is not a unit test and is
-not wired into any Maven lifecycle.
+`/sessions`, `/resume`, a second user turn that continues the complete saved
+transcript, `/status`, and `/exit`. It is not a unit test and is not wired into
+any Maven lifecycle.
 
 ```sh
 # Build first, if the shaded jar is not already present.
@@ -33,11 +34,16 @@ Java 17-only.
 The fake is deliberately strict. It accepts only the exact headless EDT
 argument vector built by the supervisor, MCP protocol `2025-11-25`, the
 harness-private bearer, correct session/protocol headers, the scripted tool
-arguments, and broker turn two only after the approved MCP result. Each
-successful initialize must be paired with authenticated DELETE. The harness
-parses the private schema-v1 session metadata and JSONL transcript, checks
-POSIX `0700`/`0600` permissions, scans runtime artifacts and process command
-lines for the test bearer, and verifies no temporary process remains.
+arguments, broker turn two only after the exact approved MCP result, and the
+resumed turn only after the complete prior user/tool-call/tool-result/final
+assistant transcript plus the new user message. Frozen JSON-string tool
+arguments, assistant reasoning, message order, both deterministic final texts,
+and the byte-for-byte append boundary are checked. Each successful initialize
+must be paired with authenticated DELETE. The harness parses the private
+schema-v1 session metadata and JSONL transcript, verifies the second turn and
+six-message count plus `/sessions` and `/status`, checks POSIX `0700`/`0600`
+permissions, scans runtime artifacts and process command lines for the test
+bearer, and verifies no temporary process remains.
 
 The start command is a tracked background process, so an interrupt during
 readiness does not lose ownership before the registry record is available.

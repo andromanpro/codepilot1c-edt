@@ -33,7 +33,50 @@ if TOOL_ARGUMENTS_JSON != '{"value":"approved-wave4"}':
     raise AssertionError("broker tool arguments must remain compact JSON")
 TOOL_RESULT_TEXT = "approved-wave4-tool-result"
 SHELL_PROMPT = "Run the approved Wave 4 tool."
+TOOL_REASONING = "Confirm the approved tool result before answering."
 FINAL_TEXT = "Wave 4 connected shell complete."
+RESUME_PROMPT = "Continue from the saved Wave 4 transcript."
+RESUMED_FINAL_TEXT = "Wave 4 resumed shell complete."
+TOOL_RESULT_DATA = {
+    "content": [{"type": "text", "text": TOOL_RESULT_TEXT}],
+    "structuredContent": {"echoed": TOOL_ARGUMENTS["value"]},
+    "isError": False,
+}
+TOOL_RESULT_CONTENT = json.dumps(
+    {
+        "ok": True,
+        "code": "OK",
+        "message": "Tool completed",
+        "data": TOOL_RESULT_DATA,
+    },
+    separators=(",", ":"),
+)
+if TOOL_RESULT_CONTENT != (
+    '{"ok":true,"code":"OK","message":"Tool completed","data":'
+    '{"content":[{"type":"text","text":"approved-wave4-tool-result"}],'
+    '"structuredContent":{"echoed":"approved-wave4"},"isError":false}}'
+):
+    raise AssertionError("broker tool result content must remain compact frozen JSON")
+
+TOOL_ASSISTANT_MESSAGE = {
+    "role": "assistant",
+    "content": None,
+    "reasoning": TOOL_REASONING,
+    "toolCalls": [
+        {"id": TOOL_CALL_ID, "name": TOOL_NAME, "arguments": TOOL_ARGUMENTS_JSON}
+    ],
+}
+TOOL_RESULT_MESSAGE = {
+    "role": "tool",
+    "toolCallId": TOOL_CALL_ID,
+    "content": TOOL_RESULT_CONTENT,
+}
+PRIOR_TRANSCRIPT = [
+    {"role": "user", "content": SHELL_PROMPT},
+    TOOL_ASSISTANT_MESSAGE,
+    TOOL_RESULT_MESSAGE,
+    {"role": "assistant", "content": FINAL_TEXT},
+]
 
 
 def option_value(prefix: str) -> str | None:
@@ -354,11 +397,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {
-                        "content": [{"type": "text", "text": TOOL_RESULT_TEXT}],
-                        "structuredContent": {"echoed": TOOL_ARGUMENTS["value"]},
-                        "isError": False,
-                    },
+                    "result": TOOL_RESULT_DATA,
                 },
             )
         elif method == "ping":
@@ -406,6 +445,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reject(400, "llm-chat", "first turn does not contain the scripted prompt")
                 return
             events = [
+                ("reasoning", {"schemaVersion": 1, "text": TOOL_REASONING}),
                 (
                     "tool_calls",
                     {
@@ -423,22 +463,20 @@ class Handler(BaseHTTPRequestHandler):
                 ("done", {"schemaVersion": 1, "finishReason": "tool_use"}),
             ]
         elif turn == 2:
-            valid_history = (
-                len(messages) == 3
-                and all(isinstance(message, dict) for message in messages)
-                and messages[0] == {"role": "user", "content": SHELL_PROMPT}
-                and messages[1].get("role") == "assistant"
-                and messages[1].get("toolCalls")
-                == [{"id": TOOL_CALL_ID, "name": TOOL_NAME, "arguments": TOOL_ARGUMENTS_JSON}]
-                and messages[2].get("role") == "tool"
-                and messages[2].get("toolCallId") == TOOL_CALL_ID
-                and TOOL_RESULT_TEXT in messages[2].get("content", "")
-            )
-            if not valid_history:
-                self.reject(400, "llm-chat", "approved MCP result is absent from the second turn")
+            if messages != PRIOR_TRANSCRIPT[:3]:
+                self.reject(400, "llm-chat", "second turn transcript does not match exactly")
                 return
             events = [
                 ("delta", {"schemaVersion": 1, "text": FINAL_TEXT}),
+                ("done", {"schemaVersion": 1, "finishReason": "stop"}),
+            ]
+        elif turn == 3:
+            expected = PRIOR_TRANSCRIPT + [{"role": "user", "content": RESUME_PROMPT}]
+            if messages != expected:
+                self.reject(400, "llm-chat", "resumed transcript does not match exactly")
+                return
+            events = [
+                ("delta", {"schemaVersion": 1, "text": RESUMED_FINAL_TEXT}),
                 ("done", {"schemaVersion": 1, "finishReason": "stop"}),
             ]
         else:
@@ -501,12 +539,14 @@ def main() -> int:
     finally:
         with STATE_LOCK:
             active_count = len(ACTIVE_SESSIONS)
+            created_count = SESSION_SEQUENCE
             delete_count = DELETE_COUNT
             method_counts = dict(METHOD_COUNTS)
             chat_turns = CHAT_TURNS
         print(
             "fake-edt-summary "
-            f"active_sessions={active_count} deletes={delete_count} "
+            f"active_sessions={active_count} created_sessions={created_count} "
+            f"deletes={delete_count} "
             f"chat_turns={chat_turns} methods={json.dumps(method_counts, sort_keys=True)}",
             flush=True,
         )

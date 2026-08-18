@@ -34,6 +34,7 @@ PACKAGED_ROOT=""
 PACKAGED_CLI=""
 PACKAGED_JAVA=""
 SHELL_SESSION_ID=""
+SHELL_TRANSCRIPT=""
 
 # Installed as soon as the owned marker exists. This deliberately has no
 # dependency on the later full cleanup functions, so setup failures (including
@@ -618,18 +619,53 @@ if metadata["turns"] != 1 or metadata["messageCount"] != 4:
     raise SystemExit("unexpected session counts")
 records = [json.loads(line) for line in transcript_files[0].read_text(
     encoding="utf-8").splitlines() if line]
-if [record.get("type") for record in records] != ["text", "assistant", "tool", "assistant"]:
-    raise SystemExit("unexpected session transcript sequence")
-if records[0].get("content") != "Run the approved Wave 4 tool.":
-    raise SystemExit("session did not persist the scripted user turn")
-if records[-1].get("text") != "Wave 4 connected shell complete.":
-    raise SystemExit("session did not persist the scripted final text")
+if transcript_files[0].name != f"{session_id}.jsonl":
+    raise SystemExit("transcript filename does not match its UUID")
+expected = [
+    {"type": "text", "role": "user", "content": "Run the approved Wave 4 tool."},
+    {
+        "type": "assistant",
+        "reasoning": "Confirm the approved tool result before answering.",
+        "toolCalls": [{
+            "id": "wave4-call-1",
+            "name": "e2e_echo",
+            "argumentsJson": '{"value":"approved-wave4"}',
+        }],
+    },
+    {
+        "type": "tool",
+        "callId": "wave4-call-1",
+        "toolName": "e2e_echo",
+        "result": {
+            "error": False,
+            "code": "OK",
+            "message": "Tool completed",
+            "data": {
+                "content": [{"type": "text", "text": "approved-wave4-tool-result"}],
+                "structuredContent": {"echoed": "approved-wave4"},
+                "isError": False,
+            },
+        },
+    },
+    {"type": "assistant", "text": "Wave 4 connected shell complete.", "toolCalls": []},
+]
+for index, (record, wanted) in enumerate(zip(records, expected, strict=True), 1):
+    if record.get("schemaVersion") != 1 or not isinstance(record.get("recordedAt"), str):
+        raise SystemExit(f"invalid transcript envelope at line {index}")
+    payload = {key: value for key, value in record.items()
+               if key not in ("schemaVersion", "recordedAt")}
+    if payload != wanted:
+        raise SystemExit(f"unexpected persisted transcript payload at line {index}")
 print(session_id)
 PY
 ) || fail "private shell session files are invalid"
+SHELL_TRANSCRIPT="$RUN_HOME/.codepilot1c/sessions/$SHELL_SESSION_ID.jsonl"
+cp "$SHELL_TRANSCRIPT" "$TMP_ROOT/shell-first-transcript.jsonl"
 
 cat >"$TMP_ROOT/shell-resume.stdin" <<EOF
 /resume $SHELL_SESSION_ID
+Continue from the saved Wave 4 transcript.
+/sessions
 /status
 /exit
 EOF
@@ -637,6 +673,55 @@ run_packaged shell --mode connected --instance-id "$INSTANCE_ID" \
     --mcp-bearer-token-file "$TOKEN_FILE" --turn-timeout 30 \
     <"$TMP_ROOT/shell-resume.stdin" >"$TMP_ROOT/shell-resume.stdout" \
     2>"$TMP_ROOT/shell-resume.stderr" || fail "packaged session resume scenario failed"
+
+python3 - "$RUN_HOME/.codepilot1c/sessions" "$SHELL_SESSION_ID" \
+    "$TMP_ROOT/shell-first-transcript.jsonl" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+session_id = sys.argv[2]
+snapshot = pathlib.Path(sys.argv[3])
+metadata_files = sorted(root.glob("*.meta.json"))
+transcript_files = sorted(root.glob("*.jsonl"))
+if [path.name for path in metadata_files] != [f"{session_id}.meta.json"]:
+    raise SystemExit("resume created or replaced session metadata unexpectedly")
+if [path.name for path in transcript_files] != [f"{session_id}.jsonl"]:
+    raise SystemExit("resume created or replaced the session transcript unexpectedly")
+for path in metadata_files + transcript_files:
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit("resumed session entry is not a regular private file")
+    if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise SystemExit(f"resumed session file is not mode 0600: {path.name}")
+metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+if metadata["turns"] != 2 or metadata["messageCount"] != 6:
+    raise SystemExit("resumed session counts did not advance to two turns/six messages")
+prior_lines = snapshot.read_text(encoding="utf-8").splitlines()
+current_lines = transcript_files[0].read_text(encoding="utf-8").splitlines()
+if len(prior_lines) != 4 or len(current_lines) != 6:
+    raise SystemExit("resumed transcript does not contain the expected append")
+if current_lines[:4] != prior_lines:
+    raise SystemExit("resume rewrote the prior transcript instead of appending")
+appended = [json.loads(line) for line in current_lines[4:]]
+expected = [
+    {
+        "type": "text",
+        "role": "user",
+        "content": "Continue from the saved Wave 4 transcript.",
+    },
+    {"type": "assistant", "text": "Wave 4 resumed shell complete.", "toolCalls": []},
+]
+for index, (record, wanted) in enumerate(zip(appended, expected, strict=True), 5):
+    if record.get("schemaVersion") != 1 or not isinstance(record.get("recordedAt"), str):
+        raise SystemExit(f"invalid resumed transcript envelope at line {index}")
+    payload = {key: value for key, value in record.items()
+               if key not in ("schemaVersion", "recordedAt")}
+    if payload != wanted:
+        raise SystemExit(f"unexpected resumed transcript payload at line {index}")
+PY
 
 grep -F "Approval required: Wave 4 E2E echo [e2e_echo, confirmation required]" \
     "$TMP_ROOT/shell-first.stdout" >/dev/null || fail "tool approval prompt was not rendered"
@@ -652,8 +737,12 @@ grep -F "mode=connected provider=Fake Connected Provider model=wave4-e2e-model" 
     "$TMP_ROOT/shell-first.stdout" >/dev/null || fail "/status did not report connected mode"
 grep -F "Resumed session: $SHELL_SESSION_ID (1 turn(s))" \
     "$TMP_ROOT/shell-resume.stdout" >/dev/null || fail "/resume did not load the session"
-grep -F "session=$SHELL_SESSION_ID turns=1" "$TMP_ROOT/shell-resume.stdout" >/dev/null \
-    || fail "resumed /status did not report the saved session"
+grep -F "Wave 4 resumed shell complete." "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed scripted final assistant text was not rendered"
+grep -F "$SHELL_SESSION_ID  2 turn(s)" "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed /sessions did not report two turns"
+grep -F "session=$SHELL_SESSION_ID turns=2" "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed /status did not report two turns"
 if grep -E 'error:|Turn ended:' "$TMP_ROOT/shell-first.stdout" "$TMP_ROOT/shell-resume.stdout" >/dev/null; then
     fail "shell scenario reported an error"
 fi
@@ -695,7 +784,10 @@ if [[ "$MODE" == fake ]]; then
         || fail "scripted broker tool-call turn diagnostics missing from log"
     grep -F "fake-edt-llm-ok turn=2" "$INSTANCE_LOG" >/dev/null \
         || fail "scripted broker final-text turn diagnostics missing from log"
-    grep -F 'fake-edt-summary active_sessions=0 deletes=6 chat_turns=2' "$INSTANCE_LOG" >/dev/null \
+    grep -F "fake-edt-llm-ok turn=3" "$INSTANCE_LOG" >/dev/null \
+        || fail "scripted broker resumed continuation diagnostics missing from log"
+    grep -F 'fake-edt-summary active_sessions=0 created_sessions=6 deletes=6 chat_turns=3' \
+        "$INSTANCE_LOG" >/dev/null \
         || fail "fake host session lifecycle summary is incomplete"
     grep -F "fake-edt-shutdown instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "fake host shutdown diagnostics missing from log"
