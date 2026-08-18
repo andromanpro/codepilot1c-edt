@@ -225,9 +225,12 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                     }
                     responseSessionId = requestedSessionId;
                 } else {
-                    session = createSession(null, exchange);
+                    if (request == null || !"initialize".equals(request.getMethod())) { //$NON-NLS-1$
+                        writeJson(exchange, 400, Map.of("error", "session_required")); //$NON-NLS-1$ //$NON-NLS-2$
+                        return;
+                    }
+                    session = createAndRegisterSession(exchange);
                     responseSessionId = session.getSessionId();
-                    sessions.putIfAbsent(responseSessionId, session);
                 }
                 synchronized (session) {
                     // A DELETE or TTL cleanup may have removed the session after get().
@@ -462,6 +465,21 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             traceSession.writeMcpEvent(TraceEventType.MCP_SESSION_CREATED, null, payload);
         }
         return session;
+    }
+
+    /**
+     * Registers a newly generated session before accepting work for it. UUID
+     * collisions are vanishingly unlikely, but an instance that loses a
+     * putIfAbsent race is closed before a new id is tried.
+     */
+    private McpHostSession createAndRegisterSession(HttpExchange exchange) {
+        while (true) {
+            McpHostSession session = createSession(null, exchange);
+            if (sessions.putIfAbsent(session.getSessionId(), session) == null) {
+                return session;
+            }
+            closeTraceSession(session);
+        }
     }
 
     private void updateSessionRequestMetadata(McpHostSession session, HttpExchange exchange) {

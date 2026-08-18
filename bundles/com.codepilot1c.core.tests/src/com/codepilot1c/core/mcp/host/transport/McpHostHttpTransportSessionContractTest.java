@@ -37,6 +37,7 @@ public class McpHostHttpTransportSessionContractTest {
     private static final String INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
         + "\"params\":{\"protocolVersion\":\"2025-06-18\",\"clientInfo\":{\"name\":\"contract\",\"version\":\"1\"}}}"; //$NON-NLS-1$
     private static final String PING = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"; //$NON-NLS-1$
+    private static final String TOOLS_LIST = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}"; //$NON-NLS-1$
 
     @Test
     public void initializeWithoutSessionIdCreatesSessionAndReturnsHeader() throws Exception {
@@ -61,6 +62,20 @@ public class McpHostHttpTransportSessionContractTest {
             assertEquals(404, response.statusCode());
             assertEquals(Map.of("error", "session_not_found"), json(response.body())); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals(1, fixture.transport.getSessionsSnapshot().size());
+        }
+    }
+
+    @Test
+    public void postWithoutSessionIdRequiresInitializeAndDoesNotCreateSession() throws Exception {
+        try (TransportFixture fixture = new TransportFixture(Duration.ofMinutes(1), Clock.systemUTC())) {
+            assertEquals(200, fixture.post(INITIALIZE, Map.of()).statusCode());
+            int existingSessionCount = fixture.transport.getSessionsSnapshot().size();
+
+            HttpResponse<String> response = fixture.post(TOOLS_LIST, Map.of());
+
+            assertEquals(400, response.statusCode());
+            assertEquals(Map.of("error", "session_required"), json(response.body())); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(existingSessionCount, fixture.transport.getSessionsSnapshot().size());
         }
     }
 
