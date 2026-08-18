@@ -25,6 +25,11 @@ java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar --output
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar --output json mcp tools
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar --output json mcp call get_diagnostics \
   --args '{"workspace":"/absolute/path/to/workspace"}'
+java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar --output json agent run \
+  --prompt "Inspect the workspace diagnostics" \
+  --provider-endpoint https://provider.example/v1 --model example-model \
+  --provider-api-key-file /private/path/provider-token \
+  --instance-id EDT_INSTANCE_UUID --mcp-bearer-token-file /private/path/mcp-token
 ```
 
 Run these commands from the repository root: the standalone MCP client is a
@@ -39,6 +44,9 @@ variable, then a safe local default:
 | MCP endpoint | `codepilot.endpoint` | `CODEPILOT_ENDPOINT` |
 | Optional config file check | `codepilot.config` | `CODEPILOT_CONFIG` |
 | MCP bearer token | `codepilot.mcp.bearerToken` | `CODEPILOT_MCP_BEARER_TOKEN` |
+| Agent provider endpoint | `codepilot.provider.endpoint` | `CODEPILOT_PROVIDER_ENDPOINT` |
+| Agent provider model | `codepilot.provider.model` | `CODEPILOT_PROVIDER_MODEL` |
+| Agent provider API key | `codepilot.provider.apiKey` | `CODEPILOT_PROVIDER_API_KEY` |
 
 Discovery checks the explicit EDT home, conventional 1C installation roots,
 and `PATH` on macOS, Linux, and Windows. A directory is reported only when it
@@ -142,16 +150,71 @@ configured bearer token or an `Authorization` header. Prefer
 `--bearer-token-file` over placing a token in a shell command or process list;
 it has precedence over the property and environment variable.
 
+Bearer files are read as UTF-8, trimmed, limited to 64 KiB, must be regular
+non-symlink files, and on POSIX systems must not be group/other readable or
+writable (use mode `0600`).
+
 Plain HTTP is accepted automatically only for loopback endpoints. Use
 `--allow-insecure-http` only for a trusted non-loopback HTTP endpoint; HTTPS
 needs no override.
+
+## Agent run
+
+`agent run` is a one-shot host over the standalone `runtime-provider`,
+`runtime-agent`, and `runtime-mcp-client` modules. It never loads Eclipse,
+OSGi, EDT APIs, `com.codepilot1c.core`, or UI code. The grammar is:
+
+```text
+codepilot [--output text|json] agent run
+  (--prompt TEXT | --prompt-file FILE | --prompt-stdin)
+  [--provider-endpoint URL] [--model MODEL]
+  [--provider-api-key-file FILE] [--provider-allow-insecure-http]
+  [--max-steps N] [--timeout SECONDS]
+  [--mcp-endpoint URL | --instance-id UUID]
+  [--mcp-bearer-token-file FILE] [--allow-insecure-http]
+
+codepilot [--output text|json] agent run [provider options]
+  (--prompt TEXT | --prompt-file FILE | --prompt-stdin) --no-tools
+```
+
+Exactly one prompt source is required. Prompt files and standard input are
+UTF-8 and limited to 1 MiB. The prompt is sent to the provider but never
+printed in CLI diagnostics or runtime logs. `--no-tools` performs no MCP
+discovery; otherwise the command reuses the MCP command's endpoint/instance
+selection and token policy, negotiates `initialize`, snapshots `tools/list`,
+executes model-requested `tools/call`, and closes the short-lived session.
+
+Provider configuration precedence is explicit flag, then Java system
+property, then environment variable. Endpoint and model must resolve to
+non-blank values. The API key intentionally has no inline CLI option because
+command arguments are commonly exposed through process listings and shell
+history. Prefer `--provider-api-key-file`; it overrides the property and
+environment and follows the same private-file checks as MCP bearer files.
+`-Dcodepilot.provider.apiKey=...` may itself be visible in the process command
+line, so the environment variable is safer when a file cannot be used.
+
+Provider endpoints reject user info, query strings, and fragments. Plain HTTP
+is accepted only on loopback unless `--provider-allow-insecure-http` is
+explicitly supplied. This opt-in is independent from MCP's
+`--allow-insecure-http`.
+
+`--max-steps` defaults to 16 and bounds model/tool cycles. `--timeout` defaults
+to 300 seconds and covers MCP initialization/listing plus the complete agent
+run. Interruption cancels the in-flight provider or MCP future and the
+production entry point installs a shutdown hook for Ctrl-C cancellation.
+
+Text and JSON output always include terminal status/reason and completed step
+count. JSON keys are stable: `command`, `status`, `terminalReason`, `steps`,
+and `text` when a final assistant response exists. Prompts, transcripts, tool
+arguments/results, headers, and credentials are not emitted. Complete bearer
+authorization text is passed through the shared sanitizer.
 
 Exit codes:
 
 | Code | Meaning |
 |---:|---|
 | 0 | Success |
-| 1 | Internal command failure |
+| 1 | Agent/provider failure, cancellation, timeout, step limit, or internal command failure |
 | 2 | Invalid arguments or configuration |
-| 3 | Authentication failure (reserved for provider commands) |
-| 4 | EDT unavailable, not ready, or unable to perform the operation |
+| 3 | Provider or MCP authentication failure |
+| 4 | EDT/MCP unavailable, not ready, malformed, or unable to perform the operation |

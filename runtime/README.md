@@ -19,3 +19,8 @@ mvn -f runtime/pom.xml test
 No runtime module imports Eclipse, OSGi, EDT, or `com.codepilot1c.core` APIs.
 The root Tycho reactor also includes these modules, but standalone runtime
 development does not require EDT.
+
+The `cli/codepilot-cli` reactor consumer composes the provider, agent, and MCP
+client into `codepilot agent run`; runtime modules remain responsible only for
+transport/loop contracts, while CLI owns configuration precedence, private
+secret-file handling, endpoint policy, process exits, and Ctrl-C lifecycle.
