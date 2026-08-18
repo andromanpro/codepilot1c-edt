@@ -290,7 +290,7 @@ public class EdtMetadataService {
     /**
      * Test/DI-injection constructor: additionally accepts a {@link ModuleFileWriter}
      * seam (e.g. an in-memory fake), so the post-export BSL handler-stub write
-     * stays unit-testable without a live workspace {@code IFile}.
+     * (07-03, STUB-01/STUB-06) stays unit-testable without a live workspace {@code IFile}.
      */
     EdtMetadataService(
             EdtMetadataGateway gateway,
@@ -305,25 +305,1784 @@ public class EdtMetadataService {
         this.extendedMethodCallTypeResolver = new ExtendedMethodCallTypeResolver();
     }
 
+    public boolean isEdtAvailable() {
+        return gateway.isEdtAvailable();
+    }
+
     private String resolvePlatformVersionString(IProject project) {
         Object version = gateway.resolvePlatformVersion(project);
         return version == null ? null : version.toString();
     }
 
-    /**
-     * Compares events by identity first, then by name: an {@link Event} resolved from the
-     * platform catalog is not guaranteed to be the very instance a handler loaded from the
-     * {@code .form} file references.
-     */
-    private static boolean sameEvent(Event candidate, Event event) {
-        if (candidate == event) {
-            return true;
+    public MetadataOperationResult createMetadata(CreateMetadataRequest request) {
+        String opId = LogSanitizer.newId("edt-create"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] createMetadata START project=%s kind=%s name=%s", // $NON-NLS-1$
+                opId, request.projectName(), request.kind(), request.name());
+        request.validate();
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+        LOG.debug("[%s] Project is ready: %s", opId, project.getName()); //$NON-NLS-1$
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        boolean externalProject = isExternalProject(project);
+        if (configuration == null && !externalProject) {
+            LOG.error("[%s] Configuration is null for project=%s", opId, request.projectName()); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
         }
-        return candidate != null && event != null
-                && candidate.getName() != null && candidate.getName().equals(event.getName());
+
+        String fqn = request.kind().getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
+        LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
+
+        Map<String, TypeItem> topLevelPropertyTypes = preResolveTopLevelPropertyTypes(project, request.properties());
+        final Map<String, TypeItem> capturedTopLevelPropertyTypes = topLevelPropertyTypes;
+        final String platformVersion = resolvePlatformVersionString(project);
+
+        executeWrite(project, transaction -> {
+            LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
+            Configuration txConfiguration = transaction.toTransactionObject(configuration);
+            if (txConfiguration == null) {
+                LOG.error("[%s] Failed to map configuration into transaction", opId); //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+
+            if (existsTopLevel(txConfiguration, request.kind(), request.name())) {
+                LOG.warn("[%s] Metadata already exists: %s", opId, fqn); //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                        "Metadata object already exists: " + fqn, false); //$NON-NLS-1$
+            }
+
+            MdObject object = createTopLevelObject(request.kind());
+            LOG.debug("[%s] Created object instance: %s", opId, object.eClass().getName()); //$NON-NLS-1$
+            setCommonProperties(object, request.name(), request.synonym(), request.comment(), txConfiguration);
+            MdObject txObject = attachTopLevelObject(transaction, project, object, fqn);
+            LOG.debug("[%s] Attached top object by FQN=%s", opId, fqn); //$NON-NLS-1$
+            ensureUuidsRecursively(txObject, opId, fqn);
+            // Keep eager link for immediate in-memory visibility in EDT UI.
+            addTopLevelObject(txConfiguration, request.kind(), txObject);
+            applyTopLevelProperties(
+                    txConfiguration,
+                    txObject,
+                    request.kind(),
+                    withConfigurationLockModeDefault(txConfiguration, txObject,
+                            withKindDefaults(request.kind(), request.properties())),
+                    transaction,
+                    capturedTopLevelPropertyTypes,
+                    platformVersion,
+                    opId,
+                    fqn);
+            LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
+            LOG.debug("[%s] Transaction steps completed for %s", opId, fqn); //$NON-NLS-1$
+            return null;
+        });
+        rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
+        boolean derivedDataReady = forceExportTopLevelObject(project, fqn, opId);
+        verifyTopLevelPersisted(project, fqn, opId);
+        verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
+        refreshProjectSafely(project);
+        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s derivedDataReady=%s", opId, // $NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                fqn,
+                Boolean.valueOf(derivedDataReady));
+
+        String message = derivedDataReady
+                ? "Metadata object created successfully" //$NON-NLS-1$
+                : "Metadata object created successfully. Derived-data recomputation is still in progress, " //$NON-NLS-1$
+                        + "so the project may briefly report PROJECT_NOT_READY; re-run reads " //$NON-NLS-1$
+                        + "(scan_metadata_index/get_diagnostics) shortly. Do NOT recreate this object."; //$NON-NLS-1$
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                request.kind().name(),
+                request.name(),
+                fqn,
+                message);
     }
 
-    /** An existing {@link EventHandler} together with the container that actually owns it. */
+    public CreateFormResult createForm(CreateFormRequest request) {
+        String opId = LogSanitizer.newId("edt-form"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        request.validate();
+        FormUsage effectiveUsage = resolveEffectiveFormUsage(request.ownerFqn(), request.name(), request.usage());
+        String effectiveName = resolveEffectiveFormName(request.ownerFqn(), request.name(), effectiveUsage);
+        IProject project = requireProject(request.projectName());
+        boolean externalProject = isExternalProject(project);
+        boolean bindAsDefault = resolveDefaultBinding(request.setAsDefault(), effectiveUsage, request.ownerFqn(), externalProject);
+        LOG.info("[%s] createForm START project=%s owner=%s name=%s usage=%s setAsDefault=%s", // $NON-NLS-1$
+                opId,
+                request.projectName(),
+                request.ownerFqn(),
+                effectiveName,
+                effectiveUsage,
+                bindAsDefault);
+        gateway.ensureMutationRuntimeAvailable();
+        readinessChecker.ensureReady(project);
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null && !externalProject) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        String formFqn = request.ownerFqn() + ".Form." + effectiveName; //$NON-NLS-1$
+        final FormUsage capturedUsage = effectiveUsage;
+        final boolean capturedBindAsDefault = bindAsDefault;
+        final String capturedName = effectiveName;
+
+        executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            if (txConfiguration == null && !externalProject) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+
+            MdObject owner = resolveOwnerForMutation(project, transaction, txConfiguration, request.ownerFqn());
+            if (owner == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
+                        "Owner not found: " + request.ownerFqn(), false); //$NON-NLS-1$
+            }
+            validateReservedChildName(owner, MetadataChildKind.FORM, capturedName);
+            MdObject form = createFormByParent(owner);
+            setCommonProperties(form, capturedName, request.synonym(), request.comment(), txConfiguration);
+            initializeFormForRequest(form, request);
+            ensureUuidsRecursively(form, opId, formFqn);
+            try {
+                addChildToParent(owner, form, MetadataChildKind.FORM);
+            } catch (MetadataOperationException e) {
+                if (e.getCode() == MetadataOperationCode.METADATA_ALREADY_EXISTS) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.FORM_ALREADY_EXISTS,
+                            "Form already exists: " + formFqn, false, e); //$NON-NLS-1$
+                }
+                throw e;
+            }
+            populateFormContent(project, transaction, owner, form, txConfiguration, capturedUsage, opId);
+            ensureUuidsRecursively(form, opId, formFqn);
+            if (capturedBindAsDefault && !isExternalMetadataOwner(owner)) {
+                bindDefaultForm(owner, form, capturedUsage, opId);
+            }
+            ensureUuidsRecursively(owner, opId, request.ownerFqn());
+            LOG.debug("[%s] createForm transaction ownerClass=%s formClass=%s usage=%s bindDefault=%s", // $NON-NLS-1$
+                    opId,
+                    owner.eClass().getName(),
+                    form.eClass().getName(),
+                    capturedUsage,
+                    capturedBindAsDefault);
+            return null;
+        });
+
+        String topLevelFqn = extractTopLevelFqn(formFqn);
+        forceExportTopLevelObject(project, topLevelFqn, opId);
+        verifyObjectPersisted(project, formFqn, opId);
+
+        FormArtifactPaths artifacts = waitForFormMaterialization(
+                project,
+                request.ownerFqn(),
+                effectiveName,
+                request.effectiveWaitMs(),
+                opId);
+        refreshProjectSafely(project);
+        LOG.info("[%s] createForm SUCCESS in %s form=%s", opId, //$NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                formFqn);
+
+        return new CreateFormResult(
+                request.ownerFqn(),
+                formFqn,
+                capturedUsage,
+                capturedBindAsDefault,
+                true,
+                artifacts.formAbsolutePath(),
+                artifacts.moduleAbsolutePath(),
+                artifacts.diagnostics());
+    }
+
+    public UpdateFormModelResult updateFormModel(UpdateFormModelRequest request) {
+        String opId = LogSanitizer.newId("edt-form-model"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        request.validate();
+        LOG.info("[%s] updateFormModel START project=%s form=%s operations=%d", //$NON-NLS-1$
+                opId,
+                request.projectName(),
+                request.formFqn(),
+                Integer.valueOf(request.operations().size()));
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        boolean externalProject = isExternalProject(project);
+        readinessChecker.ensureReady(project);
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null && !externalProject) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        List<PendingStub> pendingStubs = new ArrayList<>();
+        List<String> operationSummaries = executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, request.formFqn());
+            if (!(resolved instanceof BasicForm basicForm)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + request.formFqn(), false); //$NON-NLS-1$
+            }
+            Form formModel = resolveManagedFormModel(basicForm, request.formFqn());
+            List<String> applied = applyFormModelOperations(formModel, request.operations(), pendingStubs);
+            ensureUuidsRecursively(basicForm, opId, request.formFqn());
+            return applied;
+        });
+
+        String topLevelFqn = extractTopLevelFqn(request.formFqn());
+        forceExportTopLevelObject(project, topLevelFqn, opId);
+        verifyObjectPersisted(project, request.formFqn(), opId);
+
+        // PHASE C (07-03, STUB-06): BSL handler stub write, strictly AFTER the BM
+        // export/verify above — never inside the executeWrite transaction that
+        // committed the model slot.
+        StubPhaseOutcome stubOutcome = StubPhaseOutcome.empty();
+        if (!pendingStubs.isEmpty()) {
+            try {
+                stubOutcome = writeHandlerStubsDetailed(
+                        project, configuration, request.formFqn(), topLevelFqn, pendingStubs, opId);
+            } catch (MetadataOperationException e) {
+                StubPhaseFailureException failure = e instanceof StubPhaseFailureException stubFailure
+                        ? stubFailure
+                        : StubPhaseFailureException.unknown(e);
+                // mutate_form_model does not create attributes: zeroes are measured facts,
+                // not placeholder values.
+                throw formRecipePartialFailure(
+                        e,
+                        request.formFqn(),
+                        externalProject,
+                        0, 0, 0,
+                        operationSummaries.size(),
+                        pendingStubs.stream().map(PendingStub::handlerName).toList(),
+                        failure.written(),
+                        failure.skippedExisting(),
+                        failure.phase(),
+                        failure.failedHandler(),
+                        failure.rollback().status(),
+                        failure.rollback().bmState(),
+                        failure.rollback().serializedModelState());
+            }
+        }
+
+        refreshProjectSafely(project);
+        LOG.info("[%s] updateFormModel SUCCESS in %s form=%s operations=%d stubsWritten=%d stubsSkipped=%d", //$NON-NLS-1$
+                opId,
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                request.formFqn(),
+                Integer.valueOf(operationSummaries.size()),
+                Integer.valueOf(stubOutcome.written().size()),
+                Integer.valueOf(stubOutcome.skippedExisting().size()));
+
+        return new UpdateFormModelResult(
+                request.projectName(),
+                request.formFqn(),
+                operationSummaries.size(),
+                operationSummaries,
+                stubOutcome.toReport());
+    }
+
+    /**
+     * Post-export tail (07-03, STUB-06): for each pending event or command-action stub,
+     * ensures {@code Module.bsl}
+     * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
+     * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} attempts
+     * compensating {@link #rollbackHandlerSlot} or {@link #rollbackCommandSlot} + re-export.
+     * The thrown failure records
+     * whether compensation actually removed/exported the slot; it never assumes rollback.
+     * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
+     * model slot stays wired, NO rollback (Pitfall 3).
+     */
+    private StubPhaseOutcome writeHandlerStubsDetailed(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId) {
+        List<String> written = new ArrayList<>();
+        List<String> skippedExisting = new ArrayList<>();
+        List<PendingStub> awaitingStub = new ArrayList<>(pendingStubs);
+        ScriptVariant variant;
+        String modulePath;
+        try {
+            variant = resolveScriptVariant(configuration);
+            modulePath = ensureFormModulePath(project, formFqn, opId);
+        } catch (RuntimeException e) {
+            MetadataOperationException cause = asMetadataOperationException(e, "Cannot prepare form module"); //$NON-NLS-1$
+            RollbackAttempt rollback = compensatePendingStubs(
+                    project, configuration, formFqn, topLevelFqn, awaitingStub, opId, cause);
+            throw stubPhaseFailure(
+                    cause, FailurePhase.ENSURE_MODULE, "", written, skippedExisting, rollback); //$NON-NLS-1$
+        }
+        BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
+        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
+        for (PendingStub pending : pendingStubs) {
+            BslHandlerStubGenerator.StubText stub;
+            StubWriteOutcome outcome;
+            HandlerRegionTarget region;
+            if (pending.kind() == HandlerStubKind.COMMAND_ACTION) {
+                region = HandlerRegionTarget.of(FormModuleRegion.FORM_COMMAND_EVENT_HANDLERS);
+                try {
+                    stub = generator.generateCommandAction(pending.handlerName(), variant);
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant, region);
+                } catch (RuntimeException e) {
+                    MetadataOperationException cause = asMetadataOperationException(e, "Cannot write command handler stub"); //$NON-NLS-1$
+                    RollbackAttempt rollback = compensatePendingStubs(
+                            project, configuration, formFqn, topLevelFqn, awaitingStub, opId, cause);
+                    throw stubPhaseFailure(
+                            cause,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            rollback);
+                }
+            } else {
+                FreshEventContext freshEvent;
+                try {
+                    freshEvent = resolveFreshEventContext(project, configuration, formFqn, pending);
+                } catch (RuntimeException e) {
+                    MetadataOperationException cause = asMetadataOperationException(e, "Cannot verify event handler binding"); //$NON-NLS-1$
+                    RollbackAttempt rollback = compensatePendingStubs(
+                            project, configuration, formFqn, topLevelFqn, awaitingStub, opId, cause);
+                    throw stubPhaseFailure(
+                            cause,
+                            FailurePhase.RESOLVE_EVENT,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            rollback);
+                }
+                region = freshEvent.region();
+                try {
+                    stub = generator.generate(
+                            freshEvent.event(), pending.handlerName(), variant, pending.targetContext());
+                    outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant, region);
+                } catch (RuntimeException e) {
+                    MetadataOperationException cause = asMetadataOperationException(e, "Cannot write event handler stub"); //$NON-NLS-1$
+                    RollbackAttempt rollback = compensatePendingStubs(
+                            project, configuration, formFqn, topLevelFqn, awaitingStub, opId, cause);
+                    throw stubPhaseFailure(
+                            cause,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            rollback);
+                }
+            }
+            switch (outcome) {
+                case WRITTEN -> written.add(pending.handlerName());
+                case SKIPPED_EXISTING_WARN -> {
+                    LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
+                            opId, pending.handlerName());
+                    skippedExisting.add(pending.handlerName());
+                }
+                case WRITE_FAILURE -> {
+                    LOG.error("[%s] Stub write failed for handler '%s'; attempting handler-slot compensation", //$NON-NLS-1$
+                            opId, pending.handlerName());
+                    MetadataOperationException cause = new MetadataOperationException(
+                            MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                            "Stub write failed for handler '" + pending.handlerName() + "'", true); //$NON-NLS-1$ //$NON-NLS-2$
+                    RollbackAttempt rollback = compensatePendingStubs(
+                            project, configuration, formFqn, topLevelFqn, awaitingStub, opId, cause);
+                    MetadataOperationException failure = stubWriteFailure(pending.handlerName(), rollback);
+                    failure.addSuppressed(cause);
+                    throw stubPhaseFailure(
+                            failure,
+                            FailurePhase.WRITE_STUB,
+                            pending.handlerName(),
+                            written,
+                            skippedExisting,
+                            rollback);
+                }
+                default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
+            }
+            // WRITTEN and SKIPPED are valid paired states and must not be rolled back
+            // if processing of a later handler fails.
+            awaitingStub.remove(0);
+        }
+        return new StubPhaseOutcome(written, skippedExisting);
+    }
+
+    private MetadataOperationException asMetadataOperationException(RuntimeException failure, String message) {
+        if (failure instanceof MetadataOperationException metadataFailure) {
+            return metadataFailure;
+        }
+        return new MetadataOperationException(
+                MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                message + ": " + failure.getMessage(), true, failure); //$NON-NLS-1$
+    }
+
+    private RollbackAttempt compensatePendingStubs(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId,
+            RuntimeException originalFailure) {
+        RollbackAttempt last = RollbackAttempt.notAttempted();
+        for (int index = pendingStubs.size() - 1; index >= 0; index--) {
+            PendingStub pending = pendingStubs.get(index);
+            try {
+                last = compensateHandlerSlot(
+                        project, configuration, formFqn, topLevelFqn, pending, opId);
+                if (last.failure() != null) {
+                    originalFailure.addSuppressed(last.failure());
+                }
+            } catch (RuntimeException rollbackFailure) {
+                originalFailure.addSuppressed(rollbackFailure);
+                MetadataOperationException rollbackError = asMetadataOperationException(
+                        rollbackFailure, "Handler compensation failed"); //$NON-NLS-1$
+                last = new RollbackAttempt(
+                        RollbackStatus.FAILED,
+                        BmState.UNKNOWN,
+                        SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                        rollbackError);
+            }
+        }
+        return last;
+    }
+
+    private StubPhaseFailureException stubPhaseFailure(
+            MetadataOperationException cause,
+            FailurePhase phase,
+            String failedHandler,
+            List<String> written,
+            List<String> skippedExisting,
+            RollbackAttempt rollback
+    ) {
+        return new StubPhaseFailureException(
+                cause,
+                phase,
+                failedHandler,
+                written,
+                skippedExisting,
+                rollback != null ? rollback : RollbackAttempt.notAttempted());
+    }
+
+    private RollbackAttempt compensateHandlerSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        // Event upserts carry a pre-mutation snapshot and are always safe to undo:
+        // a new tuple is removed, an existing tuple is restored in place.
+        if (pending.kind() == HandlerStubKind.COMMAND_ACTION) {
+            return compensateHandlerSlot(
+                    pending.createdHandlerSlot(),
+                    pending.handlerName(),
+                    opId,
+                    () -> compensateCreatedCommandSlot(
+                            project, configuration, formFqn, topLevelFqn, pending, opId));
+        }
+        return compensateHandlerSlot(
+                true,
+                pending.handlerName(),
+                opId,
+                () -> compensateCreatedHandlerSlot(
+                        project, configuration, formFqn, topLevelFqn, pending, opId));
+    }
+
+    RollbackAttempt compensateHandlerSlot(
+            boolean createdHandlerSlot,
+            String handlerName,
+            String opId,
+            Supplier<RollbackAttempt> safeCompensation
+    ) {
+        if (!createdHandlerSlot) {
+            LOG.warn("[%s] Handler-slot compensation not attempted for '%s': " //$NON-NLS-1$
+                    + "the operation updated an existing handler slot", opId, handlerName); //$NON-NLS-1$
+            return new RollbackAttempt(
+                    RollbackStatus.NOT_ATTEMPTED_UNSAFE,
+                    BmState.INITIAL_COMMIT_REMAINS,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        return safeCompensation.get();
+    }
+
+    private RollbackAttempt compensateCreatedHandlerSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        RollbackMutationResult mutationResult;
+        try {
+            mutationResult = rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Handler-slot compensation failed for '%s': %s", //$NON-NLS-1$
+                    opId, pending.handlerName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.FAILED,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    e);
+        }
+        if (mutationResult == RollbackMutationResult.FORM_NOT_FOUND) {
+            return new RollbackAttempt(
+                    RollbackStatus.FORM_NOT_FOUND,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        if (mutationResult == RollbackMutationResult.SLOT_NOT_FOUND) {
+            return new RollbackAttempt(
+                    RollbackStatus.SLOT_NOT_FOUND,
+                    BmState.HANDLER_ABSENCE_CONFIRMED,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+        }
+        try {
+            forceExportTopLevelObject(project, topLevelFqn, opId);
+            verifyObjectPersisted(project, formFqn, opId);
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_AND_EXPORTED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_VERIFIED,
+                    null);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Handler slot removed for '%s', but rollback export failed: %s", //$NON-NLS-1$
+                    opId, pending.handlerName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_EXPORT_FAILED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_FAILED,
+                    e);
+        }
+    }
+
+    private RollbackAttempt compensateCreatedCommandSlot(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            PendingStub pending,
+            String opId
+    ) {
+        RollbackMutationResult mutationResult;
+        try {
+            mutationResult = rollbackCommandSlot(project, configuration, formFqn, pending, opId);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Command-slot compensation failed for '%s': %s", //$NON-NLS-1$
+                    opId, pending.commandName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.FAILED,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    e);
+        }
+        if (mutationResult != RollbackMutationResult.REMOVED) {
+            return mapCommandRollbackMutation(mutationResult, pending.commandName(), opId);
+        }
+        try {
+            forceExportTopLevelObject(project, topLevelFqn, opId);
+            verifyObjectPersisted(project, formFqn, opId);
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_AND_EXPORTED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_VERIFIED,
+                    null);
+        } catch (MetadataOperationException e) {
+            LOG.error("[%s] Command slot removed for '%s', but rollback export failed: %s", //$NON-NLS-1$
+                    opId, pending.commandName(), e.getMessage());
+            return new RollbackAttempt(
+                    RollbackStatus.REMOVED_EXPORT_FAILED,
+                    BmState.HANDLER_REMOVED,
+                    SerializedModelState.ROLLBACK_EXPORT_FAILED,
+                    e);
+        }
+    }
+
+    RollbackAttempt mapCommandRollbackMutation(
+            RollbackMutationResult mutationResult, String commandName, String opId) {
+        return switch (mutationResult) {
+            case SLOT_NOT_FOUND -> new RollbackAttempt(
+                    RollbackStatus.SLOT_NOT_FOUND,
+                    BmState.HANDLER_ABSENCE_CONFIRMED,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+            case FORM_NOT_FOUND -> new RollbackAttempt(
+                    RollbackStatus.FORM_NOT_FOUND,
+                    BmState.UNKNOWN,
+                    SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                    null);
+            case SLOT_REFERENCED -> {
+                LOG.warn("[%s] Command-slot compensation not attempted for '%s': command is referenced by a button", //$NON-NLS-1$
+                        opId, commandName);
+                yield new RollbackAttempt(
+                        RollbackStatus.NOT_ATTEMPTED_UNSAFE,
+                        BmState.INITIAL_COMMIT_REMAINS,
+                        SerializedModelState.INITIAL_EXPORT_VERIFIED,
+                        null);
+            }
+            case REMOVED -> throw new IllegalArgumentException(
+                    "REMOVED command rollback requires export verification"); //$NON-NLS-1$
+        };
+    }
+
+    MetadataOperationException stubWriteFailure(String handlerName, RollbackAttempt rollback) {
+        return new MetadataOperationException(
+                MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                "Stub write failed for handler '" + handlerName + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                        + "; rollback_status=" + rollback.status().name(), //$NON-NLS-1$
+                true,
+                rollback.failure());
+    }
+
+    /**
+     * Ensures the form's {@code Module.bsl} exists (Pitfall 4: the very-first mutation on a
+     * fresh form must not fail with file-not-found) and returns its workspace-relative path.
+     */
+    private String ensureFormModulePath(IProject project, String formFqn, String opId) {
+        ModuleArtifactResult result = ensureModuleArtifact(new EnsureModuleArtifactRequest(
+                project.getName(), formFqn, ModuleArtifactKind.MODULE, true, "")); //$NON-NLS-1$
+        LOG.debug("[%s] ensureFormModulePath resolved path=%s (created=%s)", //$NON-NLS-1$
+                opId, result.modulePath(), Boolean.valueOf(result.created()));
+        return result.modulePath();
+    }
+
+    /**
+     * Re-resolves a FRESH {@code Event} for stub generation (directive/signature source),
+     * completely independent of the original (by-now-committed) transaction's object graph
+     * (Pitfall 2) — re-runs the exact same target/container/event resolution
+     * {@link #wireEventHandler} used, via a fresh read-only {@code executeRead}.
+     */
+    private FreshEventContext resolveFreshEventContext(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending) {
+        return executeRead(project, tx -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
+            MdObject resolved = resolveObjectForTransaction(
+                    project, asPlatformTransaction(tx), txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + formFqn, false); //$NON-NLS-1$
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
+            ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, pending.eventName());
+            EventHandler persistedHandler = findExistingHandler(
+                    resolvedEvent.owner(), resolvedEvent.event(), pending.adopted(), pending.callType());
+            if (persistedHandler == null || !pending.handlerName().equals(persistedHandler.getName())) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Event handler binding is not visible after commit: event=" + pending.eventName() //$NON-NLS-1$
+                                + ", handler=" + pending.handlerName(), //$NON-NLS-1$
+                        true);
+            }
+            HandlerRegionTarget region = new FormHandlerRegionResolver().resolve(resolvedEvent.owner());
+            return new FreshEventContext(resolvedEvent.event(), region);
+        });
+    }
+
+    /**
+     * Compensating transaction (STUB-01 "both or neither"): re-resolves the Form/container/
+     * handler completely FRESH inside a NEW {@code executeWrite} — never closing over the
+     * original transaction's (now-stale) object references (Pitfall 2) — and removes the
+     * just-created handler slot. Callers must not invoke this for an upsert that changed an
+     * existing slot because removing it would not restore the pre-recipe state.
+     */
+    private RollbackMutationResult rollbackHandlerSlot(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
+        return executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                LOG.warn("[%s] rollbackHandlerSlot: form metadata not found: %s", opId, formFqn); //$NON-NLS-1$
+                return RollbackMutationResult.FORM_NOT_FOUND;
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
+            ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, pending.eventName());
+            EventHandler existing = findExistingHandler(
+                    resolvedEvent.owner(), resolvedEvent.event(), pending.adopted(), pending.callType());
+            if (existing == null && !pending.previousState().existed()) {
+                LOG.warn("[%s] rollbackHandlerSlot: handler slot not found form=%s event=%s", //$NON-NLS-1$
+                        opId, formFqn, pending.eventName());
+                return RollbackMutationResult.SLOT_NOT_FOUND;
+            }
+            restoreHandlerSnapshot(
+                    resolvedEvent.owner(), resolvedEvent.event(),
+                    pending.adopted(), pending.callType(), pending.previousState());
+            return RollbackMutationResult.REMOVED;
+        });
+    }
+
+    /** Restores one handler mutation from its pre-commit snapshot. Package-visible for tests. */
+    void restoreHandlerSnapshot(
+            EventHandlerContainer owner,
+            Event event,
+            boolean adopted,
+            ExtendedMethodCallType callType,
+            HandlerMutationSnapshot previousState) {
+        EventHandler current = findExistingHandler(owner, event, adopted, callType);
+        if (!previousState.existed()) {
+            if (current != null) {
+                owner.getHandlers().remove(current);
+            }
+            return;
+        }
+
+        boolean currentIsExtension = current instanceof EventHandlerExtension;
+        if (current == null || currentIsExtension != previousState.extensionHandler()) {
+            if (current != null) {
+                owner.getHandlers().remove(current);
+            }
+            current = previousState.extensionHandler()
+                    ? FormFactory.eINSTANCE.createEventHandlerExtension()
+                    : FormFactory.eINSTANCE.createEventHandler();
+            current.setEvent(event);
+            owner.getHandlers().add(current);
+        }
+        current.setName(previousState.handlerName());
+        if (current instanceof EventHandlerExtension extensionHandler) {
+            extensionHandler.setCallType(previousState.callType());
+        }
+    }
+
+    /**
+     * Removes a just-created command only when no button references it. Both the form and
+     * command are resolved afresh inside this compensating write transaction; no EMF
+     * reference from the committed mutation transaction is reused.
+     */
+    private RollbackMutationResult rollbackCommandSlot(
+            IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
+        return executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, formFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                LOG.warn("[%s] rollbackCommandSlot: form metadata not found: %s", opId, formFqn); //$NON-NLS-1$
+                return RollbackMutationResult.FORM_NOT_FOUND;
+            }
+            Form formModel = resolveManagedFormModel(basicForm, formFqn);
+            FormCommand target = findFormCommandByName(formModel, pending.commandName());
+            if (target == null) {
+                LOG.warn("[%s] rollbackCommandSlot: command slot not found form=%s command=%s", //$NON-NLS-1$
+                        opId, formFqn, pending.commandName());
+                return RollbackMutationResult.SLOT_NOT_FOUND;
+            }
+            if (isCommandReferenced(formModel, target)) {
+                LOG.warn("[%s] rollbackCommandSlot: command is referenced form=%s command=%s", //$NON-NLS-1$
+                        opId, formFqn, pending.commandName());
+                return RollbackMutationResult.SLOT_REFERENCED;
+            }
+            formModel.getFormCommands().remove(target);
+            return RollbackMutationResult.REMOVED;
+        });
+    }
+
+    boolean isCommandReferenced(Form formModel, FormCommand target) {
+        if (formModel == null || target == null) {
+            return false;
+        }
+        TreeIterator<EObject> iterator = formModel.eAllContents();
+        while (iterator.hasNext()) {
+            EObject object = iterator.next();
+            if (!(object instanceof Button button)) {
+                continue;
+            }
+            Command referenced = button.getCommandName();
+            if (referenced == target) {
+                return true;
+            }
+            if (referenced instanceof FormCommand referencedCommand
+                    && target.getName() != null
+                    && referencedCommand.getName() != null
+                    && target.getName().equalsIgnoreCase(referencedCommand.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public FormRecipeResult applyFormRecipe(FormRecipeRequest request) {
+        String opId = LogSanitizer.newId("edt-form-recipe"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        request.validate();
+        FormRecipeMode mode = FormRecipeMode.fromOptionalString(request.mode());
+        String ownerFqn = asString(request.ownerFqn());
+        String requestedFormFqn = asString(request.formFqn());
+        FormUsage usage = FormUsage.fromOptionalString(request.usage());
+        String requestedName = asString(request.name());
+
+        if ((ownerFqn == null || ownerFqn.isBlank()) && requestedFormFqn != null && !requestedFormFqn.isBlank()) {
+            ownerFqn = extractTopLevelFqn(requestedFormFqn);
+        }
+        if ((requestedName == null || requestedName.isBlank()) && requestedFormFqn != null && !requestedFormFqn.isBlank()) {
+            requestedName = formNameFromFqn(requestedFormFqn);
+        }
+
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        final boolean externalProject = isExternalProject(project);
+        if (configuration == null && !externalProject) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+        if (configuration == null) {
+            LOG.warn("[%s] applyFormRecipe uses external-object resolution project=%s form=%s", //$NON-NLS-1$
+                    opId, request.projectName(), requestedFormFqn);
+        }
+
+        String formFqn = requestedFormFqn;
+        FormUsage effectiveUsage = usage;
+        String effectiveName = requestedName;
+        if (formFqn == null || formFqn.isBlank()) {
+            effectiveUsage = resolveEffectiveFormUsage(ownerFqn, requestedName, usage);
+            effectiveName = resolveEffectiveFormName(ownerFqn, requestedName, effectiveUsage);
+            formFqn = ownerFqn + ".Form." + effectiveName; //$NON-NLS-1$
+        }
+        FormUsage usageForDefault = effectiveUsage != null
+                ? effectiveUsage
+                : resolveEffectiveFormUsage(ownerFqn, effectiveName, usage);
+
+        LOG.info("[%s] applyFormRecipe START project=%s form=%s mode=%s attributes=%d layoutOps=%d", //$NON-NLS-1$
+                opId,
+                request.projectName(),
+                formFqn,
+                mode.name(),
+                Integer.valueOf(request.attributes() == null ? 0 : request.attributes().size()),
+                Integer.valueOf(request.layoutOperations() == null ? 0 : request.layoutOperations().size()));
+
+        final String lookupFormFqn = formFqn;
+        boolean formExists = executeRead(project, tx -> {
+            IBmPlatformTransaction platformTx = asPlatformTransaction(tx);
+            Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, platformTx, txConfiguration, lookupFormFqn);
+            return Boolean.valueOf(resolved instanceof BasicForm);
+        }).booleanValue();
+
+        if (!formExists) {
+            if (mode == FormRecipeMode.UPDATE) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + formFqn, false); //$NON-NLS-1$
+            }
+            if (ownerFqn == null || ownerFqn.isBlank()) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
+                        "owner_fqn is required to create form", false); //$NON-NLS-1$
+            }
+            CreateFormRequest createRequest = new CreateFormRequest(
+                    request.projectName(),
+                    ownerFqn,
+                    effectiveName,
+                    effectiveUsage,
+                    request.managed(),
+                    request.setAsDefault(),
+                    request.synonym(),
+                    request.comment(),
+                    request.waitMs());
+            CreateFormResult created = createForm(createRequest);
+            formFqn = created.formFqn();
+        } else if (mode == FormRecipeMode.CREATE) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.FORM_ALREADY_EXISTS,
+                    "Form already exists: " + formFqn, false); //$NON-NLS-1$
+        }
+
+        boolean hasAttributes = request.attributes() != null && !request.attributes().isEmpty();
+        boolean hasLayoutOps = request.layoutOperations() != null && !request.layoutOperations().isEmpty();
+        if (!hasAttributes && !hasLayoutOps) {
+            return new FormRecipeResult(
+                    request.projectName(),
+                    formFqn,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    HandlerStubReport.empty());
+        }
+
+        Map<String, TypeItem> preResolvedTypes = preResolveFormAttributeTypes(project, request.attributes());
+
+        final String applyFormFqn = formFqn;
+        final String applyOwnerFqn = ownerFqn;
+        final List<PendingStub> pendingStubs = new ArrayList<>();
+        FormRecipeApplyResult applyResult = executeWrite(project, transaction -> {
+            Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, applyFormFqn);
+            if (!(resolved instanceof BasicForm basicForm)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + applyFormFqn, false); //$NON-NLS-1$
+            }
+            Form formModel = resolveManagedFormModel(basicForm, applyFormFqn);
+            applyFormRootPropertiesIfNeeded(basicForm, request);
+            FormAttributeRecipeStats stats = hasAttributes
+                    ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
+                    : new FormAttributeRecipeStats();
+            List<String> summaries = hasLayoutOps
+                    ? applyFormModelOperations(formModel, request.layoutOperations(), pendingStubs)
+                    : List.of();
+            if (Boolean.TRUE.equals(request.setAsDefault())) {
+                boolean bindDefault = resolveDefaultBinding(Boolean.TRUE, usageForDefault, applyOwnerFqn, externalProject);
+                if (bindDefault) {
+                    MdObject owner = resolveOwnerForMutation(project, transaction, txConfiguration, applyOwnerFqn);
+                    if (owner == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
+                                "Owner not found for default form binding: " + applyOwnerFqn, false); //$NON-NLS-1$
+                    }
+                    bindDefaultForm(owner, basicForm, usageForDefault, opId);
+                    ensureUuidsRecursively(owner, opId, applyOwnerFqn);
+                }
+            }
+            ensureUuidsRecursively(basicForm, opId, applyFormFqn);
+            return new FormRecipeApplyResult(stats, summaries);
+        });
+
+        String topLevelFqn = extractTopLevelFqn(formFqn);
+        forceExportTopLevelObject(project, topLevelFqn, opId);
+        verifyObjectPersisted(project, formFqn, opId);
+
+        // PHASE C (07-03, STUB-06): write BSL handler stubs strictly after the
+        // model transaction has committed and its export has been verified.
+        StubPhaseOutcome stubOutcome = StubPhaseOutcome.empty();
+        if (!pendingStubs.isEmpty()) {
+            try {
+                stubOutcome = writeHandlerStubsDetailed(
+                        project, configuration, formFqn, topLevelFqn, pendingStubs, opId);
+            } catch (MetadataOperationException e) {
+                StubPhaseFailureException failure = e instanceof StubPhaseFailureException stubFailure
+                        ? stubFailure
+                        : StubPhaseFailureException.unknown(e);
+                throw formRecipePartialFailure(
+                        e,
+                        formFqn,
+                        externalProject,
+                        applyResult.stats().created(),
+                        applyResult.stats().updated(),
+                        applyResult.stats().removed(),
+                        applyResult.layoutSummaries().size(),
+                        pendingStubs.stream().map(PendingStub::handlerName).toList(),
+                        failure.written(),
+                        failure.skippedExisting(),
+                        failure.phase(),
+                        failure.failedHandler(),
+                        failure.rollback().status(),
+                        failure.rollback().bmState(),
+                        failure.rollback().serializedModelState());
+            }
+        }
+        refreshProjectSafely(project);
+        LOG.info("[%s] applyFormRecipe SUCCESS in %s form=%s stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                formFqn,
+                Integer.valueOf(stubOutcome.written().size()),
+                Integer.valueOf(stubOutcome.skippedExisting().size()));
+
+        return new FormRecipeResult(
+                request.projectName(),
+                formFqn,
+                applyResult.stats().created(),
+                applyResult.stats().updated(),
+                applyResult.stats().removed(),
+                applyResult.layoutSummaries().size(),
+                applyResult.layoutSummaries(),
+                stubOutcome.toReport());
+    }
+
+    /**
+     * Builds the shared partial stub-tail contract for both form mutation tools.
+     * For {@code mutate_form_model}, the three attribute counters are measured zeroes.
+     */
+    static FormRecipePartialFailureException formRecipePartialFailure(
+            MetadataOperationException cause,
+            String formFqn,
+            boolean externalProject,
+            int attributesCreated,
+            int attributesUpdated,
+            int attributesRemoved,
+            int layoutOperationsInitiallyCommitted,
+            List<String> handlerSlotsInitiallyCommitted,
+            List<String> handlerStubsWritten,
+            List<String> handlerStubsSkippedExisting,
+            FailurePhase failurePhase,
+            String failedHandler,
+            RollbackStatus rollbackStatus,
+            BmState bmState,
+            SerializedModelState serializedModelState
+    ) {
+        return new FormRecipePartialFailureException(
+                cause.getCode(),
+                cause.getMessage(),
+                cause.isRecoverable(),
+                formFqn,
+                externalProject,
+                attributesCreated,
+                attributesUpdated,
+                attributesRemoved,
+                layoutOperationsInitiallyCommitted,
+                handlerSlotsInitiallyCommitted,
+                handlerStubsWritten,
+                handlerStubsSkippedExisting,
+                failurePhase,
+                failedHandler,
+                rollbackStatus,
+                bmState,
+                serializedModelState,
+                cause);
+    }
+
+    private void applyFormRootPropertiesIfNeeded(BasicForm form, FormRecipeRequest request) {
+        if (form == null || request == null) {
+            return;
+        }
+        String synonym = asString(request.synonym());
+        String comment = asString(request.comment());
+        if ((synonym == null || synonym.isBlank()) && (comment == null || comment.isBlank())) {
+            return;
+        }
+        setCommonProperties(form, form.getName(), synonym, comment);
+    }
+
+    public InspectFormLayoutResult inspectFormLayout(InspectFormLayoutRequest request) {
+        String opId = LogSanitizer.newId("edt-form-inspect"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        request.validate();
+        LOG.info("[%s] inspectFormLayout START project=%s form=%s", //$NON-NLS-1$
+                opId,
+                request.projectName(),
+                request.formFqn());
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null && tryResolveExternalProject(project) == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        InspectFormLayoutResult result = executeRead(project, tx -> {
+            IBmPlatformTransaction platformTx = asPlatformTransaction(tx);
+            Configuration txConfiguration = toTransactionConfigurationOrNull(tx, configuration);
+            MdObject resolved = resolveObjectForTransaction(project, platformTx, txConfiguration, request.formFqn());
+            if (!(resolved instanceof BasicForm basicForm)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Form metadata not found: " + request.formFqn(), false); //$NON-NLS-1$
+            }
+            Form formModel = resolveManagedFormModel(basicForm, request.formFqn());
+            Map<String, Object> formProperties = collectFormRootProperties(
+                    formModel,
+                    request.includeProperties(),
+                    request.includeTitles());
+            FormInspectState state = new FormInspectState(request.effectiveMaxItems());
+            List<InspectFormLayoutResult.FormItemNode> nodes = collectFormItemNodes(
+                    formModel,
+                    null,
+                    "/" + safeForPath(basicForm.getName()), //$NON-NLS-1$
+                    0,
+                    request,
+                    state);
+            String mutationHint = buildFormMutationHint(request.formFqn());
+            List<InspectFormLayoutResult.FormCommandNode> commandNodes = collectFormCommandNodes(formModel);
+            return new InspectFormLayoutResult(
+                    request.projectName(),
+                    request.formFqn(),
+                    basicForm.getName(),
+                    formProperties,
+                    state.visited(),
+                    state.truncated(),
+                    mutationHint,
+                    nodes,
+                    commandNodes);
+        });
+
+        LOG.info("[%s] inspectFormLayout SUCCESS in %s form=%s items=%d truncated=%s", //$NON-NLS-1$
+                opId,
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                request.formFqn(),
+                Integer.valueOf(result.totalItems()),
+                Boolean.valueOf(result.truncated()));
+        return result;
+    }
+
+    public MetadataOperationResult addMetadataChild(AddMetadataChildRequest request) {
+        String opId = LogSanitizer.newId("edt-child"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] addMetadataChild START project=%s parent=%s kind=%s name=%s", // $NON-NLS-1$
+                opId, request.projectName(), request.parentFqn(), request.childKind(), request.name());
+        request.validate();
+        if (request.childKind() == MetadataChildKind.FORM) {
+            CreateFormRequest formRequest = createFormRequestFromAddChild(request);
+            CreateFormResult formResult = createForm(formRequest);
+            LOG.info("[%s] addMetadataChild FORM routed to createForm in %s fqn=%s", opId, //$NON-NLS-1$
+                    LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                    formResult.formFqn());
+            return formResult.toMetadataOperationResult(
+                    request.projectName(),
+                    extractNameFromFqn(formResult.formFqn()));
+        }
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+        LOG.debug("[%s] Project is ready: %s", opId, project.getName()); //$NON-NLS-1$
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        final boolean externalProject = isExternalProject(project);
+        if (configuration == null && !externalProject) {
+            LOG.error("[%s] Configuration is null for project=%s", opId, request.projectName()); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        Map<String, TypeItem> preResolvedTypes = preResolveChildTypes(project, request);
+        final Map<String, TypeItem> capturedTypes = preResolvedTypes;
+
+        String childFqn = executeWrite(project, transaction -> {
+            LOG.debug("[%s] Transaction started for addMetadataChild", opId); //$NON-NLS-1$
+            if (externalProject
+                    && (request.childKind() == MetadataChildKind.ATTRIBUTE
+                            || request.childKind() == MetadataChildKind.TABULAR_SECTION)) {
+                return createGenericChildInExternalProject(project, request, transaction, capturedTypes);
+            }
+            if (configuration == null) {
+                if (!externalProject) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                            "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+                }
+                return createGenericChildInExternalProject(project, request, transaction, capturedTypes);
+            }
+            Configuration txConfiguration = transaction.toTransactionObject(configuration);
+            if (txConfiguration == null) {
+                LOG.error("[%s] Failed to map configuration into transaction", opId); //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+            return createGenericChild(txConfiguration, request, transaction, capturedTypes);
+        });
+        verifyObjectPersisted(project, childFqn, opId);
+
+        String templateArtifactPath = null;
+        if (request.childKind() == MetadataChildKind.TEMPLATE) {
+            TemplateType requestedType = resolveTemplateType(request.properties());
+            templateArtifactPath = ensureTemplateArtifact(project, request.parentFqn(), request.name(), requestedType, opId);
+        }
+
+        LOG.info("[%s] addMetadataChild SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                childFqn);
+
+        String message = templateArtifactPath != null
+                ? "Metadata child object created successfully. Template artifact: " + templateArtifactPath //$NON-NLS-1$
+                : "Metadata child object created successfully"; //$NON-NLS-1$
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                request.childKind().name(),
+                extractNameFromFqn(childFqn),
+                childFqn,
+                message);
+    }
+
+    private Form resolveManagedFormModel(BasicForm basicForm, String formFqn) {
+        if (basicForm.getForm() == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Form model is not initialized for: " + formFqn, false); //$NON-NLS-1$
+        }
+        if (!(basicForm.getForm() instanceof Form formModel)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Unsupported form model type: " + basicForm.getForm().getClass().getName(), false); //$NON-NLS-1$
+        }
+        return formModel;
+    }
+
+    /**
+     * Applies form-model operations and threads every {@code add_event_handler}/
+     * {@code set_event_handler} and {@code add_command}/{@code create_command} into
+     * {@code pendingStubs}. Both {@code updateFormModel} and {@code applyFormRecipe}
+     * consume these records in their shared post-export tail, strictly after
+     * {@code forceExportTopLevelObject}/{@code verifyObjectPersisted} (STUB-06).
+     * {@code add_button} and {@code remove_event_handler} record nothing.
+     */
+    private List<String> applyFormModelOperations(
+            Form formModel, List<Map<String, Object>> operations, List<PendingStub> pendingStubs) {
+        List<String> summaries = new ArrayList<>();
+        IFormItemManagementService itemManagementService = resolveOptionalFormItemManagementService();
+        int operationIndex = 1;
+        for (Map<String, Object> operation : operations) {
+            String rawOp = asString(operation.get("op")); //$NON-NLS-1$
+            // Early validation: detect common LLM hallucinations and give actionable errors
+            validateFormOperationParams(operation, rawOp);
+            String op = normalizeToken(rawOp);
+            switch (op) {
+                case "setformprops", "setformproperties", "setform" -> {
+                    Map<String, Object> set = extractOperationSet(operation);
+                    if (set.isEmpty()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "set_form_props operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
+                    }
+                    applyFormPropertySet(formModel, set);
+                    summaries.add("set_form_props[" + operationIndex + "]"); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addgroup", "creategroup" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid group name: " + name, false); //$NON-NLS-1$
+                    }
+                    Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+                    rejectTableAsAddGroupType(operation, set, name);
+                    ManagedFormGroupType groupType = resolveRequestedGroupType(operation, set);
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    FormGroup group = addGroupItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            groupType,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "group_type"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(group, effectiveSet);
+                    }
+                    applyDefaultVisibility(group, effectiveSet);
+                    ensureFormGroupExtInfo(group);
+                    summaries.add("add_group[" + operationIndex + "]: name=" + group.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(group)); //$NON-NLS-1$
+                }
+                case "addfield", "createfield" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid field name: " + name, false); //$NON-NLS-1$
+                    }
+                    rejectTableIncompatibleFieldType(parentContainer, operation, name);
+                    Map<String, Object> set = extractAddFieldSet(operation);
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Object fieldDataPathValue = getMapValueIgnoreCase(set, "data_path"); //$NON-NLS-1$
+                    if (fieldDataPathValue == null) {
+                        fieldDataPathValue = getMapValueIgnoreCase(set, "dataPath"); //$NON-NLS-1$
+                    }
+                    FormField field = addFieldItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            fieldDataPathValue,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(field, effectiveSet);
+                    }
+                    ensureFormFieldExtInfo(field);
+                    applyDefaultVisibility(field, effectiveSet);
+                    summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(field)); //$NON-NLS-1$
+                }
+                case "addtable", "createtable" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid table name: " + name, false); //$NON-NLS-1$
+                    }
+                    Object dataPathValue = getMapValueIgnoreCase(operation, "data_path"); //$NON-NLS-1$
+                    if (dataPathValue == null) {
+                        dataPathValue = getMapValueIgnoreCase(operation, "dataPath"); //$NON-NLS-1$
+                    }
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Table table = addTableItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            dataPathValue,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> set = extractAddFieldSet(operation);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(
+                            set, "name", "title", "type", "data_path", "datapath"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(table, effectiveSet);
+                    }
+                    applyDefaultVisibility(table, effectiveSet);
+                    summaries.add("add_table[" + operationIndex + "]: name=" + table.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(table)); //$NON-NLS-1$
+                }
+                case "setitemprops", "setitem", "updateitem", "set" -> {
+                    FormItem item = resolveRequiredItem(formModel, operation);
+                    Map<String, Object> set = extractOperationSet(operation);
+                    if (set.isEmpty()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
+                    }
+                    rejectTableAsSetItemType(operation, set, item);
+                    applyFormPropertySet(item, set);
+                    if (item instanceof FormField) {
+                        ensureFormFieldExtInfo((FormField) item);
+                    }
+                    summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "setcommand", "setformcommand", "setcommandprops" -> {
+                    // Form commands live in formModel.getFormCommands(), NOT in the item
+                    // tree, so set_item could never reach them: it failed with
+                    // "Form item not found". Their titles and tooltips were therefore
+                    // unreachable through MCP, and a caller had to edit Form.form by hand
+                    // — exactly what the tool exists to prevent.
+                    FormCommand command = resolveRequiredFormCommand(formModel, operation);
+                    Map<String, Object> set = extractOperationSet(operation);
+                    if (set.isEmpty()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "set_command operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
+                    }
+                    applyFormPropertySet(command, set);
+                    summaries.add("set_command[" + operationIndex + "]: name=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + command.getName());
+                }
+                case "removeitem", "deleteitem" -> {
+                    FormItem item = resolveRequiredItem(formModel, operation);
+                    FormItemContainer parent = findParentContainer(formModel, item);
+                    if (parent == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "Cannot remove root form container item", false); //$NON-NLS-1$
+                    }
+                    parent.getItems().remove(item);
+                    summaries.add("remove_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "moveitem" -> {
+                    FormItem item = resolveRequiredItem(formModel, operation);
+                    FormItemContainer source = findParentContainer(formModel, item);
+                    if (source == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "Cannot move root form container item", false); //$NON-NLS-1$
+                    }
+                    FormItemContainer target = resolveTargetContainer(formModel, operation);
+                    source.getItems().remove(item);
+                    insertItemIntoContainer(target, item, asOptionalInteger(operation.get("index"), "index")); //$NON-NLS-1$ //$NON-NLS-2$
+                    summaries.add("move_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addcommand", "createcommand" -> {
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid command name: " + name, false); //$NON-NLS-1$
+                    }
+                    // Check for duplicate command name
+                    for (FormCommand existing : formModel.getFormCommands()) {
+                        if (existing != null && name.equalsIgnoreCase(existing.getName())) {
+                            throw new MetadataOperationException(
+                                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                                    "Form command already exists: " + name, false); //$NON-NLS-1$
+                        }
+                    }
+                    String actionHandler = asString(getMapValueIgnoreCase(operation, "action")); //$NON-NLS-1$
+                    if (actionHandler == null || actionHandler.isBlank()) {
+                        actionHandler = name; // Default handler name = command name
+                    }
+                    if (!MetadataNameValidator.isValidName(actionHandler)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid command action handler name: " + actionHandler, false); //$NON-NLS-1$
+                    }
+                    FormCommand formCommand = addCommandToForm(formModel, name, actionHandler, operation);
+                    pendingStubs.add(PendingStub.forCommandAction(
+                            operation, formCommand.getName(), actionHandler));
+                    summaries.add("add_command[" + operationIndex + "]: name=" + formCommand.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                            + ", id=" + formCommand.getId() + ", action=" + actionHandler); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addbutton", "createbutton" -> {
+                    FormItemContainer parentContainer = resolveButtonParentContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid button name: " + name, false); //$NON-NLS-1$
+                    }
+                    // Resolve the command reference
+                    String commandRef = asString(getMapValueIgnoreCase(operation, "command_name")); //$NON-NLS-1$
+                    if (commandRef == null) {
+                        commandRef = asString(getMapValueIgnoreCase(operation, "command")); //$NON-NLS-1$
+                    }
+                    Command resolvedCommand = null;
+                    if (commandRef != null && !commandRef.isBlank()) {
+                        resolvedCommand = findFormCommandByName(formModel, commandRef);
+                        if (resolvedCommand == null) {
+                            throw new MetadataOperationException(
+                                    MetadataOperationCode.METADATA_NOT_FOUND,
+                                    "Form command not found: \"" + commandRef //$NON-NLS-1$
+                                            + "\". Use add_command first to create it.", false); //$NON-NLS-1$
+                        }
+                    }
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Button button = addButtonItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            resolvedCommand,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> set = extractOperationSet(operation);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "command_name", "command"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(button, effectiveSet);
+                    }
+                    applyDefaultVisibility(button, effectiveSet);
+                    summaries.add("add_button[" + operationIndex + "]: name=" + button.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                            + ", id=" + safeItemId(button) //$NON-NLS-1$
+                            + (commandRef != null ? ", command=" + commandRef : "")); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                // Legacy alias: wires the FORM event slot only (no BSL stub). "addeventhandler"
+                // now belongs to the canonical add_event_handler family below (full wiring + stub).
+                case "addhandler", "add_handler", "set_handler" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    String event = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+                    if (event == null || event.isBlank()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "add_handler requires 'event' (e.g. OnCreateAtServer)", false); //$NON-NLS-1$
+                    }
+                    String handlerName = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (handlerName == null || handlerName.isBlank()) {
+                        handlerName = event;
+                    }
+                    Event targetEvent = null;
+                    for (Event ev : formModel.getFormEvents()) {
+                        if (ev != null && event.equalsIgnoreCase(ev.getName())) {
+                            targetEvent = ev;
+                            break;
+                        }
+                    }
+                    if (targetEvent == null) {
+                        java.util.List<String> available = new java.util.ArrayList<>();
+                        for (Event ev : formModel.getFormEvents()) {
+                            if (ev != null) {
+                                available.add(ev.getName());
+                            }
+                        }
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.METADATA_NOT_FOUND,
+                                "Form event not found: " + event + ". Available: " + String.join(", ", available), false); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
+                    EventHandler existingHandler = null;
+                    for (EventHandler h : formModel.getHandlers()) {
+                        if (h != null && h.getEvent() == targetEvent) {
+                            existingHandler = h;
+                            break;
+                        }
+                    }
+                    if (existingHandler != null) {
+                        existingHandler.setName(handlerName);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName + " (updated)"); //$NON-NLS-1$ //$NON-NLS-2$
+                    } else {
+                        EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
+                        handler.setEvent(targetEvent);
+                        handler.setName(handlerName);
+                        formModel.getHandlers().add(handler);
+                        summaries.add("add_handler[" + operationIndex + "]: event=" + event //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", name=" + handlerName); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
+                }
+                case "addeventhandler", "seteventhandler" -> {
+                    WiredEventHandler wired = wireEventHandler(formModel, operation);
+                    EventHandler handler = wired.handler();
+                    pendingStubs.add(PendingStub.forEventHandler(
+                            operation,
+                            handler.getEvent().getName(),
+                            handler.getName(),
+                            wired.targetContext(),
+                            wired.adopted(),
+                            wired.callType(),
+                            wired.previousState()));
+                    StringBuilder summary = new StringBuilder("add_event_handler[") //$NON-NLS-1$
+                            .append(operationIndex)
+                            .append("]: event=") //$NON-NLS-1$
+                            .append(handler.getEvent().getName())
+                            .append(", handler=") //$NON-NLS-1$
+                            .append(handler.getName());
+                    if (wired.adopted()) {
+                        summary.append(", call_type=").append(wired.callType().getLiteral()); //$NON-NLS-1$
+                        summary.append(", base_handler_exists=").append(wired.baseHandlerExists()); //$NON-NLS-1$
+                    }
+                    summaries.add(summary.toString());
+                }
+                case "removeeventhandler" -> {
+                    FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
+                    String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+                    ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+                    Event event = resolvedEvent.event();
+                    boolean adopted = isAdoptedTarget(formModel);
+                    ExtendedMethodCallType callType = adopted
+                            ? extendedMethodCallTypeResolver.resolve(
+                                    asString(getMapValueIgnoreCase(operation, "call_type"))) //$NON-NLS-1$
+                            : null;
+                    EventHandler existing = findExistingHandler(
+                            resolvedEvent.owner(), event, adopted, callType);
+                    if (existing != null) {
+                        resolvedEvent.owner().getHandlers().remove(existing);
+                    }
+                    StringBuilder summary = new StringBuilder("remove_event_handler[") //$NON-NLS-1$
+                            .append(operationIndex)
+                            .append("]: event=") //$NON-NLS-1$
+                            .append(event.getName());
+                    if (adopted) {
+                        summary.append(", call_type=").append(callType.getLiteral()); //$NON-NLS-1$
+                    }
+                    summary.append(existing != null ? " removed" : " — not bound, nothing removed"); //$NON-NLS-1$ //$NON-NLS-2$
+                    summaries.add(summary.toString());
+                }
+                default -> throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "Unsupported form operation: " + rawOp, false); //$NON-NLS-1$
+            }
+            operationIndex++;
+        }
+        return summaries;
+    }
+
+    /**
+     * Resolves the target {@link FormVisualEntity} for an event-handler operation.
+     * If {@code target=="form"} (or no item reference is present), the {@code Form}
+     * root itself is returned — {@code resolveRequiredItem} cannot provide this since
+     * {@code Form} does not implement {@link FormItem}, only {@link FormVisualEntity}.
+     * Otherwise the resolution delegates to {@link #resolveRequiredItem}.
+     */
+    private FormVisualEntity resolveEventHandlerFormItem(Form formModel, Map<String, Object> operation) {
+        String target = asString(getMapValueIgnoreCase(operation, "target")); //$NON-NLS-1$
+        boolean explicitFormTarget = target != null && "form".equalsIgnoreCase(target); //$NON-NLS-1$
+        boolean noItemReference = target == null
+                && getMapValueIgnoreCase(operation, "item_id") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "id") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "item_name") == null //$NON-NLS-1$
+                && getMapValueIgnoreCase(operation, "name") == null; //$NON-NLS-1$
+        if (explicitFormTarget || noItemReference) {
+            return formModel;
+        }
+        return resolveRequiredItem(formModel, operation);
+    }
+
+    /**
+     * Upsert implementation shared by {@code add_event_handler} and
+     * {@code set_event_handler}. Native identity is {@code (owner,eventName)}. Adopted
+     * identity mirrors EDT {@code ModelUtils}: {@code (owner,eventName,callType)}, so
+     * BEFORE and AFTER handlers may coexist while an exact tuple is updated in place.
+     *
+     * <p>Extension-adoption branch (EXT-01/EXT-02/EXT-03, Phase 8): if the form's owning
+     * {@code BasicForm} is {@link ObjectBelonging#ADOPTED} (a single uniform signal reached
+     * via {@code formModel.getMdForm()} — NOT a per-item {@code ExtensionAdoptedProperty}
+     * check, since {@code Table} does not implement it), the created handler is an
+     * {@link EventHandlerExtension} with an explicit-or-resolved
+     * {@link ExtendedMethodCallType} (never relying on the EMF-unset implicit default),
+     * and a {@code baseHandlerExists} observability flag is computed via the adopter's
+     * reverse lookup ({@link IModelObjectAdopter#getSource}). A NATIVE target continues to
+     * get a plain {@link EventHandler} exactly as Phase 6 — unchanged.</p>
+     *
+     * <p>EXT-03 note: no {@code generateExternalPropertyFqn}/{@code attachTopObject} call is
+     * added here — this SUPERSEDES the CONTEXT.md suggestion to reuse that mechanism.
+     * {@code resolveManagedFormModel} (already used by the caller to resolve
+     * {@code formModel}) already resolves the correct, already-adopted, already-materialized
+     * {@code Form} via {@code basicForm.getForm()} — the SAME path base config uses. The
+     * external-property FQN mechanism is a form-CREATION-time concern
+     * (see {@code createForm}/{@code linkGeneratedFormToTransaction}), not an event-wiring
+     * concern, per D-RESEARCH Pattern 3.</p>
+     */
+    private WiredEventHandler wireEventHandler(Form formModel, Map<String, Object> operation) {
+        FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
+        String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
+        ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+        EventHandlerContainer owner = resolvedEvent.owner();
+        Event event = resolvedEvent.event();
+        String handlerName = asString(getMapValueIgnoreCase(operation, "handler_name")); //$NON-NLS-1$
+        if (handlerName == null || handlerName.isBlank()) {
+            handlerName = defaultHandlerName(target, event);
+        }
+        if (!MetadataNameValidator.isValidName(handlerName)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "Invalid event handler name: " + handlerName, false); //$NON-NLS-1$
+        }
+        boolean adopted = isAdoptedTarget(formModel);
+        ExtendedMethodCallType requestedCallType = extendedMethodCallTypeResolver.resolve(
+                asString(getMapValueIgnoreCase(operation, "call_type"))); //$NON-NLS-1$
+        EventHandler handler = findExistingHandler(owner, event, adopted, requestedCallType);
+        HandlerMutationSnapshot previousState = HandlerMutationSnapshot.capture(handler);
+        if (handler == null) {
+            handler = createHandlerForTarget(adopted, requestedCallType);
+            handler.setEvent(event);
+            owner.getHandlers().add(handler);
+        }
+        handler.setName(handlerName);
+        boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
+        TargetContext targetContext = target instanceof Form
+                ? TargetContext.FORM
+                : TargetContext.VISUAL_ITEM;
+        return new WiredEventHandler(
+                handler, requestedCallType, adopted, baseExists, targetContext, previousState);
+    }
+
+    /**
+     * EClass auto-detection (EXT-01): a single boolean check on data already in scope,
+     * uniform across {@code Form}/{@code FormField}/{@code Table} (D-RESEARCH Pattern 1).
+     */
+    private boolean isAdoptedTarget(Form formModel) {
+        BasicForm mdForm = formModel.getMdForm();
+        return mdForm != null && mdForm.getObjectBelonging() == ObjectBelonging.ADOPTED;
+    }
+
+    private EventHandler createHandlerForTarget(boolean adopted, ExtendedMethodCallType callType) {
+        if (adopted) {
+            EventHandlerExtension extensionHandler = FormFactory.eINSTANCE.createEventHandlerExtension();
+            extensionHandler.setCallType(callType);
+            return extensionHandler;
+        }
+        return FormFactory.eINSTANCE.createEventHandler();
+    }
+
+    /**
+     * Base-handler-exists detection (EXT-02): resolves the BASE configuration's
+     * corresponding form via {@link IModelObjectAdopter#getSource} (the reverse of
+     * {@code getAdopted}), re-runs {@link #resolveEventHandlerFormItem} against it to reach
+     * the same-shape container, then checks for a handler matching the wired event's NAME —
+     * never by {@code Event} object reference, since the base side resolves a separate
+     * {@code Event} instance for the same event name (Pitfall 5). This flag is OBSERVABILITY
+     * only; it never gates or changes the resolved {@code call_type}.
+     *
+     * <p>If the {@link IModelObjectAdopter} service itself is unavailable (e.g. a headless
+     * unit-test double with no live {@code VibeCorePlugin}, or a genuinely degraded EDT
+     * runtime), this resolves to {@code false} rather than failing the whole wiring
+     * operation — the flag is best-effort observability, not a hard dependency of EXT-01's
+     * primary EClass/call_type behavior.</p>
+     */
+    private boolean baseHandlerExists(Form adoptedFormModel, Map<String, Object> operation, Event event) {
+        BasicForm adoptedBasicForm = adoptedFormModel.getMdForm();
+        if (adoptedBasicForm == null) {
+            return false;
+        }
+        BasicForm baseBasicForm;
+        try {
+            baseBasicForm = gateway.getModelObjectAdopter().getSource(adoptedBasicForm);
+        } catch (MetadataOperationException e) {
+            if (e.getCode() == MetadataOperationCode.EDT_SERVICE_UNAVAILABLE) {
+                return false;
+            }
+            throw e;
+        }
+        if (baseBasicForm == null || baseBasicForm.getForm() == null) {
+            return false;
+        }
+        if (!(baseBasicForm.getForm() instanceof Form baseFormModel)) {
+            return false;
+        }
+        FormVisualEntity baseTarget;
+        try {
+            baseTarget = resolveEventHandlerFormItem(baseFormModel, operation);
+        } catch (RuntimeException e) {
+            // The base side may not (yet) have the same-shape item resolvable (e.g. a
+            // brand-new adopted-only item) — base_handler_exists is observability only,
+            // never a hard failure of the wiring operation itself.
+            return false;
+        }
+        ResolvedEvent baseEvent;
+        try {
+            baseEvent = eventHandlerTargetResolver.resolveEvent(baseTarget, event.getName());
+        } catch (RuntimeException e) {
+            return false;
+        }
+        return containsHandlerForEventName(baseEvent.owner(), event.getName());
+    }
+
+    /**
+     * Pure name-matching helper (Pitfall 5): whether {@code container} already has a
+     * handler for the event whose {@code getName()} String-equals {@code eventName}.
+     * Factored out so it is unit-testable headlessly (no live BM transaction) against a
+     * pre-seeded base-side fixture, independent of the live {@code getSource} lookup.
+     */
+    private boolean containsHandlerForEventName(EventHandlerContainer container, String eventName) {
+        if (eventName == null) {
+            return false;
+        }
+        for (EventHandler handler : container.getHandlers()) {
+            if (handler != null && handler.getEvent() != null && eventName.equals(handler.getEvent().getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private EventHandler findExistingHandler(
+            EventHandlerContainer container,
+            Event event,
+            boolean adopted,
+            ExtendedMethodCallType callType) {
+        String eventName = event != null ? event.getName() : null;
+        if (eventName == null) {
+            return null;
+        }
+        for (EventHandler handler : container.getHandlers()) {
+            if (handler == null || handler.getEvent() == null
+                    || !eventName.equals(handler.getEvent().getName())) {
+                continue;
+            }
+            if (!adopted) {
+                return handler;
+            }
+            if (handler instanceof EventHandlerExtension extensionHandler
+                    && extensionHandler.getCallType() == callType) {
+                return extensionHandler;
+            }
+        }
+        return null;
+    }
+
 
     /**
      * Carries {@link #wireEventHandler}'s applied handler plus the resolved/observability
@@ -6767,9 +8526,10 @@ public class EdtMetadataService {
             setAttributeType(feature, typeItem, typeSpec, transaction);
             return;
         }
-        // "type" on a Constant is also a containment TypeDescription, but Constant is not a
-        // BasicFeature, so route it through the shared type-application path instead of the
-        // generic containment-reference update below.
+        // Special case: "type" on a Constant is also a containment TypeDescription reference, but a
+        // Constant is not a BasicFeature, so the branch above skips it. Route it through the shared
+        // type-application helper (primitives + reference types), instead of failing on the generic
+        // containment-reference path below.
         if ("type".equalsIgnoreCase(fieldName) //$NON-NLS-1$
                 && target instanceof com._1c.g5.v8.dt.metadata.mdclass.Constant constant) {
             TypeSpec typeSpec = normalizeTypeSpec(value);
@@ -6987,9 +8747,12 @@ public class EdtMetadataService {
     }
 
     /**
-     * Resolves a type query into a TypeDescription and assigns it to any model object that owns a
-     * containment {@code type} reference. BasicFeature keeps its fill-value repair; Constant uses the
-     * same TypeDescription construction without pretending to be a BasicFeature.
+     * Resolves a type query into a {@link TypeDescription} (with number/string/date qualifiers) and
+     * assigns it to {@code typeHolder}. Works for any MdObject that owns a {@code type} TypeDescription
+     * containment reference — {@link BasicFeature} (attribute/dimension/resource) and
+     * {@code Constant} alike. {@code existingType} supplies qualifier defaults for in-place updates.
+     * The final assignment goes through {@link #setTypeDescriptionOnEObject(EObject, TypeDescription)},
+     * which is behaviourally identical to {@code feature.setType(...)} for a BasicFeature.
      */
     private void applyResolvedTypeDescription(
             EObject typeHolder,
@@ -7064,8 +8827,8 @@ public class EdtMetadataService {
         }
 
         setTypeDescriptionOnEObject(typeHolder, typeDesc);
-        if (typeHolder instanceof BasicFeature feature) {
-            fixNullNumberFillValue(feature, typeName);
+        if (typeHolder instanceof BasicFeature basicFeature) {
+            fixNullNumberFillValue(basicFeature, typeName);
         }
     }
 
@@ -7091,8 +8854,12 @@ public class EdtMetadataService {
     }
 
     /**
-     * Resolves a type query for a Constant. Constants expose a containment {@code type} reference but
-     * are not BasicFeature instances, so they need their own pre-resolution path.
+     * Resolves a type query for a {@code Constant} to a pre-resolved {@link TypeItem}. Constants
+     * expose a containment {@code type} reference but are not {@link BasicFeature} instances, so they
+     * need their own pre-resolution path: primitives (String/Number/Date/Boolean) come from the
+     * platform type provider bound to the constant's own {@code type} reference, then from the
+     * configuration; reference types (e.g. {@code EnumRef.X}) resolve later through the transaction
+     * namespace chain in {@link #applyResolvedTypeDescription}.
      */
     private TypeItem resolveTypeItemForConstant(
             com._1c.g5.v8.dt.metadata.mdclass.Constant constant,
@@ -8043,14 +9810,15 @@ public class EdtMetadataService {
     }
 
     /**
-     * Collects every type string from a value instead of only the first one.
+     * Собирает ВСЕ строки типов из значения, а не только первую.
      * <p>
-     * {@code normalizeTypeLookupQuery} returns the first non-blank element of a list and drops the
-     * rest. That is correct for single-valued fields such as {@code type}, but multi-valued ones
-     * (notably {@code EventSubscription.source}, which holds a list of object types) then reach the
-     * pre-resolution map with only their first type. Every following type fails later with
-     * "Type not found for field 'source'", because an {@code EventSubscription} is not a
-     * {@code BasicFeature} and therefore has no {@code resolveTypeItemForFeature} fallback.
+     * {@code normalizeTypeLookupQuery} на списке возвращает первый непустой элемент и отбрасывает
+     * остальные. Для одиночных полей ({@code type}) это верно, но многотиповые
+     * ({@code EventSubscription.source} со списком документов) попадали в пре-резолв лишь первым
+     * типом — остальные падали с "Type not found for field 'source'", потому что фоллбэка через
+     * {@code resolveTypeItemForFeature} у подписки нет (она не {@code BasicFeature}).
+     * <p>
+     * Установлено бисекцией: 1 тип проходил, 2 и больше отбивались всегда на втором элементе.
      */
     private void collectTypeLookupQueries(Object value, Set<String> out) {
         if (value == null || out == null) {
