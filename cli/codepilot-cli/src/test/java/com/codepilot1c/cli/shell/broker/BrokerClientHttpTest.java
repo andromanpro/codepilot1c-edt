@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Test;
 
+import com.codepilot1c.runtime.agent.AgentCompletionMode;
 import com.codepilot1c.runtime.agent.AgentError;
+import com.codepilot1c.runtime.agent.AgentEventListener;
 import com.codepilot1c.runtime.agent.AgentMessage;
 import com.codepilot1c.runtime.agent.AgentModel;
 import com.codepilot1c.runtime.agent.AgentModelException;
@@ -36,6 +38,8 @@ import com.codepilot1c.runtime.agent.AgentRunConfig;
 import com.codepilot1c.runtime.agent.AgentRuntime;
 import com.codepilot1c.runtime.agent.CancellationToken;
 import com.codepilot1c.runtime.agent.StreamObserver;
+import com.codepilot1c.runtime.agent.StreamingAgentModel;
+import com.codepilot1c.runtime.agent.ToolApprover;
 import com.codepilot1c.runtime.agent.ToolDefinition;
 import com.codepilot1c.runtime.agent.ToolExecutionResult;
 import com.codepilot1c.runtime.agent.ToolRuntime;
@@ -278,7 +282,7 @@ public class BrokerClientHttpTest {
                 List.of(new ToolDefinition("lookup", "Lookup", schema)));
     }
 
-    private static AgentRuntime runtime(AgentModel model) {
+    private static AgentRuntime runtime(StreamingAgentModel model) {
         ToolRuntime tools = new ToolRuntime() {
             @Override public List<ToolDefinition> tools() { return List.of(); }
             @Override public java.util.concurrent.CompletionStage<ToolExecutionResult> execute(
@@ -286,7 +290,9 @@ public class BrokerClientHttpTest {
                 return CompletableFuture.failedFuture(new AssertionError("unexpected tool execution"));
             }
         };
-        return new AgentRuntime(model, tools, new AgentRunConfig(1, Duration.ofSeconds(2)));
+        return new AgentRuntime(model, tools, new AgentRunConfig(1, Duration.ofSeconds(2)),
+                AgentEventListener.NOOP, ToolApprover.ALLOW_ALL,
+                AgentCompletionMode.STREAMING);
     }
 
     private static String event(String type, String data) {

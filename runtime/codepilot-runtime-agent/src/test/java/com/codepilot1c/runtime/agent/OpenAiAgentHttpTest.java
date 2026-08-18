@@ -64,7 +64,7 @@ public class OpenAiAgentHttpTest {
                 values.add(arguments.get("value").getAsInt()); //$NON-NLS-1$
                 return CompletableFuture.completedFuture(ToolExecutionResult.success(arguments));
             });
-            try (AgentRuntime runtime = new AgentRuntime(buffered(model), tools,
+            try (AgentRuntime runtime = new AgentRuntime(model, tools,
                     new AgentRunConfig(4, Duration.ofSeconds(3)))) {
                 AgentResult result = runtime.run(new AgentRequest("http-op", List.of( //$NON-NLS-1$
                         new AgentMessage.Text(AgentMessage.Role.USER, "run")))) //$NON-NLS-1$
@@ -76,6 +76,8 @@ public class OpenAiAgentHttpTest {
             }
             assertEquals("Bearer http-secret", authorization.get()); //$NON-NLS-1$
             assertEquals(2, bodies.size());
+            assertFalse(bodies.get(0).has("stream")); //$NON-NLS-1$
+            assertFalse(bodies.get(1).has("stream")); //$NON-NLS-1$
             assertEquals("test-model", bodies.get(0).get("model").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals(1, bodies.get(0).getAsJsonArray("tools").size()); //$NON-NLS-1$
             assertEquals(4, bodies.get(1).getAsJsonArray("messages").size()); //$NON-NLS-1$
@@ -97,7 +99,7 @@ public class OpenAiAgentHttpTest {
         try {
             OpenAiCompatibleAgentModel model = new OpenAiCompatibleAgentModel(
                     new RuntimeProviderFactory().create(configuration(server, null)));
-            try (AgentRuntime runtime = new AgentRuntime(buffered(model), singleTool((name, args, cancellation) ->
+            try (AgentRuntime runtime = new AgentRuntime(model, singleTool((name, args, cancellation) ->
                     CompletableFuture.completedFuture(ToolExecutionResult.success(args))),
                     new AgentRunConfig(2, Duration.ofSeconds(2)), events::add)) {
                 AgentResult result = runtime.run(new AgentRequest("malformed-op", List.of( //$NON-NLS-1$
@@ -135,7 +137,7 @@ public class OpenAiAgentHttpTest {
         try {
             OpenAiCompatibleAgentModel model = new OpenAiCompatibleAgentModel(
                     new RuntimeProviderFactory().create(configuration(server, null)));
-            try (AgentRuntime runtime = new AgentRuntime(buffered(model),
+            try (AgentRuntime runtime = new AgentRuntime(model,
                     singleTool((name, args, cancellation) ->
                             CompletableFuture.completedFuture(ToolExecutionResult.success(args))),
                     new AgentRunConfig(2, Duration.ofSeconds(3)))) {
@@ -170,7 +172,7 @@ public class OpenAiAgentHttpTest {
         try {
             OpenAiCompatibleAgentModel model = new OpenAiCompatibleAgentModel(
                     new RuntimeProviderFactory().create(configuration(server, null)));
-            try (AgentRuntime runtime = new AgentRuntime(buffered(model),
+            try (AgentRuntime runtime = new AgentRuntime(model,
                     singleTool((name, args, cancellation) ->
                             CompletableFuture.completedFuture(ToolExecutionResult.success(args))),
                     new AgentRunConfig(2, Duration.ofSeconds(2)))) {
@@ -194,10 +196,6 @@ public class OpenAiAgentHttpTest {
                 .requestTimeout(Duration.ofSeconds(2))
                 .apiKey(apiKey)
                 .build();
-    }
-
-    private static AgentModel buffered(OpenAiCompatibleAgentModel model) {
-        return model::complete;
     }
 
     private static ToolRuntime singleTool(ToolExecutor executor) {

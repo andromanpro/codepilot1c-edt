@@ -5,14 +5,16 @@ host. A run starts with immutable system/user messages, asks an `AgentModel`
 for assistant text and/or tool calls, executes calls through `ToolRuntime`, and
 feeds deterministic tool-result envelopes back into the next model turn.
 
-Models may additionally implement `StreamingAgentModel`. The runtime then
-passes a per-step `StreamObserver` and forwards its text and reasoning deltas
-to an `AgentEventListener`. Buffered `AgentModel` implementations continue to
-use the original completion method. Events are serialized per run in this
-order: step start, zero or more deltas, the accepted assistant message, each
-tool-call start/result pair, and one terminal turn-finished event. Late stream
-deltas are detached after the model stage completes, and listener failures do
-not affect control flow.
+Models may additionally implement `StreamingAgentModel`. Existing
+`AgentRuntime` constructors retain the buffered `AgentModel` completion
+contract even when a model also supports streaming. Interactive hosts opt in
+with the additive `AgentCompletionMode.STREAMING` constructor policy; the
+runtime then passes a per-step `StreamObserver` and forwards its text and
+reasoning deltas to an `AgentEventListener`. Events are serialized per run in
+this order: step start, zero or more deltas, the accepted assistant message,
+each tool-call start/result pair, and one terminal turn-finished event. Late
+stream deltas are detached after the model stage completes, and listener
+failures do not affect control flow.
 
 Safety bounds are explicit per runtime: `maxSteps` limits model/tool cycles,
 `timeout` bounds the entire run, and a host `CancellationToken` can stop an

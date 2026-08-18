@@ -42,7 +42,8 @@ public class AgentRuntimeSpiTest {
         };
         AgentEventListener listener = recordingListener(events);
 
-        try (AgentRuntime runtime = runtime(model, echoTools(), listener, ToolApprover.ALLOW_ALL)) {
+        try (AgentRuntime runtime = streamingRuntime(
+                model, echoTools(), listener, ToolApprover.ALLOW_ALL)) {
             AgentResult result = runtime.run(request()).get(2, TimeUnit.SECONDS);
             firstObserver.get().onTextDelta("too-late"); //$NON-NLS-1$
 
@@ -59,6 +60,49 @@ public class AgentRuntimeSpiTest {
                     "assistant:2:done", //$NON-NLS-1$
                     "finished:COMPLETED"), events); //$NON-NLS-1$
         }
+    }
+
+    @Test
+    public void streamingCapableModelRemainsBufferedUntilExplicitlyEnabled() throws Exception {
+        AtomicInteger bufferedCompletions = new AtomicInteger();
+        AtomicInteger streamingCompletions = new AtomicInteger();
+        StreamingAgentModel model = new StreamingAgentModel() {
+            @Override
+            public java.util.concurrent.CompletionStage<AgentMessage.Assistant> complete(
+                    AgentModel.Request request, CancellationToken cancellation) {
+                bufferedCompletions.incrementAndGet();
+                return CompletableFuture.completedFuture(AgentMessage.Assistant.text("buffered")); //$NON-NLS-1$
+            }
+
+            @Override
+            public java.util.concurrent.CompletionStage<AgentMessage.Assistant> complete(
+                    AgentModel.Request request, CancellationToken cancellation, StreamObserver observer) {
+                streamingCompletions.incrementAndGet();
+                observer.onTextDelta("streamed"); //$NON-NLS-1$
+                return CompletableFuture.completedFuture(AgentMessage.Assistant.text("streamed")); //$NON-NLS-1$
+            }
+        };
+        List<String> bufferedEvents = new ArrayList<>();
+        try (AgentRuntime runtime = runtime(model, emptyTools(),
+                recordingListener(bufferedEvents), ToolApprover.ALLOW_ALL)) {
+            AgentResult result = runtime.run(request()).get(2, TimeUnit.SECONDS);
+            assertEquals(Optional.of("buffered"), result.text()); //$NON-NLS-1$
+        }
+
+        List<String> streamingEvents = new ArrayList<>();
+        try (AgentRuntime runtime = streamingRuntime(model, emptyTools(),
+                recordingListener(streamingEvents), ToolApprover.ALLOW_ALL)) {
+            AgentResult result = runtime.run(request()).get(2, TimeUnit.SECONDS);
+            assertEquals(Optional.of("streamed"), result.text()); //$NON-NLS-1$
+        }
+
+        assertEquals(1, bufferedCompletions.get());
+        assertEquals(1, streamingCompletions.get());
+        assertEquals(List.of(
+                "step:1", "assistant:1:buffered", "finished:COMPLETED"), bufferedEvents); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals(List.of(
+                "step:1", "text:1:streamed", //$NON-NLS-1$ //$NON-NLS-2$
+                "assistant:1:streamed", "finished:COMPLETED"), streamingEvents); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -375,6 +419,13 @@ public class AgentRuntimeSpiTest {
             AgentEventListener listener, ToolApprover approver) {
         return new AgentRuntime(model, tools,
                 new AgentRunConfig(4, Duration.ofSeconds(5)), listener, approver);
+    }
+
+    private static AgentRuntime streamingRuntime(StreamingAgentModel model, ToolRuntime tools,
+            AgentEventListener listener, ToolApprover approver) {
+        return new AgentRuntime(model, tools,
+                new AgentRunConfig(4, Duration.ofSeconds(5)), listener, approver,
+                AgentCompletionMode.STREAMING);
     }
 
     private static AgentRequest request() {

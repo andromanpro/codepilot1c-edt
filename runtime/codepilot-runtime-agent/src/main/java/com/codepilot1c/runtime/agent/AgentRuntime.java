@@ -51,6 +51,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final LogSink logSink;
     private final AgentEventListener eventListener;
     private final ToolApprover approver;
+    private final AgentCompletionMode completionMode;
     private final ScheduledExecutorService scheduler;
     private final Object lifecycleLock = new Object();
     private final Set<RunContext> activeRuns = new HashSet<>();
@@ -58,12 +59,24 @@ public final class AgentRuntime implements AutoCloseable {
 
     public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink,
             AgentEventListener eventListener, ToolApprover approver) {
+        this(model, tools, config, logSink, eventListener, approver,
+                AgentCompletionMode.BUFFERED);
+    }
+
+    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink,
+            AgentEventListener eventListener, ToolApprover approver,
+            AgentCompletionMode completionMode) {
         this.model = Objects.requireNonNull(model, "model"); //$NON-NLS-1$
         this.tools = Objects.requireNonNull(tools, "tools"); //$NON-NLS-1$
         this.config = Objects.requireNonNull(config, "config"); //$NON-NLS-1$
         this.logSink = logSink == null ? NO_LOG : logSink;
         this.eventListener = eventListener == null ? AgentEventListener.NOOP : eventListener;
         this.approver = approver == null ? ToolApprover.ALLOW : approver;
+        this.completionMode = Objects.requireNonNull(completionMode, "completionMode"); //$NON-NLS-1$
+        if (completionMode == AgentCompletionMode.STREAMING
+                && !(model instanceof StreamingAgentModel)) {
+            throw new IllegalArgumentException("Streaming mode requires a StreamingAgentModel"); //$NON-NLS-1$
+        }
         this.scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "codepilot-agent-timeout"); //$NON-NLS-1$
             thread.setDaemon(true);
@@ -74,6 +87,12 @@ public final class AgentRuntime implements AutoCloseable {
     public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config,
             AgentEventListener eventListener, ToolApprover approver) {
         this(model, tools, config, null, eventListener, approver);
+    }
+
+    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config,
+            AgentEventListener eventListener, ToolApprover approver,
+            AgentCompletionMode completionMode) {
+        this(model, tools, config, null, eventListener, approver, completionMode);
     }
 
     public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink) {
@@ -242,7 +261,8 @@ public final class AgentRuntime implements AutoCloseable {
             CompletionStage<AgentMessage.Assistant> stage;
             StepStreamObserver streamObserver = null;
             try {
-                if (model instanceof StreamingAgentModel streaming) {
+                if (completionMode == AgentCompletionMode.STREAMING
+                        && model instanceof StreamingAgentModel streaming) {
                     streamObserver = new StepStreamObserver(steps);
                     stage = Objects.requireNonNull(
                             streaming.complete(modelRequest, cancellation, streamObserver),

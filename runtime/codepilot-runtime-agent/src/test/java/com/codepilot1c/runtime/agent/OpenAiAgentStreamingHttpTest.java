@@ -217,7 +217,9 @@ public class OpenAiAgentStreamingHttpTest {
     private static AgentResult run(HttpServer server, char[] apiKey,
             String prompt, List<LogSink.Event> logs) throws Exception {
         try (AgentRuntime runtime = new AgentRuntime(model(server, apiKey), emptyTools(),
-                new AgentRunConfig(2, Duration.ofSeconds(2)), logs::add)) {
+                new AgentRunConfig(2, Duration.ofSeconds(2)), logs::add,
+                AgentEventListener.NOOP, ToolApprover.ALLOW_ALL,
+                AgentCompletionMode.STREAMING)) {
             return runtime.run(new AgentRequest("stream-test", List.of( //$NON-NLS-1$
                     new AgentMessage.Text(AgentMessage.Role.USER, prompt))))
                     .get(2, TimeUnit.SECONDS);
