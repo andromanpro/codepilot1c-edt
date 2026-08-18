@@ -25,6 +25,7 @@ scan_paths=(
 )
 
 rg_args=(
+    --hidden
     --line-number
     --no-heading
     --glob '*.java'
@@ -38,6 +39,7 @@ rg_args=(
     --glob '*.yml'
     --glob '*.yaml'
     --glob '!target/**'
+    --glob '!**/.tycho-consumer-pom.xml'
     --glob '!tools/check-portable-test-paths.sh'
 )
 

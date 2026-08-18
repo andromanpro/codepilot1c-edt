@@ -1,5 +1,6 @@
 package com.codepilot1c.core.portability;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -27,6 +28,16 @@ public class PortablePathGuardTest {
 
     private static final Set<String> TEXT_EXTENSIONS = Set.of(
             ".java", ".sse", ".xml", ".pom", ".properties", ".sh", ".cmd", ".bat", ".yml", ".yaml"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
+    private static final Set<String> GENERATED_ARTIFACT_FILENAMES = Set.of(
+            ".tycho-consumer-pom.xml"); //$NON-NLS-1$
+
+    @Test
+    public void excludesOnlyTychoGeneratedConsumerPom() {
+        assertTrue(isGeneratedArtifact(Path.of(".tycho-consumer-pom.xml"))); //$NON-NLS-1$
+        assertTrue(isGeneratedArtifact(Path.of("bundles", "com.codepilot1c.core", ".tycho-consumer-pom.xml"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertFalse(isGeneratedArtifact(Path.of("pom.xml"))); //$NON-NLS-1$
+        assertFalse(isGeneratedArtifact(Path.of(".tycho-consumer-pom.xml.bak"))); //$NON-NLS-1$
+    }
 
     @Test
     public void testAndBuildInputsDoNotContainDeveloperHomePaths() throws IOException {
@@ -43,6 +54,7 @@ public class PortablePathGuardTest {
             }
             try (Stream<Path> files = Files.walk(root)) {
                 files.filter(Files::isRegularFile)
+                        .filter(path -> !isGeneratedArtifact(path))
                         .filter(path -> TEXT_EXTENSIONS.contains(extension(path)))
                         .filter(path -> !hasPathSegment(path, "target")) //$NON-NLS-1$
                         .forEach(path -> inspect(path, repository, violations));
@@ -94,6 +106,10 @@ public class PortablePathGuardTest {
             }
         }
         return false;
+    }
+
+    private boolean isGeneratedArtifact(Path path) {
+        return GENERATED_ARTIFACT_FILENAMES.contains(path.getFileName().toString());
     }
 
     private Path findRepositoryRoot() {
