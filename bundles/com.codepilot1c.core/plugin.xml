@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?eclipse version="3.4"?>
 <plugin>
+    <!-- Official Equinox application entry point for the headless EDT host. -->
+    <extension
+            id="headless"
+            point="org.eclipse.core.runtime.applications">
+        <application
+            thread="main"
+            cardinality="singleton-global"
+            visible="true">
+            <run class="com.codepilot1c.core.internal.HeadlessApplication"/>
+        </application>
+    </extension>
+
     <!-- Extension point for LLM providers -->
     <extension-point id="llmProvider"
                      name="%extensionPoint.llmProvider.name"
