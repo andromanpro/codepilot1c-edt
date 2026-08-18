@@ -23,7 +23,7 @@ import java.util.Objects;
  * never exposed through an accessor or diagnostic string. Hosts should erase
  * their source array after building the configuration.</p>
  */
-public final class ProviderConfiguration {
+public final class ProviderConfiguration implements AutoCloseable {
 
     private final String id;
     private final String displayName;
@@ -34,6 +34,7 @@ public final class ProviderConfiguration {
     private final Duration requestTimeout;
     private final Map<String, String> headers;
     private final char[] apiKey;
+    private boolean closed;
 
     private ProviderConfiguration(Builder builder) {
         this.id = requireText(builder.id, "id"); //$NON-NLS-1$
@@ -103,8 +104,8 @@ public final class ProviderConfiguration {
     }
 
     /** @return whether an API key was supplied */
-    public boolean hasApiKey() {
-        return apiKey.length > 0;
+    public synchronized boolean hasApiKey() {
+        return !closed && apiKey.length > 0;
     }
 
     /**
@@ -116,8 +117,17 @@ public final class ProviderConfiguration {
         return URI.create(baseUri.toString() + "/chat/completions"); //$NON-NLS-1$
     }
 
-    char[] copyApiKey() {
+    synchronized char[] copyApiKey() {
+        if (closed) throw new IllegalStateException("provider configuration is closed"); //$NON-NLS-1$
         return apiKey.clone();
+    }
+
+    /** Erases the configuration-owned API-key copy. Safe to call repeatedly. */
+    @Override
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        Arrays.fill(apiKey, '\0');
     }
 
     boolean hasHeader(String requestedName) {

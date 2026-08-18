@@ -59,6 +59,42 @@ public class InstanceRegistryTest {
         assertEquals(List.of(record), registry.list());
     }
 
+    @Test public void acceptsScalarBrokerVersionLegacyCapabilityArrayAndOlderRecords() throws Exception {
+        MemoryFiles files = new MemoryFiles();
+        InstanceRegistry registry = new InstanceRegistry(files, Path.of("/registry"));
+        String base = """
+                {"schemaVersion":1,"instanceId":"11111111-2222-3333-4444-555555555555",\
+                "pid":42,"port":8765,"baseUrl":"http://127.0.0.1:8765",\
+                "workspace":"/work","edtHome":"/edt","mode":"headless","owner":"cli",\
+                "startedAt":"2026-08-18T07:00:00Z"%s}
+                """;
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"llmBrokerVersion\":1"));
+        InstanceRecord capable = registry.find(ID).orElseThrow();
+        assertEquals(1, capable.schemaVersion());
+        assertEquals("cli", capable.owner());
+        assertEquals(List.of("llm.v1"), capable.capabilities());
+        assertEquals(InstanceRegistry.BrokerAdvertisement.ADVERTISED,
+                registry.listEntries().get(0).brokerAdvertisement());
+        assertEquals(1, capable.toJsonValue().get("llmBrokerVersion"));
+        assertFalse(capable.toJsonValue().containsKey("capabilities"));
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"capabilities\":[\"llm.v1\"]"));
+        assertEquals(List.of("llm.v1"), registry.find(ID).orElseThrow().capabilities());
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(""));
+        InstanceRecord older = registry.find(ID).orElseThrow();
+        assertEquals(List.of(), older.capabilities());
+        assertEquals(InstanceRegistry.BrokerAdvertisement.UNSPECIFIED,
+                registry.listEntries().get(0).brokerAdvertisement());
+        assertFalse(older.toJsonValue().containsKey("capabilities"));
+        assertFalse(older.toJsonValue().containsKey("llmBrokerVersion"));
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"llmBrokerVersion\":0"));
+        assertEquals(InstanceRegistry.BrokerAdvertisement.NOT_ADVERTISED,
+                registry.listEntries().get(0).brokerAdvertisement());
+    }
+
     @Test public void rejectsRecordIdentityMismatchAndNonLoopbackEndpoint() throws Exception {
         MemoryFiles files = new MemoryFiles();
         InstanceRegistry registry = new InstanceRegistry(files, Path.of("/registry"));

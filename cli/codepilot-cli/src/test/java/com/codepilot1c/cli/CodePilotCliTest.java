@@ -4,14 +4,40 @@ package com.codepilot1c.cli;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.Assume;
 import org.junit.Test;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 
 import com.codepilot1c.cli.EndpointProbe.ProbeResult;
 import com.codepilot1c.cli.discovery.EdtInstallationDiscovery;
+import com.codepilot1c.cli.supervisor.DefaultSupervisorFileSystem;
+import com.codepilot1c.cli.supervisor.InstanceRecord;
+import com.codepilot1c.cli.supervisor.InstanceRegistry;
 
 public class CodePilotCliTest {
+    private static final String BROKER_CAPABILITIES = """
+            {"schemaVersion":1,"maxSchemaVersion":1,"chat":true,"streaming":true,
+             "provider":{"id":"active","name":"Active Provider","type":"openai_compatible",
+                         "model":"safe-model","streamingEnabled":true}}
+            """;
+
     @Test public void exitCodeContractIsStable() {
         assertEquals(0, ExitCodes.OK);
         assertEquals(1, ExitCodes.FAILURE);
@@ -51,19 +77,27 @@ public class CodePilotCliTest {
         assertTrue(fixture.out().contains("installations"));
     }
 
-    @Test public void doctorEmitsFourIndependentChecks() {
-        Fixture fixture = new Fixture();
-        fixture.host.properties.put("edt.home", "/opt/edt");
-        fixture.host.directory("/opt/edt");
-        fixture.host.file("/opt/edt/1cedt");
-        fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+    @Test public void doctorWithoutRegistryRecordProbesAndKeepsAdditiveJsonContract() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 404, "old-plugin-body-secret");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
 
-        assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
-        assertTrue(fixture.out().contains("\"status\":\"ok\""));
-        assertTrue(fixture.out().contains("\"name\":\"java\""));
-        assertTrue(fixture.out().contains("\"name\":\"edt\""));
-        assertTrue(fixture.out().contains("\"name\":\"config\""));
-        assertTrue(fixture.out().contains("\"name\":\"endpoint\""));
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
+            assertTrue(fixture.out().contains("\"status\":\"ok\""));
+            assertTrue(fixture.out().contains("\"name\":\"java\""));
+            assertTrue(fixture.out().contains("\"name\":\"edt\""));
+            assertTrue(fixture.out().contains("\"name\":\"config\""));
+            assertTrue(fixture.out().contains("\"name\":\"endpoint\""));
+            assertTrue(fixture.out().contains("\"name\":\"broker\""));
+            assertTrue(fixture.out().contains("\"code\":\"broker_not_advertised\""));
+            assertTrue(!fixture.out().contains("old-plugin-body-secret"));
+            assertEquals(1, requests.get());
+        }
     }
 
     @Test public void doctorReturnsUnavailableWhenPrerequisitesFail() {
@@ -100,11 +134,270 @@ public class CodePilotCliTest {
         assertTrue(!fixture.out().contains("secret-value"));
     }
 
-    private static final class Fixture {
+    @Test public void doctorProbesOldRecordAndReportsReachableBrokerInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of());
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_ready");
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorTreatsOldRecord404AsSupportedInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        String bodySecret = "disabled-broker-body-secret";
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 404, bodySecret);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of());
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_not_advertised");
+            assertTrue(!fixture.out().contains(bodySecret));
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorProbesMissingBrokerMetadataAndReportsUnreachableInTextAndJson()
+            throws Exception {
+        int port;
+        try (LocalServer server = new LocalServer(exchange -> send(exchange, 200, BROKER_CAPABILITIES))) {
+            port = server.port();
+        }
+        try (Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(port, List.of());
+            fixture.host.properties.put("codepilot.endpoint", "http://127.0.0.1:" + port);
+            fixture.probe = endpoint -> new ProbeResult(false, 0, "ConnectException");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.EDT_UNAVAILABLE, "fail", "broker_unreachable");
+            assertTrue(!fixture.out().contains(Integer.toString(port)));
+        }
+    }
+
+    @Test public void doctorProbesAdvertisedScalarAndReportsSuccessInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_ready");
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorSkipsProbeForExplicitDisabledScalarInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 500, "must-not-be-read");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.registerBrokerVersion(server.port(), 0);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_not_advertised");
+            assertEquals(0, requests.get());
+        }
+    }
+
+    @Test public void doctorReportsProviderUnavailableWithoutLeakingBrokerResponse() throws Exception {
+        String bearer = "doctor-bearer-secret";
+        try (LocalServer server = new LocalServer(exchange -> {
+            assertEquals("Bearer " + bearer, exchange.getRequestHeaders().getFirst("Authorization"));
+            exchange.getResponseHeaders().add("X-Provider-Key", "custom-header-secret");
+            send(exchange, 503, "{\"apiKey\":\"body-api-secret\","
+                    + "\"baseUrl\":\"https://user:password@provider.example/private\"}");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.host.properties.put("codepilot.mcp.bearerToken", bearer);
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("--output", "json", "doctor"));
+            assertTrue(fixture.out().contains("\"code\":\"provider_unavailable\""));
+            assertTrue(fixture.out().contains("configure and select a provider in EDT"));
+            assertTrue(!fixture.out().contains(bearer));
+            assertTrue(!fixture.out().contains("custom-header-secret"));
+            assertTrue(!fixture.out().contains("body-api-secret"));
+            assertTrue(!fixture.out().contains("provider.example"));
+            assertTrue(!fixture.out().contains("password"));
+        }
+    }
+
+    @Test public void doctorPrivateBearerFileOverridesPropertyAndEnvironmentInTextAndJson()
+            throws Exception {
+        String fileToken = "doctor-file-token-secret";
+        List<String> authorization = new CopyOnWriteArrayList<>();
+        try (LocalServer server = new LocalServer(exchange -> {
+            authorization.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(fileToken);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.host.properties.put("codepilot.mcp.bearerToken", "property-token-secret");
+            fixture.host.environment.put("CODEPILOT_MCP_BEARER_TOKEN", "environment-token-secret");
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.OK,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker PASS broker_ready"));
+            assertTrue(!fixture.out().contains(fileToken));
+
+            fixture.reset();
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_ready\""));
+            assertTrue(!fixture.out().contains(fileToken));
+
+            fixture.reset();
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
+            assertTrue(!fixture.out().contains("property-token-secret"));
+            assertTrue(!fixture.out().contains("environment-token-secret"));
+            assertEquals(List.of("Bearer " + fileToken, "Bearer " + fileToken,
+                    "Bearer property-token-secret"), authorization);
+        }
+    }
+
+    @Test public void doctorRejectsNonPrivateBearerFileInTextAndJsonWithoutReadingIt()
+            throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        String secret = "doctor-insecure-file-secret";
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(secret);
+            try {
+                Files.setPosixFilePermissions(tokenFile,
+                        PosixFilePermissions.fromString("rw-r--r--"));
+            } catch (UnsupportedOperationException failure) {
+                Assume.assumeNoException(failure);
+            }
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker FAIL broker_auth_configuration_invalid"));
+            assertTrue(!fixture.out().contains(secret));
+
+            fixture.reset();
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_auth_configuration_invalid\""));
+            assertTrue(!fixture.out().contains(secret));
+            assertEquals(0, requests.get());
+        }
+    }
+
+    @Test public void doctorBearerFileAuthenticationFailureIsSafeInTextAndJson()
+            throws Exception {
+        String secret = "doctor-rejected-file-token";
+        List<String> authorization = new CopyOnWriteArrayList<>();
+        try (LocalServer server = new LocalServer(exchange -> {
+            authorization.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            send(exchange, 401, "{\"error\":\"rejected " + secret + "\"}");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(secret);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker FAIL broker_authentication_failed"));
+            assertTrue(!fixture.out().contains(secret));
+
+            fixture.reset();
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_authentication_failed\""));
+            assertTrue(!fixture.out().contains(secret));
+            assertEquals(List.of("Bearer " + secret, "Bearer " + secret), authorization);
+        }
+    }
+
+    @Test public void statusDisplaysLlmCapabilityOnlyWhenAdvertised() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(8765, List.of("llm.v1"));
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("--output", "json", "edt", "status", "--all"));
+            assertTrue(fixture.out().contains("\"llmBrokerVersion\":1"));
+
+            fixture.reset();
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("edt", "status", "--all"));
+            assertTrue(fixture.out().contains(" [llm.v1]"));
+
+            fixture.reset();
+            fixture.register(8765, List.of());
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("edt", "status", "--all"));
+            assertTrue(!fixture.out().contains("llm.v1"));
+        }
+    }
+
+    private static void send(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (var output = exchange.getResponseBody()) { output.write(bytes); }
+    }
+
+    private static void assertDoctorTextAndJson(Fixture fixture, int exitCode,
+            String jsonStatus, String code) {
+        assertEquals(exitCode, fixture.execute("doctor"));
+        assertTrue(fixture.out().contains("broker " + ("pass".equals(jsonStatus) ? "PASS" : "FAIL")
+                + " " + code));
+
+        fixture.reset();
+        assertEquals(exitCode, fixture.execute("--output", "json", "doctor"));
+        assertTrue(fixture.out().contains("\"name\":\"broker\",\"status\":\"" + jsonStatus
+                + "\",\"code\":\"" + code + "\""));
+    }
+
+    @FunctionalInterface private interface Handler { void handle(HttpExchange exchange) throws IOException; }
+
+    private static final class LocalServer implements AutoCloseable {
+        private final HttpServer server;
+        LocalServer(Handler handler) throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/llm/v1/capabilities", handler::handle);
+            server.start();
+        }
+        int port() { return server.getAddress().getPort(); }
+        String endpoint() { return "http://127.0.0.1:" + port(); }
+        @Override public void close() { server.stop(0); }
+    }
+
+    private static final class Fixture implements AutoCloseable {
         final FakeHostSystem host = new FakeHostSystem();
         EndpointProbe probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
         StringWriter output = new StringWriter();
         StringWriter errors = new StringWriter();
+        Path temporaryHome;
+        String registeredId;
 
         int execute(String... args) {
             CliServices services = new CliServices(host, new EdtInstallationDiscovery(host), new CliConfiguration(host),
@@ -115,5 +408,56 @@ public class CodePilotCliTest {
         String out() { return output.toString().replace("\r\n", "\n"); }
         String err() { return errors.toString().replace("\r\n", "\n"); }
         void reset() { output = new StringWriter(); errors = new StringWriter(); }
+
+        void healthyEdt() {
+            host.properties.put("edt.home", "/opt/edt");
+            host.directory("/opt/edt");
+            host.file("/opt/edt/1cedt");
+        }
+
+        void register(int port, List<String> capabilities) throws IOException {
+            if (temporaryHome == null) {
+                temporaryHome = Files.createTempDirectory("codepilot-doctor-contract-");
+                host.home = temporaryHome.toString();
+            }
+            Path directory = temporaryHome.resolve(".codepilot1c").resolve("instances");
+            InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(), directory);
+            if (registeredId == null) registeredId = UUID.randomUUID().toString();
+            registry.write(new InstanceRecord(InstanceRecord.SCHEMA_VERSION, registeredId,
+                    Math.max(1, ProcessHandle.current().pid()), port, "http://127.0.0.1:" + port,
+                    "/workspace", "/edt", "gui", "external", Instant.now(), "9.8.7", "bearer",
+                    null, capabilities));
+        }
+
+        void registerBrokerVersion(int port, int version) throws IOException {
+            register(port, List.of());
+            Path record = temporaryHome.resolve(".codepilot1c").resolve("instances")
+                    .resolve(registeredId + ".json");
+            String json = Files.readString(record, StandardCharsets.UTF_8).stripTrailing();
+            Files.writeString(record, json.substring(0, json.length() - 1)
+                    + ",\"llmBrokerVersion\":" + version + "}\n", StandardCharsets.UTF_8);
+        }
+
+        Path privateSecret(String value) throws IOException {
+            if (temporaryHome == null) {
+                temporaryHome = Files.createTempDirectory("codepilot-doctor-contract-");
+                host.home = temporaryHome.toString();
+            }
+            Path path = Files.createTempFile(temporaryHome, "doctor-token-", ".txt");
+            try {
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+            } catch (UnsupportedOperationException ignored) {
+                // ACL-based test platform.
+            }
+            Files.writeString(path, value, StandardCharsets.UTF_8);
+            return path;
+        }
+
+        @Override public void close() throws IOException {
+            if (temporaryHome == null) return;
+            try (var paths = Files.walk(temporaryHome)) {
+                for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+            }
+        }
     }
 }

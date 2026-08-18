@@ -60,6 +60,7 @@ public final class RootCommand implements Callable<Integer> {
         CommandLine agentLine = new CommandLine(agent);
         agentLine.addSubcommand("run", new AgentRunCommand(root));
         commandLine.addSubcommand("agent", agentLine);
+        commandLine.addSubcommand("shell", new ShellCommand(root));
         return commandLine;
     }
 }

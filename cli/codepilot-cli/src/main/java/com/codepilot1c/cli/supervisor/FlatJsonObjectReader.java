@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 package com.codepilot1c.cli.supervisor;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
-/** Strict reader for the flat scalar JSON instance-registry schema. */
+/** Strict reader for the flat JSON instance-registry schema with additive scalar arrays. */
 final class FlatJsonObjectReader {
     private final String input;
     private int position;
@@ -30,11 +33,29 @@ final class FlatJsonObjectReader {
             space();
             expect(':');
             space();
-            Object value = scalar();
+            Object value = value();
             if (result.containsKey(key)) throw error("duplicate key");
             result.put(key, value);
             space();
             if (take('}')) return result;
+            expect(',');
+        }
+    }
+
+    private Object value() {
+        return peek('[') ? array() : scalar();
+    }
+
+    private List<Object> array() {
+        expect('[');
+        List<Object> result = new ArrayList<>();
+        space();
+        if (take(']')) return List.of();
+        while (true) {
+            space();
+            result.add(scalar());
+            space();
+            if (take(']')) return Collections.unmodifiableList(result);
             expect(',');
         }
     }

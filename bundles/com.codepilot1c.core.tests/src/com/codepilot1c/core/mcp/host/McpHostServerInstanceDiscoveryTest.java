@@ -43,6 +43,8 @@ public class McpHostServerInstanceDiscoveryTest {
             assertTrue(json.contains("\"owner\":\"cli\"")); //$NON-NLS-1$
             assertTrue(json.contains("\"baseUrl\":\"http://127.0.0.1:")); //$NON-NLS-1$
             assertFalse(json.contains("\"port\":0")); //$NON-NLS-1$
+            assertTrue(json.contains("\"llmBrokerVersion\":1")); //$NON-NLS-1$
+            assertFalse(json.contains("\"capabilities\"")); //$NON-NLS-1$
 
             server.stop();
             assertFalse(Files.exists(file));

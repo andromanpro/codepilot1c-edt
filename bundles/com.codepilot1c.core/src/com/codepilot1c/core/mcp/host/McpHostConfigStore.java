@@ -34,6 +34,8 @@ public class McpHostConfigStore {
         cfg.setPort(prefs.getInt(VibePreferenceConstants.PREF_MCP_HOST_HTTP_PORT, cfg.getPort()));
         cfg.setAuthMode(McpHostConfig.AuthMode.from(
             prefs.get(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name())));
+        cfg.setLlmEnabled(prefs.getBoolean(VibePreferenceConstants.PREF_MCP_HOST_LLM_ENABLED,
+            cfg.isLlmEnabled()));
         cfg.setMutationPolicy(McpHostConfig.MutationPolicy.from(
             prefs.get(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name())));
         cfg.setSessionProfileId(prefs.get(
@@ -89,6 +91,13 @@ public class McpHostConfigStore {
             cfg.setAuthMode(McpHostConfig.AuthMode.from(authMode));
         }
 
+        String llmEnabled = coalesce(
+                System.getProperty(VibePreferenceConstants.PREF_MCP_HOST_LLM_ENABLED),
+                System.getProperty("codepilot.mcp.host.llm.enabled")); //$NON-NLS-1$
+        if (llmEnabled != null) {
+            cfg.setLlmEnabled(Boolean.parseBoolean(llmEnabled.trim()));
+        }
+
         String mutationPolicy = System.getProperty("codepilot.mcp.host.policy.defaultMutationDecision"); //$NON-NLS-1$
         if (mutationPolicy != null && !mutationPolicy.isBlank()) {
             cfg.setMutationPolicy(McpHostConfig.MutationPolicy.from(mutationPolicy));
@@ -130,6 +139,7 @@ public class McpHostConfigStore {
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_HTTP_BIND_ADDRESS, cfg.getBindAddress());
         prefs.putInt(VibePreferenceConstants.PREF_MCP_HOST_HTTP_PORT, cfg.getPort());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name());
+        prefs.putBoolean(VibePreferenceConstants.PREF_MCP_HOST_LLM_ENABLED, cfg.isLlmEnabled());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_SESSION_PROFILE, cfg.getSessionProfileId());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, cfg.getExposedToolsFilter());

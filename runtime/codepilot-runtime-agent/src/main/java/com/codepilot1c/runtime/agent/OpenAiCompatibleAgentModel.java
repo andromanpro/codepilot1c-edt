@@ -17,6 +17,8 @@ import java.util.concurrent.CompletionStage;
 
 import com.codepilot1c.runtime.provider.ChatCompletionResponse;
 import com.codepilot1c.runtime.provider.OpenAiCompatibleProvider;
+import com.codepilot1c.runtime.provider.ProviderStreamEvent;
+import com.codepilot1c.runtime.provider.ProviderStreamException;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -24,8 +26,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 
-/** OpenAI-compatible wire adapter for the provider-neutral {@link AgentModel}. */
-public final class OpenAiCompatibleAgentModel implements AgentModel {
+/** OpenAI-compatible wire adapter for buffered and streaming agent completions. */
+public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
     private final OpenAiCompatibleProvider provider;
 
     public OpenAiCompatibleAgentModel(OpenAiCompatibleProvider provider) {
@@ -62,6 +64,40 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
         });
     }
 
+    @Override
+    public CompletionStage<AgentMessage.Assistant> complete(
+            Request request, CancellationToken cancellation, StreamObserver observer) {
+        Objects.requireNonNull(request, "request"); //$NON-NLS-1$
+        Objects.requireNonNull(cancellation, "cancellation"); //$NON-NLS-1$
+        Objects.requireNonNull(observer, "observer"); //$NON-NLS-1$
+        if (cancellation.isCancelled()) return cancelled();
+
+        StreamCompletion completion = new StreamCompletion(observer);
+        CompletableFuture<Void> response;
+        try {
+            response = provider.streamRaw(serialize(request), completion::accept);
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(streamFailure(failure));
+        }
+        CancellationToken.Registration registration = cancellation.onCancel(() -> {
+            completion.close();
+            response.cancel(true);
+        });
+        return response.handle((ignored, failure) -> {
+            registration.close();
+            if (failure != null) {
+                completion.close();
+                if (cancellation.isCancelled()) throw new CancellationException();
+                throw new CompletionException(streamFailure(unwrap(failure)));
+            }
+            if (cancellation.isCancelled()) {
+                completion.close();
+                throw new CancellationException();
+            }
+            return completion.assistant();
+        });
+    }
+
     private JsonObject serialize(Request request) {
         JsonObject root = new JsonObject();
         root.addProperty("model", provider.configuration().defaultModel()); //$NON-NLS-1$
@@ -94,6 +130,8 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
             value.addProperty("role", "assistant"); //$NON-NLS-1$ //$NON-NLS-2$
             if (assistant.text().isPresent()) value.addProperty("content", assistant.text().get()); //$NON-NLS-1$
             else value.add("content", JsonNull.INSTANCE); //$NON-NLS-1$
+            assistant.reasoning().ifPresent(reasoning ->
+                    value.addProperty("reasoning_content", reasoning)); //$NON-NLS-1$
             if (!assistant.toolCalls().isEmpty()) {
                 JsonArray calls = new JsonArray();
                 for (ToolCall call : assistant.toolCalls()) calls.add(serializeCall(call));
@@ -129,8 +167,9 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
             JsonObject message = object(choices.get(0).getAsJsonObject(), "message"); //$NON-NLS-1$
             if (!"assistant".equals(requiredString(message, "role"))) throw malformed(); //$NON-NLS-1$ //$NON-NLS-2$
             Optional<String> text = optionalString(message, "content"); //$NON-NLS-1$
+            Optional<String> reasoning = optionalReasoning(message);
             List<ToolCall> calls = parseCalls(message);
-            return new AgentMessage.Assistant(text, calls);
+            return new AgentMessage.Assistant(text, reasoning, calls);
         } catch (AgentModelException failure) {
             throw failure;
         } catch (JsonParseException | IllegalArgumentException
@@ -177,6 +216,20 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
         return Optional.of(value.getAsString()).filter(text -> !text.isEmpty());
     }
 
+    private Optional<String> optionalReasoning(JsonObject object) {
+        if (object.has("reasoning_content")) { //$NON-NLS-1$
+            return optionalStringPreservingEmpty(object, "reasoning_content"); //$NON-NLS-1$
+        }
+        return optionalStringPreservingEmpty(object, "reasoning"); //$NON-NLS-1$
+    }
+
+    private Optional<String> optionalStringPreservingEmpty(JsonObject object, String field) {
+        JsonElement value = object.get(field);
+        if (value == null || value.isJsonNull()) return Optional.empty();
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) throw malformed();
+        return Optional.of(value.getAsString());
+    }
+
     private String requiredString(JsonObject object, String field) {
         return optionalString(object, field).orElseThrow(this::malformed);
     }
@@ -191,6 +244,30 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
                 "Provider response does not match the chat completion contract", cause); //$NON-NLS-1$
     }
 
+    private AgentModelException streamFailure(Throwable failure) {
+        if (failure instanceof AgentModelException modelFailure) return modelFailure;
+        if (failure instanceof ProviderStreamException streamFailure) {
+            switch (streamFailure.kind()) {
+                case RESPONSE:
+                    if (streamFailure.httpStatus() != -1) {
+                        return new AgentModelException(AgentModelException.Kind.HTTP,
+                                "Provider returned an HTTP error", streamFailure.httpStatus()); //$NON-NLS-1$
+                    }
+                    return new AgentModelException(AgentModelException.Kind.MALFORMED_RESPONSE,
+                            "Provider stream does not match the chat completion contract", streamFailure); //$NON-NLS-1$
+                case LISTENER:
+                    return new AgentModelException(AgentModelException.Kind.TRANSPORT,
+                            "Provider stream observation failed"); //$NON-NLS-1$
+                case TRANSPORT:
+                default:
+                    return new AgentModelException(AgentModelException.Kind.TRANSPORT,
+                            "Provider stream transport failed"); //$NON-NLS-1$
+            }
+        }
+        return new AgentModelException(AgentModelException.Kind.TRANSPORT,
+                "Provider stream could not be started"); //$NON-NLS-1$
+    }
+
     private Throwable unwrap(Throwable failure) {
         Throwable value = failure;
         while (value instanceof CompletionException && value.getCause() != null) value = value.getCause();
@@ -201,5 +278,62 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
         CompletableFuture<AgentMessage.Assistant> future = new CompletableFuture<>();
         future.cancel(false);
         return future;
+    }
+
+    private final class StreamCompletion {
+        private final StreamObserver observer;
+        private final StringBuilder text = new StringBuilder();
+        private final StringBuilder reasoning = new StringBuilder();
+        private boolean reasoningPresent;
+        private final List<ToolCall> toolCalls = new ArrayList<>();
+        private boolean done;
+        private boolean open = true;
+
+        StreamCompletion(StreamObserver observer) {
+            this.observer = observer;
+        }
+
+        synchronized void accept(ProviderStreamEvent event) {
+            if (!open) return;
+            if (event instanceof ProviderStreamEvent.TextDelta delta) {
+                text.append(delta.text());
+                observer.onTextDelta(delta.text());
+            } else if (event instanceof ProviderStreamEvent.ReasoningDelta delta) {
+                reasoningPresent = true;
+                reasoning.append(delta.text());
+                observer.onReasoningDelta(delta.text());
+            } else if (event instanceof ProviderStreamEvent.ToolCall call) {
+                toolCalls.add(new ToolCall(call.id(), call.name(), call.argumentsJson()));
+            } else if (event instanceof ProviderStreamEvent.Done) {
+                done = true;
+            }
+            // Usage is deliberately accepted but not surfaced: the R1 agent
+            // SPI has no token-accounting field. Error is completed through
+            // the provider future so its typed category and status are kept.
+        }
+
+        synchronized AgentMessage.Assistant assistant() {
+            open = false;
+            if (!done) throw malformed();
+            try {
+                Set<String> ids = new HashSet<>();
+                for (ToolCall call : toolCalls) {
+                    if (!ids.add(call.id())) throw malformed();
+                }
+                Optional<String> content = text.length() == 0
+                        ? Optional.empty()
+                        : Optional.of(text.toString());
+                Optional<String> retainedReasoning = reasoningPresent
+                        ? Optional.of(reasoning.toString())
+                        : Optional.empty();
+                return new AgentMessage.Assistant(content, retainedReasoning, toolCalls);
+            } catch (IllegalArgumentException failure) {
+                throw malformed(failure);
+            }
+        }
+
+        synchronized void close() {
+            open = false;
+        }
     }
 }

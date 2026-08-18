@@ -13,6 +13,7 @@ import com.codepilot1c.core.mcp.host.resource.WorkspaceResourceProvider;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
 import com.codepilot1c.core.mcp.host.discovery.McpHostInstanceRegistryPublisher;
 import com.codepilot1c.core.mcp.host.discovery.McpHostInstanceEndpoint;
+import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
 import com.codepilot1c.core.mcp.host.transport.McpHostHttpTransport;
 import com.codepilot1c.core.mcp.host.transport.McpHostOAuthService;
 
@@ -69,7 +70,8 @@ public class McpHostServer implements IMcpHostServer {
                 oauthService,
                 router,
                 config.getAuthMode(),
-                Duration.ofSeconds(config.getSessionIdleTimeoutSeconds())
+                Duration.ofSeconds(config.getSessionIdleTimeoutSeconds()),
+                new McpHostLlmBroker(config.isLlmEnabled())
             );
             httpTransport.start();
             publishInstanceAfterBind();
@@ -138,7 +140,7 @@ public class McpHostServer implements IMcpHostServer {
             boolean written = publisher.publish(boundPort,
                     McpHostInstanceEndpoint.localBaseUrl(config.getBindAddress(), boundPort),
                     metadata.workspace(), edtHome(), metadata.mode(), metadata.pluginVersion(),
-                    config.getAuthMode().name());
+                    config.getAuthMode().name(), config.isLlmEnabled());
             if (written) {
                 instanceRegistryPublisher = publisher;
                 LOG.info("[opId=%s] MCP host instance registry published", opId); //$NON-NLS-1$

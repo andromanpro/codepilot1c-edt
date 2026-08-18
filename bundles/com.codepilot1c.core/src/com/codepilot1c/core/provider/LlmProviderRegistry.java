@@ -337,7 +337,9 @@ public final class LlmProviderRegistry {
         }
         if (configStore != null && "backend".equals(configStore.getActiveProviderId())) { //$NON-NLS-1$
             String fallbackProviderId = findFallbackProviderId();
-            configStore.setActiveProviderId(fallbackProviderId != null ? fallbackProviderId : ""); //$NON-NLS-1$
+            if (!configStore.setActiveProviderId(fallbackProviderId != null ? fallbackProviderId : "")) { //$NON-NLS-1$
+                VibeCorePlugin.logWarn("Failed to persist fallback provider selection"); //$NON-NLS-1$
+            }
         }
         updateConfigurationState();
     }
@@ -346,21 +348,26 @@ public final class LlmProviderRegistry {
      * Sets the active provider.
      *
      * @param id the provider ID
+     * @return {@code true} when the selection was persisted
      */
-    public void setActiveProvider(String id) {
+    public boolean setActiveProvider(String id) {
         initialize();
 
         if (backendProvider != null && backendProvider.isConfigured() && backendProvider.getId().equals(id)) {
-            configStore.setActiveProviderId(id);
+            if (!configStore.setActiveProviderId(id)) {
+                return false;
+            }
             updateConfigurationState();
-            return;
+            return true;
         }
 
         // Check if it's a dynamic provider
         if (dynamicProviders.containsKey(id)) {
-            configStore.setActiveProviderId(id);
+            if (!configStore.setActiveProviderId(id)) {
+                return false;
+            }
             updateConfigurationState();
-            return;
+            return true;
         }
 
         // Check legacy providers
@@ -369,14 +376,38 @@ public final class LlmProviderRegistry {
         }
 
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
+        String previousLegacyProviderId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, null);
+        boolean previousLegacyProviderIdPresent = previousLegacyProviderId != null;
         prefs.put(VibePreferenceConstants.PREF_PROVIDER_ID, id);
         try {
             prefs.flush();
         } catch (BackingStoreException e) {
             VibeCorePlugin.logWarn("Failed to persist provider preference", e); //$NON-NLS-1$
+            restoreLegacyProviderPreference(
+                    prefs, previousLegacyProviderIdPresent, previousLegacyProviderId);
+            return false;
         }
-        configStore.setActiveProviderId(id);
+        if (!configStore.setActiveProviderId(id)) {
+            restoreLegacyProviderPreference(
+                    prefs, previousLegacyProviderIdPresent, previousLegacyProviderId);
+            return false;
+        }
         updateConfigurationState();
+        return true;
+    }
+
+    private void restoreLegacyProviderPreference(
+            IEclipsePreferences preferences, boolean providerIdPresent, String providerId) {
+        if (providerIdPresent) {
+            preferences.put(VibePreferenceConstants.PREF_PROVIDER_ID, providerId);
+        } else {
+            preferences.remove(VibePreferenceConstants.PREF_PROVIDER_ID);
+        }
+        try {
+            preferences.flush();
+        } catch (BackingStoreException e) {
+            VibeCorePlugin.logWarn("Failed to restore provider preference", e); //$NON-NLS-1$
+        }
     }
 
     /**

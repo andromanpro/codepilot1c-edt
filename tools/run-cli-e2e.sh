@@ -26,9 +26,15 @@ INSTANCE_ID=""
 INSTANCE_PID=""
 INSTANCE_LOG=""
 START_CLI_PID=""
+START_PID_FILE=""
 START_STDOUT=""
 START_STDERR=""
-STOPPED="false"
+TOKEN_FILE=""
+PACKAGED_ROOT=""
+PACKAGED_CLI=""
+PACKAGED_JAVA=""
+SHELL_SESSION_ID=""
+SHELL_TRANSCRIPT=""
 
 # Installed as soon as the owned marker exists. This deliberately has no
 # dependency on the later full cleanup functions, so setup failures (including
@@ -48,6 +54,13 @@ minimal_owned_root_cleanup() {
     fi
     exit "$exit_code"
 }
+
+# Trap before argument validation, builds, or allocation. Once TMP_ROOT and its
+# marker exist, even a setup-time signal is routed through the narrow cleanup.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap minimal_owned_root_cleanup EXIT
 
 usage() {
     cat <<'EOF'
@@ -128,15 +141,15 @@ TMP_ROOT=$(env -u TMPDIR -u TMP -u TEMP mktemp -d -t codepilot-cli-e2e)
 TMP_ROOT=$(CDPATH= cd -- "$TMP_ROOT" && pwd -P)
 TMP_MARKER="$TMP_ROOT/.codepilot-cli-e2e-owned"
 printf '%s\n' "$TMP_ROOT" >"$TMP_MARKER"
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
-trap minimal_owned_root_cleanup EXIT
 chmod 600 "$TMP_MARKER"
 RUN_HOME="$TMP_ROOT/home"
 WORKSPACE="$TMP_ROOT/workspace"
 REGISTRY_DIR="$RUN_HOME/.codepilot1c/instances"
-mkdir -p "$RUN_HOME" "$WORKSPACE"
+TOKEN_FILE="$TMP_ROOT/mcp-token"
+START_PID_FILE="$TMP_ROOT/start.pid"
+mkdir -p "$RUN_HOME" "$WORKSPACE" "$REGISTRY_DIR"
+printf '%s\n' 'wave4-e1-e2e-private-token' >"$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
 
 path_is_within() {
     local child=$1
@@ -202,6 +215,7 @@ pid_matches_start() {
 wait_for_exit() {
     local pid=${1:-}
     local attempts=${2:-100}
+    local i
     for ((i = 0; i < attempts; i++)); do
         pid_is_alive "$pid" || return 0
         sleep 0.1
@@ -229,9 +243,11 @@ kill_exact_process() {
 }
 
 kill_exact_start_process() {
+    capture_unassigned_start_pid || return 1
     [[ -n "$START_CLI_PID" ]] || return 0
     if ! pid_is_alive "$START_CLI_PID"; then START_CLI_PID=""; return 0; fi
     if ! pid_matches_start "$START_CLI_PID"; then
+        if ! pid_is_alive "$START_CLI_PID"; then START_CLI_PID=""; return 0; fi
         log "Refusing fallback termination: start PID identity changed ($START_CLI_PID)"
         return 1
     fi
@@ -242,10 +258,42 @@ kill_exact_start_process() {
         kill -9 "$START_CLI_PID" 2>/dev/null || true
         wait_for_exit "$START_CLI_PID" 100 || return 1
         START_CLI_PID=""
+    elif ! pid_is_alive "$START_CLI_PID"; then
+        START_CLI_PID=""
+        return 0
     else
         log "Refusing force termination: start PID identity changed"
         return 1
     fi
+}
+
+capture_unassigned_start_pid() {
+    [[ -z "$START_CLI_PID" ]] || return 0
+    local candidate="" job attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if [[ -f "$START_PID_FILE" && ! -L "$START_PID_FILE" ]]; then
+            candidate=$(<"$START_PID_FILE") || candidate=""
+        fi
+        if [[ ! "$candidate" =~ ^[0-9]+$ ]]; then
+            while IFS= read -r job; do
+                [[ "$job" =~ ^[0-9]+$ ]] || continue
+                if pid_matches_start "$job"; then candidate=$job; break; fi
+            done < <(jobs -pr 2>/dev/null || true)
+        fi
+        if [[ "$candidate" =~ ^[0-9]+$ ]] && pid_matches_start "$candidate"; then
+            START_CLI_PID=$candidate
+            log "Recovered exact CLI start PID $START_CLI_PID before normal PID publication"
+            return 0
+        fi
+        pid_is_alive "$candidate" || candidate=""
+        sleep 0.02
+    done
+    if [[ -n "$candidate" ]] && pid_is_alive "$candidate"; then
+        START_CLI_PID=$candidate
+        log "Could not validate an unassigned live start PID: $candidate"
+        return 1
+    fi
+    return 0
 }
 
 registry_record_lines() {
@@ -306,7 +354,6 @@ cleanup() {
     local exit_code=$?
     trap - EXIT INT TERM HUP
     local unsafe=0
-    reconcile_temp_instances || unsafe=1
     kill_exact_start_process || unsafe=1
     reconcile_temp_instances || unsafe=1
     kill_exact_process || unsafe=1
@@ -420,13 +467,23 @@ start_cli_once() {
     HOME="$RUN_HOME" java -Duser.home="$RUN_HOME" -jar "$CLI_JAR" --output json edt start \
         --workspace "$WORKSPACE" --edt-home "$EDT_HOME" --port "$PORT" --timeout "$START_TIMEOUT" \
         >"$START_STDOUT" 2>"$START_STDERR" &
-    START_CLI_PID=$!
+    local launched_pid=$!
+    printf '%s\n' "$launched_pid" >"$START_PID_FILE"
+    # Internal safety-test seam: cleanup can recover the exact child from the
+    # private PID file even if a signal arrives before START_CLI_PID is set.
+    if [[ -n "${CODEPILOT_E2E_TEST_PRE_PID_DELAY:-}" ]]; then
+        [[ "$CODEPILOT_E2E_TEST_PRE_PID_DELAY" =~ ^[0-9]+$ ]] \
+            || fail "CODEPILOT_E2E_TEST_PRE_PID_DELAY must be whole seconds"
+        sleep "$CODEPILOT_E2E_TEST_PRE_PID_DELAY"
+    fi
+    START_CLI_PID=$launched_pid
     wait "$START_CLI_PID"
     local rc=$?
     set -e
     # The PID is cleared only after wait; an interruption trap sees it and can
     # verify/terminate exactly this start command.
     START_CLI_PID=""
+    : >"$START_PID_FILE"
     START_JSON=$(<"$START_STDOUT")
     return "$rc"
 }
@@ -462,28 +519,239 @@ STATUS_JSON=$(run_cli --output json edt status --all)
 [[ "$(json_field "$STATUS_JSON" instances.0.instanceId)" == "$INSTANCE_ID" ]] \
     || fail "status selected a different instance"
 
-HEALTH_JSON=$(run_cli --output json mcp health --instance-id "$INSTANCE_ID")
+MCP_AUTH_ARGS=()
+if [[ "$MODE" == fake ]]; then
+    MCP_AUTH_ARGS=(--bearer-token-file "$TOKEN_FILE")
+fi
+
+HEALTH_JSON=$(run_cli --output json mcp "${MCP_AUTH_ARGS[@]}" health --instance-id "$INSTANCE_ID")
 expect_json "$HEALTH_JSON" "ready"
 [[ "$(json_field "$HEALTH_JSON" status)" == ready ]] || fail "MCP health failed: $HEALTH_JSON"
 
-INITIALIZE_JSON=$(run_cli --output json mcp initialize --instance-id "$INSTANCE_ID")
+INITIALIZE_JSON=$(run_cli --output json mcp "${MCP_AUTH_ARGS[@]}" \
+    initialize --instance-id "$INSTANCE_ID")
 [[ "$(json_field "$INITIALIZE_JSON" status)" == initialized ]] \
     || fail "MCP initialize failed: $INITIALIZE_JSON"
-[[ "$(json_field "$INITIALIZE_JSON" protocolVersion)" == 2025-06-18 ]] \
-    || fail "unexpected MCP protocol: $INITIALIZE_JSON"
+if [[ "$MODE" == fake ]]; then
+    [[ "$(json_field "$INITIALIZE_JSON" protocolVersion)" == 2025-11-25 ]] \
+        || fail "unexpected MCP protocol: $INITIALIZE_JSON"
+fi
 
-TOOLS_JSON=$(run_cli --output json mcp tools --instance-id "$INSTANCE_ID")
+TOOLS_JSON=$(run_cli --output json mcp "${MCP_AUTH_ARGS[@]}" \
+    tools --instance-id "$INSTANCE_ID")
 [[ "$(json_field "$TOOLS_JSON" status)" == ok ]] || fail "MCP tools failed: $TOOLS_JSON"
 [[ "$(json_field "$TOOLS_JSON" count)" -ge 1 ]] || fail "MCP tools returned no tools: $TOOLS_JSON"
 
-PING_JSON=$(run_cli --output json mcp ping --instance-id "$INSTANCE_ID")
+PING_JSON=$(run_cli --output json mcp "${MCP_AUTH_ARGS[@]}" \
+    ping --instance-id "$INSTANCE_ID")
 [[ "$(json_field "$PING_JSON" status)" == ok ]] || fail "MCP ping failed: $PING_JSON"
+
+PACKAGED_ROOT="$TMP_ROOT/packaged distribution"
+PACKAGED_CLI="$PACKAGED_ROOT/bin/codepilot"
+PACKAGED_JAVA="$TMP_ROOT/java-with-private-home"
+mkdir -p "$PACKAGED_ROOT/bin" "$PACKAGED_ROOT/lib"
+cp "$ROOT_DIR/packaging/launchers/codepilot" "$PACKAGED_CLI"
+cp "$CLI_JAR" "$PACKAGED_ROOT/lib/codepilot-cli.jar"
+chmod +x "$PACKAGED_CLI"
+printf '%s\n' '#!/bin/sh' \
+    'exec "$CODEPILOT_E2E_JAVA" "-Duser.home=$CODEPILOT_E2E_RUN_HOME" "$@"' \
+    >"$PACKAGED_JAVA"
+chmod +x "$PACKAGED_JAVA"
+
+run_packaged() {
+    HOME="$RUN_HOME" CODEPILOT_JAVA="$PACKAGED_JAVA" \
+        CODEPILOT_E2E_JAVA="$(command -v java)" CODEPILOT_E2E_RUN_HOME="$RUN_HOME" \
+        "$PACKAGED_CLI" "$@"
+}
+
+PACKAGED_VERSION=$(run_packaged version) \
+    || fail "packaged POSIX launcher version smoke failed"
+[[ "$PACKAGED_VERSION" == codepilot\ * ]] \
+    || fail "packaged POSIX launcher returned unexpected version output: $PACKAGED_VERSION"
+
+if [[ "$MODE" == fake ]]; then
+CALL_JSON=$(run_cli --output json mcp "${MCP_AUTH_ARGS[@]}" \
+    call --instance-id "$INSTANCE_ID" e2e_echo --args '{"value":"approved-wave4"}')
+[[ "$(json_field "$CALL_JSON" status)" == ok ]] || fail "MCP call failed: $CALL_JSON"
+[[ "$(json_field "$CALL_JSON" isError)" == false ]] || fail "MCP call returned an error: $CALL_JSON"
+
+cat >"$TMP_ROOT/shell-first.stdin" <<'EOF'
+Run the approved Wave 4 tool.
+y
+/sessions
+/status
+/exit
+EOF
+run_packaged shell --mode connected --instance-id "$INSTANCE_ID" \
+    --mcp-bearer-token-file "$TOKEN_FILE" --turn-timeout 30 \
+    <"$TMP_ROOT/shell-first.stdin" >"$TMP_ROOT/shell-first.stdout" \
+    2>"$TMP_ROOT/shell-first.stderr" || fail "packaged connected shell scenario failed"
+
+SHELL_SESSION_ID=$(python3 - "$RUN_HOME/.codepilot1c/sessions" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+import uuid
+
+root = pathlib.Path(sys.argv[1])
+if not root.is_dir() or root.is_symlink():
+    raise SystemExit("private session root is missing or is a symlink")
+if os.name == "posix" and stat.S_IMODE(root.stat().st_mode) != 0o700:
+    raise SystemExit("private session root is not mode 0700")
+metadata_files = sorted(root.glob("*.meta.json"))
+transcript_files = sorted(root.glob("*.jsonl"))
+if len(metadata_files) != 1 or len(transcript_files) != 1:
+    raise SystemExit("expected exactly one metadata and one transcript file")
+for path in metadata_files + transcript_files:
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit("session entry is not a regular private file")
+    if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise SystemExit(f"session file is not mode 0600: {path.name}")
+metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+session_id = str(uuid.UUID(metadata["id"]))
+if metadata_files[0].name != f"{session_id}.meta.json":
+    raise SystemExit("metadata filename does not match its UUID")
+if metadata["schemaVersion"] != 1 or metadata["mode"] != "connected":
+    raise SystemExit("unexpected session schema or mode")
+if metadata["turns"] != 1 or metadata["messageCount"] != 4:
+    raise SystemExit("unexpected session counts")
+records = [json.loads(line) for line in transcript_files[0].read_text(
+    encoding="utf-8").splitlines() if line]
+if transcript_files[0].name != f"{session_id}.jsonl":
+    raise SystemExit("transcript filename does not match its UUID")
+expected = [
+    {"type": "text", "role": "user", "content": "Run the approved Wave 4 tool."},
+    {
+        "type": "assistant",
+        "reasoning": "Confirm the approved tool result before answering.",
+        "toolCalls": [{
+            "id": "wave4-call-1",
+            "name": "e2e_echo",
+            "argumentsJson": '{"value":"approved-wave4"}',
+        }],
+    },
+    {
+        "type": "tool",
+        "callId": "wave4-call-1",
+        "toolName": "e2e_echo",
+        "result": {
+            "error": False,
+            "code": "OK",
+            "message": "Tool completed",
+            "data": {
+                "content": [{"type": "text", "text": "approved-wave4-tool-result"}],
+                "structuredContent": {"echoed": "approved-wave4"},
+                "isError": False,
+            },
+        },
+    },
+    {"type": "assistant", "text": "Wave 4 connected shell complete.", "toolCalls": []},
+]
+for index, (record, wanted) in enumerate(zip(records, expected, strict=True), 1):
+    if record.get("schemaVersion") != 1 or not isinstance(record.get("recordedAt"), str):
+        raise SystemExit(f"invalid transcript envelope at line {index}")
+    payload = {key: value for key, value in record.items()
+               if key not in ("schemaVersion", "recordedAt")}
+    if payload != wanted:
+        raise SystemExit(f"unexpected persisted transcript payload at line {index}")
+print(session_id)
+PY
+) || fail "private shell session files are invalid"
+SHELL_TRANSCRIPT="$RUN_HOME/.codepilot1c/sessions/$SHELL_SESSION_ID.jsonl"
+cp "$SHELL_TRANSCRIPT" "$TMP_ROOT/shell-first-transcript.jsonl"
+
+cat >"$TMP_ROOT/shell-resume.stdin" <<EOF
+/resume $SHELL_SESSION_ID
+Continue from the saved Wave 4 transcript.
+/sessions
+/status
+/exit
+EOF
+run_packaged shell --mode connected --instance-id "$INSTANCE_ID" \
+    --mcp-bearer-token-file "$TOKEN_FILE" --turn-timeout 30 \
+    <"$TMP_ROOT/shell-resume.stdin" >"$TMP_ROOT/shell-resume.stdout" \
+    2>"$TMP_ROOT/shell-resume.stderr" || fail "packaged session resume scenario failed"
+
+python3 - "$RUN_HOME/.codepilot1c/sessions" "$SHELL_SESSION_ID" \
+    "$TMP_ROOT/shell-first-transcript.jsonl" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+session_id = sys.argv[2]
+snapshot = pathlib.Path(sys.argv[3])
+metadata_files = sorted(root.glob("*.meta.json"))
+transcript_files = sorted(root.glob("*.jsonl"))
+if [path.name for path in metadata_files] != [f"{session_id}.meta.json"]:
+    raise SystemExit("resume created or replaced session metadata unexpectedly")
+if [path.name for path in transcript_files] != [f"{session_id}.jsonl"]:
+    raise SystemExit("resume created or replaced the session transcript unexpectedly")
+for path in metadata_files + transcript_files:
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit("resumed session entry is not a regular private file")
+    if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise SystemExit(f"resumed session file is not mode 0600: {path.name}")
+metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+if metadata["turns"] != 2 or metadata["messageCount"] != 6:
+    raise SystemExit("resumed session counts did not advance to two turns/six messages")
+prior_lines = snapshot.read_text(encoding="utf-8").splitlines()
+current_lines = transcript_files[0].read_text(encoding="utf-8").splitlines()
+if len(prior_lines) != 4 or len(current_lines) != 6:
+    raise SystemExit("resumed transcript does not contain the expected append")
+if current_lines[:4] != prior_lines:
+    raise SystemExit("resume rewrote the prior transcript instead of appending")
+appended = [json.loads(line) for line in current_lines[4:]]
+expected = [
+    {
+        "type": "text",
+        "role": "user",
+        "content": "Continue from the saved Wave 4 transcript.",
+    },
+    {"type": "assistant", "text": "Wave 4 resumed shell complete.", "toolCalls": []},
+]
+for index, (record, wanted) in enumerate(zip(appended, expected, strict=True), 5):
+    if record.get("schemaVersion") != 1 or not isinstance(record.get("recordedAt"), str):
+        raise SystemExit(f"invalid resumed transcript envelope at line {index}")
+    payload = {key: value for key, value in record.items()
+               if key not in ("schemaVersion", "recordedAt")}
+    if payload != wanted:
+        raise SystemExit(f"unexpected resumed transcript payload at line {index}")
+PY
+
+grep -F "Approval required: Wave 4 E2E echo [e2e_echo, confirmation required]" \
+    "$TMP_ROOT/shell-first.stdout" >/dev/null || fail "tool approval prompt was not rendered"
+grep -F "tool-call e2e_echo [wave4-call-1]" "$TMP_ROOT/shell-first.stdout" >/dev/null \
+    || fail "tool call was not rendered"
+grep -F "tool-result e2e_echo [wave4-call-1] ok" "$TMP_ROOT/shell-first.stdout" >/dev/null \
+    || fail "approved MCP result was not rendered"
+grep -F "Wave 4 connected shell complete." "$TMP_ROOT/shell-first.stdout" >/dev/null \
+    || fail "scripted final assistant text was not rendered"
+grep -F "$SHELL_SESSION_ID  1 turn(s)" "$TMP_ROOT/shell-first.stdout" >/dev/null \
+    || fail "/sessions did not list the persisted session"
+grep -F "mode=connected provider=Fake Connected Provider model=wave4-e2e-model" \
+    "$TMP_ROOT/shell-first.stdout" >/dev/null || fail "/status did not report connected mode"
+grep -F "Resumed session: $SHELL_SESSION_ID (1 turn(s))" \
+    "$TMP_ROOT/shell-resume.stdout" >/dev/null || fail "/resume did not load the session"
+grep -F "Wave 4 resumed shell complete." "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed scripted final assistant text was not rendered"
+grep -F "$SHELL_SESSION_ID  2 turn(s)" "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed /sessions did not report two turns"
+grep -F "session=$SHELL_SESSION_ID turns=2" "$TMP_ROOT/shell-resume.stdout" >/dev/null \
+    || fail "resumed /status did not report two turns"
+if grep -E 'error:|Turn ended:' "$TMP_ROOT/shell-first.stdout" "$TMP_ROOT/shell-resume.stdout" >/dev/null; then
+    fail "shell scenario reported an error"
+fi
+fi
 
 log "Stopping exact CLI-owned instance $INSTANCE_ID (PID $INSTANCE_PID)"
 STOP_JSON=$(run_cli --output json edt stop --id "$INSTANCE_ID" --timeout 10) \
     || fail "edt stop failed"
 [[ "$(json_field "$STOP_JSON" status)" == stopped ]] || fail "stop did not complete: $STOP_JSON"
-STOPPED="true"
 wait_for_exit "$INSTANCE_PID" 100 || fail "EDT PID still alive after stop: $INSTANCE_PID"
 
 AFTER_JSON=$(run_cli --output json edt status --all)
@@ -493,15 +761,71 @@ if [[ -d "$REGISTRY_DIR" ]] && [[ -n "$(find "$REGISTRY_DIR" -type f -name '*.js
 fi
 [[ -s "$INSTANCE_LOG" ]] || fail "supervisor log is empty: $INSTANCE_LOG"
 if [[ "$MODE" == fake ]]; then
-    grep -F "fake-edt-contract-ok application=com.codepilot1c.core.headless workspace=$WORKSPACE port=$PORT bind=127.0.0.1 instance=$INSTANCE_ID owner=cli registry=$REGISTRY_DIR" "$INSTANCE_LOG" >/dev/null \
+    EXPECTED_CONTRACT_LOG="fake-edt-contract-ok application=com.codepilot1c.core.headless "
+    EXPECTED_CONTRACT_LOG+="workspace=$WORKSPACE port=$PORT bind=127.0.0.1 instance=$INSTANCE_ID "
+    EXPECTED_CONTRACT_LOG+="owner=cli registry=$REGISTRY_DIR argv=strict"
+    grep -F "$EXPECTED_CONTRACT_LOG" "$INSTANCE_LOG" >/dev/null \
         || fail "fake launcher contract diagnostics missing from log"
     grep -F "fake-edt-ready instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "fake host readiness diagnostics missing from log"
     grep -F "fake-edt-session-delete instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "MCP session DELETE diagnostics missing from log"
+    grep -F "fake-edt-mcp-ok method=initialize" "$INSTANCE_LOG" >/dev/null \
+        || fail "authenticated MCP initialize diagnostics missing from log"
+    grep -F "fake-edt-mcp-ok method=tools/list" "$INSTANCE_LOG" >/dev/null \
+        || fail "authenticated MCP tools/list diagnostics missing from log"
+    grep -F "fake-edt-mcp-ok method=tools/call" "$INSTANCE_LOG" >/dev/null \
+        || fail "authenticated MCP tools/call diagnostics missing from log"
+    grep -F "fake-edt-mcp-ok method=ping" "$INSTANCE_LOG" >/dev/null \
+        || fail "authenticated MCP ping diagnostics missing from log"
+    grep -F "fake-edt-auth-ok route=llm-capabilities" "$INSTANCE_LOG" >/dev/null \
+        || fail "authenticated LLM capabilities diagnostics missing from log"
+    grep -F "fake-edt-llm-ok turn=1" "$INSTANCE_LOG" >/dev/null \
+        || fail "scripted broker tool-call turn diagnostics missing from log"
+    grep -F "fake-edt-llm-ok turn=2" "$INSTANCE_LOG" >/dev/null \
+        || fail "scripted broker final-text turn diagnostics missing from log"
+    grep -F "fake-edt-llm-ok turn=3" "$INSTANCE_LOG" >/dev/null \
+        || fail "scripted broker resumed continuation diagnostics missing from log"
+    grep -F 'fake-edt-summary active_sessions=0 created_sessions=6 deletes=6 chat_turns=3' \
+        "$INSTANCE_LOG" >/dev/null \
+        || fail "fake host session lifecycle summary is incomplete"
     grep -F "fake-edt-shutdown instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "fake host shutdown diagnostics missing from log"
+    if grep -F 'fake-edt-http-contract-failure' "$INSTANCE_LOG" >/dev/null; then
+        fail "fake host observed an HTTP contract violation"
+    fi
 fi
 
-log "PASS: start/readiness/status/MCP initialize/tools/ping/stop/cleanup"
+python3 - "$TMP_ROOT" "$TOKEN_FILE" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+token_file = pathlib.Path(sys.argv[2])
+secret = b"wave4-e1-e2e-private-token"
+for directory, names, files in os.walk(root, followlinks=False):
+    names[:] = [name for name in names if not (pathlib.Path(directory) / name).is_symlink()]
+    for name in files:
+        path = pathlib.Path(directory) / name
+        if path == token_file or path.is_symlink():
+            continue
+        try:
+            value = path.read_bytes()
+        except OSError as failure:
+            raise SystemExit(f"cannot inspect runtime artifact {path}: {failure}")
+        if secret in value:
+            raise SystemExit(f"test bearer leaked into runtime artifact: {path}")
+PY
+
+PROCESS_SNAPSHOT=$(ps -ax -o pid=,command= 2>/dev/null || true)
+if [[ "$PROCESS_SNAPSHOT" == *"wave4-e1-e2e-private-token"* ]]; then
+    fail "test bearer leaked into a process command line"
+fi
+while IFS= read -r process_line; do
+    [[ "$process_line" == *"$TMP_ROOT"* ]] || continue
+    fail "temporary E2E process remains after stop: $process_line"
+done <<<"$PROCESS_SNAPSHOT"
+
+log "PASS: packaged launcher/shell/session + authenticated MCP/LLM + stop/cleanup"
 exit 0

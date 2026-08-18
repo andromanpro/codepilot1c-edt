@@ -192,7 +192,8 @@ public final class McpClient implements AutoCloseable {
             String name = stringValue(tool, "name");
             if (name == null || name.isBlank()) throw protocolUnchecked("tools/list contains a nameless tool");
             tools.add(new ToolDefinition(name, stringValue(tool, "description"),
-                    tool.get("inputSchema")));
+                    tool.get("inputSchema"), objectValue(tool, "annotations"),
+                    objectValue(tool, "_meta")));
         }
         return new ToolsListResult(tools, raw);
     }

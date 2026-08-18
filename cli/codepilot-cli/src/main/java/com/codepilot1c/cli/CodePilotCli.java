@@ -32,6 +32,11 @@ public final class CodePilotCli {
             services.err().flush();
             return ExitCodes.FAILURE;
         });
+        if (args.length == 0) {
+            if (services.terminalFactory().isInteractive()) return commandLine.execute("shell");
+            commandLine.usage(services.out());
+            return ExitCodes.USAGE;
+        }
         return commandLine.execute(args);
     }
 

@@ -243,6 +243,7 @@ public class Messages extends NLS {
     public static String ProvidersPreferencePage_AccountDetailsDisconnected;
     public static String ProvidersPreferencePage_AccountNotAvailableTitle;
     public static String ProvidersPreferencePage_AccountNotAvailableMessage;
+    public static String ProvidersPreferencePage_SaveError;
 
     // Provider edit dialog
     public static String ProviderEditDialog_TitleAdd;

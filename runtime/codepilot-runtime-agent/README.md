@@ -5,12 +5,37 @@ host. A run starts with immutable system/user messages, asks an `AgentModel`
 for assistant text and/or tool calls, executes calls through `ToolRuntime`, and
 feeds deterministic tool-result envelopes back into the next model turn.
 
+Models may additionally implement `StreamingAgentModel`. Existing
+`AgentRuntime` constructors retain the buffered `AgentModel` completion
+contract even when a model also supports streaming. Interactive hosts opt in
+with the additive `AgentCompletionMode.STREAMING` constructor policy; the
+runtime then passes a per-step `StreamObserver` and forwards its text and
+reasoning deltas to an `AgentEventListener`. Events are serialized per run in
+this order: step start, zero or more deltas, the accepted assistant message,
+each tool-call start/result pair, and one terminal turn-finished event. Late
+stream deltas are detached after the model stage completes, and listener
+failures do not affect control flow.
+
 Safety bounds are explicit per runtime: `maxSteps` limits model/tool cycles,
 `timeout` bounds the entire run, and a host `CancellationToken` can stop an
 in-flight provider or tool future. Every terminal path returns `AgentResult`;
 expected failures are represented by a stable `AgentError.Code`. A step
 includes its requested tool executions, so a tool-producing final allowed
 step is executed before the `STEP_LIMIT` result is returned.
+
+An optional `ToolApprover` is called asynchronously before every valid tool
+execution. Existing constructors install `ToolApprover.ALLOW`; overloads accept an
+event listener and approver (and, when needed, a `LogSink`). A denial is fed
+back to the model as a tool failure with code `CONFIRMATION_DENIED`, so the
+agent can recover or choose another action. An approver failure terminates the
+step with `FAILED/TOOL_APPROVAL`. Cancellation and `close()` cancel a pending
+approval future when possible and otherwise detach it so a late decision
+cannot execute the tool.
+
+`ToolDefinition` retains its three-argument constructor and can now carry an
+optional `ToolAnnotations` value containing a display title plus destructive,
+read-only, and confirmation hints. These hints are metadata only: approval is
+still invoked for every valid execution, regardless of annotation values.
 
 OpenAI-compatible HTTP 401/403 responses are retained as the provider-neutral
 `PROVIDER_AUTH` terminal code without retaining or exposing the response body.
@@ -34,11 +59,21 @@ The module contains two boundary adapters:
 
 - `OpenAiCompatibleAgentModel` maps neutral messages and JSON schemas to the
   existing configured `/chat/completions` transport and parses assistant tool
-  calls. It validates assistant roles and function call types, and it never
-  selects an endpoint or authorization policy itself.
+  calls. Its original two-argument completion remains buffered; its streaming
+  overload forwards text/reasoning deltas and assembles the same final
+  assistant content and calls from provider SSE events. Provider usage events
+  are validated and consumed but are not exposed because the agent SPI has no
+  token-accounting field. It validates assistant roles and function call
+  types, and it never selects an endpoint or authorization policy itself.
 - `McpToolRuntime.connect(...)` initializes an existing `McpClient`, snapshots
-  `tools/list`, and maps `tools/call` results into stable tool envelopes. A
-  failed tool-list snapshot closes the newly initialized MCP session.
+  `tools/list`, and maps `tools/call` results into stable tool envelopes. MCP
+  annotations and the `codepilot1c/requiresConfirmation` extension are mapped
+  into optional provider-neutral `ToolAnnotations`; legacy hosts keep the
+  annotation value absent. `refresh()` asynchronously validates a complete new
+  list before atomically publishing it. Calls already in progress continue
+  against the prior immutable snapshot, while failed, cancelled, superseded,
+  or close-raced refreshes cannot replace the visible catalog. A failed initial
+  tool-list snapshot closes the newly initialized MCP session.
 
 Logs intentionally contain only the caller-supplied operation ID, counters,
 and terminal status. Message content, tool arguments/results, HTTP bodies,

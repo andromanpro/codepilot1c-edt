@@ -537,7 +537,9 @@ public class VibeCorePlugin extends Plugin {
         registry.setBackendProvider(new DynamicLlmProvider(config));
         if (activateIfNoConfiguredProvider
                 && (previousActive == null || !previousActive.isConfigured())) {
-            registry.setActiveProvider("backend"); //$NON-NLS-1$
+            if (!registry.setActiveProvider("backend")) { //$NON-NLS-1$
+                logWarn("Failed to persist backend provider selection"); //$NON-NLS-1$
+            }
         }
     }
 

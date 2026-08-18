@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
 import com.google.gson.Gson;
 
 /**
@@ -77,6 +78,16 @@ public final class McpHostInstanceRegistryPublisher implements AutoCloseable {
     /** Publishes a snapshot after the HTTP listener has bound its actual port. */
     public synchronized boolean publish(int port, String baseUrl, String workspace, String edtHome,
             String mode, String pluginVersion, String authMode) {
+        return publish(port, baseUrl, workspace, edtHome, mode, pluginVersion, authMode, false);
+    }
+
+    /**
+     * Publishes a snapshot with additive, non-secret broker version metadata.
+     *
+     * <p>The schema version remains 1 because the broker version is an optional scalar field.</p>
+     */
+    public synchronized boolean publish(int port, String baseUrl, String workspace, String edtHome,
+            String mode, String pluginVersion, String authMode, boolean llmBrokerAvailable) {
         if (port < 1 || port > 65535) {
             throw new IllegalArgumentException("Bound HTTP port is invalid"); //$NON-NLS-1$
         }
@@ -93,6 +104,10 @@ public final class McpHostInstanceRegistryPublisher implements AutoCloseable {
         record.put("startedAt", Instant.now(clock).toString()); //$NON-NLS-1$
         record.put("pluginVersion", valueOrUnknown(pluginVersion)); //$NON-NLS-1$
         record.put("authMode", valueOrUnknown(authMode)); //$NON-NLS-1$
+        if (llmBrokerAvailable) {
+            // Keep schema-v1 readable by main-era FlatJsonObjectReader, which rejects arrays.
+            record.put("llmBrokerVersion", Integer.valueOf(McpHostLlmBroker.SCHEMA_VERSION)); //$NON-NLS-1$
+        }
         // The nonce is an ownership proof, not an authentication value. It lets an older host
         // avoid deleting a registry file replaced by a newer process with the same instance id.
         record.put("nonce", nonce); //$NON-NLS-1$

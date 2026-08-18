@@ -255,7 +255,7 @@ final class McpCommandSupport {
         }
     }
 
-    private static char[] readBearerToken(RootCommand root, McpConnectionOptions options) {
+    static char[] readBearerToken(RootCommand root, McpConnectionOptions options) {
         if (options.bearerTokenFile() != null) {
             try {
                 return PrivateUtf8SecretReader.read(Path.of(options.bearerTokenFile()),

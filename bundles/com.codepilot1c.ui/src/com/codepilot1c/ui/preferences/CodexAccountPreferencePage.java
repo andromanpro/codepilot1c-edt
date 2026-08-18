@@ -7,6 +7,8 @@
  */
 package com.codepilot1c.ui.preferences;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletionException;
 
 import org.eclipse.jface.dialogs.MessageDialog;
@@ -36,6 +38,7 @@ import com.codepilot1c.core.provider.codex.CodexOAuthService.CodexLoginSession;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.LlmProviderConfigStore;
 import com.codepilot1c.core.provider.config.ProviderType;
+import com.codepilot1c.ui.internal.Messages;
 
 /**
  * Preference page for signing in to OpenAI Codex via a ChatGPT (Plus/Pro) subscription.
@@ -160,8 +163,9 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
             setErrorMessage(cause.getMessage());
         } else if (result != null) {
             try {
-                ensureActiveCodexProvider(modelCombo.getText().trim(), reasoningEffortCombo.getText());
-                setErrorMessage(null);
+                boolean persisted = ensureActiveCodexProvider(
+                        modelCombo.getText().trim(), reasoningEffortCombo.getText());
+                setErrorMessage(persisted ? null : Messages.ProvidersPreferencePage_SaveError);
             } catch (Exception e) {
                 VibeCorePlugin.logWarn("Failed to activate Codex provider: " + e.getMessage()); //$NON-NLS-1$
             }
@@ -179,26 +183,28 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
         refreshStatus();
     }
 
-    private void ensureActiveCodexProvider(String model, String reasoningEffort) {
+    private boolean ensureActiveCodexProvider(String model, String reasoningEffort) {
         String effectiveModel = model != null && !model.isBlank() ? model : CodexOAuthConstants.DEFAULT_MODEL;
         LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
-        LlmProviderConfig codex = store.getProviders().stream()
-            .filter(config -> config.getType() == ProviderType.OPENAI_CODEX)
-            .findFirst()
-            .orElse(null);
+        List<LlmProviderConfig> candidateProviders = new ArrayList<>();
+        LlmProviderConfig codex = null;
+        for (LlmProviderConfig stored : store.getProviders()) {
+            LlmProviderConfig candidate = stored.copy();
+            candidateProviders.add(candidate);
+            if (codex == null && candidate.getType() == ProviderType.OPENAI_CODEX) {
+                codex = candidate;
+            }
+        }
         if (codex == null) {
             codex = new LlmProviderConfig(null, "OpenAI Codex (ChatGPT)", ProviderType.OPENAI_CODEX, //$NON-NLS-1$
                 CodexOAuthConstants.CODEX_BASE_URL, "", effectiveModel, 4096); //$NON-NLS-1$
             codex.setStreamingEnabled(true);
-            codex.setReasoningEffort(reasoningEffort);
-            store.addProvider(codex);
-        } else {
-            codex.setBaseUrl(CodexOAuthConstants.CODEX_BASE_URL);
-            codex.setModel(effectiveModel);
-            codex.setReasoningEffort(reasoningEffort);
-            store.updateProvider(codex);
+            candidateProviders.add(codex);
         }
-        store.setActiveProviderId(codex.getId());
+        codex.setBaseUrl(CodexOAuthConstants.CODEX_BASE_URL);
+        codex.setModel(effectiveModel);
+        codex.setReasoningEffort(reasoningEffort);
+        return store.saveProviders(candidateProviders, codex.getId());
     }
 
     private void refreshStatus() {
@@ -254,8 +260,14 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
     @Override
     public boolean performOk() {
         if (codexOAuthService.isLoggedIn()) {
-            ensureActiveCodexProvider(modelCombo.getText().trim(), reasoningEffortCombo.getText());
+            boolean saved = ensureActiveCodexProvider(
+                    modelCombo.getText().trim(), reasoningEffortCombo.getText());
+            if (!saved) {
+                setErrorMessage(Messages.ProvidersPreferencePage_SaveError);
+                return false;
+            }
         }
+        setErrorMessage(null);
         return super.performOk();
     }
 

@@ -75,6 +75,54 @@ uses the same Java-path precedence and is provided for convenience, but normal
 `cmd.exe` `%*` forwarding has the platform's usual metacharacter/quoting
 limitations; it is not the canonical arbitrary-argument interface.
 
+## Start the interactive shell
+
+From an unpacked distribution, use the platform launcher:
+
+```sh
+# macOS and Linux
+bin/codepilot shell
+```
+
+```powershell
+# Windows PowerShell (canonical Windows form)
+pwsh -File .\bin\codepilot.ps1 shell
+```
+
+```bat
+rem Windows cmd.exe convenience form
+bin\codepilot.cmd shell
+```
+
+The equivalent direct jar invocations are:
+
+```sh
+java -jar lib/codepilot-cli.jar shell
+# From a repository build:
+java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar shell
+```
+
+`codepilot` with no command enters the shell only when attached to an
+interactive terminal. Use `agent run` rather than `shell` for redirected batch
+input.
+
+The default `--mode auto` first attempts connected mode against registered EDT
+instances. Connected mode reuses EDT's active provider through the authenticated
+LLM broker and never exports its API key. The plugin must advertise `llm.v1`;
+enable the EDT instance preference `mcp.host.llm.enabled=true` (or start EDT
+with `-Dmcp.host.llm.enabled=true`) and ensure an active provider is selected.
+Use `--mode connected` to require this path.
+
+`--mode standalone` instead requires `--provider-endpoint` and `--model` (or
+their documented property/environment equivalents), plus an EDT MCP endpoint
+for tools. Prefer `--provider-api-key-file` and
+`--mcp-bearer-token-file`: each secret file overrides its corresponding Java
+property and environment variable and avoids putting a secret in the CLI
+argument list. See the repository's
+[`cli/README.md`](https://github.com/ondysss/codepilot1c-edt/blob/main/cli/README.md#interactive-shell) for
+all options, slash commands, approval prompts, Ctrl+C behavior, session paths,
+broker diagnostics, and Secure Storage rollback limitations.
+
 ## Update and uninstall
 
 For an update, download and verify the new archive, extract it beside the
@@ -98,3 +146,23 @@ and quoted paths but retains the cmd.exe `%*` limitation described above. The
 launcher tests exercise spaces in the install path, symlink resolution,
 archive inventory, line endings, and executable bit without starting EDT or a
 GUI.
+
+After the shaded jar is built, the distribution tests also run `version`
+through every launcher whose native runner is available on the current host:
+
+```sh
+python3 -m unittest -v packaging.tests.test_distribution
+```
+
+macOS/Linux runs `bin/codepilot`; PowerShell and cmd tests run when `pwsh` (or
+Windows PowerShell) and `cmd.exe` are present and otherwise report skips. If no
+Windows runner is available, perform this check on Windows after
+`mvn -f packaging/pom.xml clean verify -Dcli.jar=...`:
+
+```powershell
+pwsh -NoLogo -NoProfile -File .\target\distribution-root\bin\codepilot.ps1 version
+cmd.exe /d /s /c ".\target\distribution-root\bin\codepilot.cmd version"
+```
+
+Both commands must exit zero and print a `codepilot <version>` line; repeat
+from an install directory containing spaces.

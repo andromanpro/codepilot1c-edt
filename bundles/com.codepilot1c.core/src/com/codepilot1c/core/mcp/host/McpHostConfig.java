@@ -52,6 +52,7 @@ public class McpHostConfig {
     private int port;
     private String bearerToken;
     private AuthMode authMode;
+    private boolean llmEnabled;
     private MutationPolicy mutationPolicy;
     private String sessionProfileId;
     private String exposedToolsFilter;
@@ -65,6 +66,7 @@ public class McpHostConfig {
         cfg.port = findAvailablePort();
         cfg.bearerToken = generateToken();
         cfg.authMode = AuthMode.OAUTH_OR_BEARER;
+        cfg.llmEnabled = true;
         cfg.mutationPolicy = MutationPolicy.ALLOW;
         cfg.sessionProfileId = ""; //$NON-NLS-1$
         cfg.exposedToolsFilter = "*"; //$NON-NLS-1$
@@ -172,6 +174,14 @@ public class McpHostConfig {
 
     public void setAuthMode(AuthMode authMode) {
         this.authMode = authMode;
+    }
+
+    public boolean isLlmEnabled() {
+        return llmEnabled;
+    }
+
+    public void setLlmEnabled(boolean llmEnabled) {
+        this.llmEnabled = llmEnabled;
     }
 
     public MutationPolicy getMutationPolicy() {

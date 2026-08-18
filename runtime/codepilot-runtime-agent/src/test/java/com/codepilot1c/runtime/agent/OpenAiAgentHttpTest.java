@@ -76,6 +76,8 @@ public class OpenAiAgentHttpTest {
             }
             assertEquals("Bearer http-secret", authorization.get()); //$NON-NLS-1$
             assertEquals(2, bodies.size());
+            assertFalse(bodies.get(0).has("stream")); //$NON-NLS-1$
+            assertFalse(bodies.get(1).has("stream")); //$NON-NLS-1$
             assertEquals("test-model", bodies.get(0).get("model").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals(1, bodies.get(0).getAsJsonArray("tools").size()); //$NON-NLS-1$
             assertEquals(4, bodies.get(1).getAsJsonArray("messages").size()); //$NON-NLS-1$

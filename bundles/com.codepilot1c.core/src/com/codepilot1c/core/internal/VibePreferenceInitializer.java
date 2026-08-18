@@ -85,6 +85,7 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
         defaults.putInt(VibePreferenceConstants.PREF_MCP_HOST_HTTP_PORT, 8765);
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE,
             McpHostConfig.AuthMode.OAUTH_OR_BEARER.name());
+        defaults.putBoolean(VibePreferenceConstants.PREF_MCP_HOST_LLM_ENABLED, true);
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION,
             McpHostConfig.MutationPolicy.ALLOW.name());
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, "*"); //$NON-NLS-1$

@@ -127,10 +127,10 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
                 Duration remaining = remaining(deadline);
                 if (remaining == null) return terminalWithoutRun("timed_out", "timeout", 0, redactor);
 
-                var modelAdapter = new OpenAiCompatibleAgentModel(
-                        new RuntimeProviderFactory().create(provider.configuration()));
-                try (AgentRuntime runtime = new AgentRuntime(modelAdapter, tools,
-                        new AgentRunConfig(maxSteps, remaining))) {
+                try (var providerClient = new RuntimeProviderFactory().create(provider.configuration());
+                        AgentRuntime runtime = new AgentRuntime(
+                                new OpenAiCompatibleAgentModel(providerClient), tools,
+                                new AgentRunConfig(maxSteps, remaining))) {
                     AgentRequest request = new AgentRequest(UUID.randomUUID().toString(),
                             List.of(new AgentMessage.Text(AgentMessage.Role.USER, prompt)));
                     CompletableFuture<AgentResult> run = runtime.run(request, cancellation);
@@ -464,7 +464,10 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
             apiKey = apiKey == null ? new char[0] : apiKey;
         }
         @Override public char[] apiKey() { return apiKey; }
-        @Override public void close() { Arrays.fill(apiKey, '\0'); }
+        @Override public void close() {
+            Arrays.fill(apiKey, '\0');
+            configuration.close();
+        }
     }
 
     private enum NoToolsRuntime implements ToolRuntime {

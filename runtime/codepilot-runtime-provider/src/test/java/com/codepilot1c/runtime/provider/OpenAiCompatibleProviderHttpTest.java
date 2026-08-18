@@ -12,6 +12,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
@@ -165,11 +166,45 @@ public class OpenAiCompatibleProviderHttpTest {
         }
     }
 
+    @Test
+    public void configurationAndProviderCloseAreIdempotentAndWipeOwnedKey() {
+        char[] suppliedSecret = "close-me-secret".toCharArray(); //$NON-NLS-1$
+        ProviderConfiguration configuration = ProviderConfiguration.builder()
+                .id("test") //$NON-NLS-1$
+                .displayName("Test") //$NON-NLS-1$
+                .baseUri(URI.create("https://provider.example/v1")) //$NON-NLS-1$
+                .defaultModel("model") //$NON-NLS-1$
+                .apiKey(suppliedSecret)
+                .build();
+        OpenAiCompatibleProvider provider = new RuntimeProviderFactory().create(configuration);
+        Arrays.fill(suppliedSecret, '\0');
+
+        provider.close();
+        provider.close();
+        configuration.close();
+
+        assertFalse(configuration.hasApiKey());
+        assertArrayEquals(new char["close-me-secret".length()], //$NON-NLS-1$
+                configurationSecretBuffer(configuration));
+        assertThrows(IllegalStateException.class,
+                () -> provider.completeRaw(new com.google.gson.JsonObject()));
+    }
+
     private static char[] builderSecretBuffer(ProviderConfiguration.Builder builder) {
         try {
             java.lang.reflect.Field secret = ProviderConfiguration.Builder.class.getDeclaredField("apiKey"); //$NON-NLS-1$
             secret.setAccessible(true);
             return (char[]) secret.get(builder);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private static char[] configurationSecretBuffer(ProviderConfiguration configuration) {
+        try {
+            java.lang.reflect.Field secret = ProviderConfiguration.class.getDeclaredField("apiKey"); //$NON-NLS-1$
+            secret.setAccessible(true);
+            return ((char[]) secret.get(configuration)).clone();
         } catch (ReflectiveOperationException exception) {
             throw new AssertionError(exception);
         }

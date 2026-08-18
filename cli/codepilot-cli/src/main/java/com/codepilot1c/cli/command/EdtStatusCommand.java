@@ -60,7 +60,8 @@ final class EdtStatusCommand implements Callable<Integer> {
             result.put("instances", instances);
             String text = statuses.isEmpty() ? "No registered EDT instances."
                     : statuses.stream().map(value -> value.state() + ": " + value.instance().instanceId()
-                            + " " + value.instance().baseUrl() + " (pid " + value.instance().pid() + ")")
+                            + " " + value.instance().baseUrl() + " (pid " + value.instance().pid() + ")"
+                            + llmCapability(value))
                             .reduce((left, right) -> left + System.lineSeparator() + right).orElseThrow();
             CommandOutput.print(root, text, result);
             return healthy ? ExitCodes.OK : ExitCodes.EDT_UNAVAILABLE;
@@ -82,5 +83,9 @@ final class EdtStatusCommand implements Callable<Integer> {
         value.put("httpStatus", status.httpStatus());
         value.put("detail", status.detail());
         return value;
+    }
+
+    private static String llmCapability(StatusItem status) {
+        return status.instance().capabilities().contains("llm.v1") ? " [llm.v1]" : "";
     }
 }

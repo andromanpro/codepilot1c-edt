@@ -31,6 +31,7 @@ import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.IMcpHostTransport;
 import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
 import com.codepilot1c.core.mcp.host.McpReadiness;
+import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
 import com.codepilot1c.core.mcp.model.McpError;
 import com.codepilot1c.core.mcp.model.McpMessage;
@@ -54,6 +55,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     private final Gson gson = new Gson();
     private final Map<String, McpHostSession> sessions = new ConcurrentHashMap<>();
     private final RemoteWebController remoteWebController;
+    private final McpHostLlmBroker llmBroker;
 
     private HttpServer server;
     private ScheduledExecutorService sessionCleanupExecutor;
@@ -62,7 +64,8 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     public McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
             McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode) {
         this(bindAddress, port, oauthService, router, authMode,
-                Duration.ofSeconds(com.codepilot1c.core.mcp.host.McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS));
+                Duration.ofSeconds(com.codepilot1c.core.mcp.host.McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS),
+                new McpHostLlmBroker(true));
     }
 
     /**
@@ -71,12 +74,27 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     public McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
             McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
             Duration sessionIdleTimeout) {
-        this(bindAddress, port, oauthService, router, authMode, sessionIdleTimeout, Clock.systemUTC());
+        this(bindAddress, port, oauthService, router, authMode, sessionIdleTimeout,
+                new McpHostLlmBroker(true));
+    }
+
+    /** Creates a transport with an explicitly configured LLM broker. */
+    public McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
+            McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
+            Duration sessionIdleTimeout, McpHostLlmBroker llmBroker) {
+        this(bindAddress, port, oauthService, router, authMode, sessionIdleTimeout, Clock.systemUTC(), llmBroker);
     }
 
     McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
             McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
             Duration sessionIdleTimeout, Clock clock) {
+        this(bindAddress, port, oauthService, router, authMode, sessionIdleTimeout, clock,
+                new McpHostLlmBroker(true));
+    }
+
+    McpHostHttpTransport(String bindAddress, int port, McpHostOAuthService oauthService,
+            McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
+            Duration sessionIdleTimeout, Clock clock, McpHostLlmBroker llmBroker) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.oauthService = oauthService;
@@ -88,6 +106,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             : Duration.ofSeconds(com.codepilot1c.core.mcp.host.McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS);
         this.clock = clock != null ? clock : Clock.systemUTC();
         this.remoteWebController = new RemoteWebController(oauthService, this.authMode, AgentSessionController.getInstance());
+        this.llmBroker = llmBroker != null ? llmBroker : new McpHostLlmBroker(false);
     }
 
     @Override
@@ -100,6 +119,8 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             server.createContext("/mcp", new McpHandler()); //$NON-NLS-1$
             server.createContext("/health", exchange -> writeText(exchange, 200, "ok")); //$NON-NLS-1$ //$NON-NLS-2$
             server.createContext("/health/ready", new ReadinessHandler()); //$NON-NLS-1$
+            server.createContext("/llm/v1/capabilities", new LlmEndpointHandler(true)); //$NON-NLS-1$
+            server.createContext("/llm/v1/chat", new LlmEndpointHandler(false)); //$NON-NLS-1$
             server.createContext("/.well-known/oauth-authorization-server", new AuthorizationMetadataHandler()); //$NON-NLS-1$
             server.createContext("/.well-known/openid-configuration", new AuthorizationMetadataHandler()); //$NON-NLS-1$
             server.createContext("/.well-known/oauth-protected-resource", new ProtectedResourceMetadataHandler()); //$NON-NLS-1$
@@ -139,6 +160,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         }
         sessions.values().forEach(this::closeTraceSession);
         sessions.clear();
+        llmBroker.cancelActive();
         remoteWebController.dispose();
     }
 
@@ -173,7 +195,44 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                 return;
             }
             McpReadiness readiness = router.readiness();
-            writeJson(exchange, readiness.ready() ? 200 : 503, readiness.asHealthResponse());
+            Map<String, Object> response = new LinkedHashMap<>(readiness.asHealthResponse());
+            boolean llmAvailable = llmBroker.isEnabled();
+            response.put("llmBrokerStatus", llmAvailable ? "available" : "disabled"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (llmAvailable) {
+                response.put("capabilities", List.of(McpHostLlmBroker.CAPABILITY_ID)); //$NON-NLS-1$
+            }
+            writeJson(exchange, readiness.ready() ? 200 : 503, response);
+        }
+    }
+
+    private final class LlmEndpointHandler implements HttpHandler {
+        private final boolean capabilities;
+
+        LlmEndpointHandler(boolean capabilities) {
+            this.capabilities = capabilities;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String expectedPath = capabilities ? "/llm/v1/capabilities" : "/llm/v1/chat"; //$NON-NLS-1$ //$NON-NLS-2$
+            if (!expectedPath.equals(exchange.getRequestURI().getPath()) || !llmBroker.isEnabled()) {
+                writeJson(exchange, 404, Map.of("error", "not_found")); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
+            String expectedMethod = capabilities ? "GET" : "POST"; //$NON-NLS-1$ //$NON-NLS-2$
+            if (!expectedMethod.equalsIgnoreCase(exchange.getRequestMethod())) {
+                writeJson(exchange, 405, Map.of("error", "method_not_allowed")); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
+            if (!isAuthorized(exchange)) {
+                writeUnauthorized(exchange);
+                return;
+            }
+            if (capabilities) {
+                llmBroker.handleCapabilities(exchange);
+            } else {
+                llmBroker.handleChat(exchange);
+            }
         }
     }
 
@@ -195,10 +254,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                     return;
                 }
                 if (!isAuthorized(exchange)) {
-                    exchange.getResponseHeaders().add("WWW-Authenticate", oauthService.buildWwwAuthenticateHeader()); //$NON-NLS-1$
-                    writeJson(exchange, 401, Map.of( //$NON-NLS-1$
-                        "error", "unauthorized", //$NON-NLS-1$ //$NON-NLS-2$
-                        "error_description", "Bearer token is missing, invalid or expired")); //$NON-NLS-1$ //$NON-NLS-2$
+                    writeUnauthorized(exchange);
                     return;
                 }
                 if (!hasSupportedProtocolVersion(exchange)) {
@@ -520,6 +576,13 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             default:
                 return oauthService.isAuthorized(exchange.getRequestHeaders());
         }
+    }
+
+    private void writeUnauthorized(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().add("WWW-Authenticate", oauthService.buildWwwAuthenticateHeader()); //$NON-NLS-1$
+        writeJson(exchange, 401, Map.of( //$NON-NLS-1$
+            "error", "unauthorized", //$NON-NLS-1$ //$NON-NLS-2$
+            "error_description", "Bearer token is missing, invalid or expired")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private boolean isLoopback(HttpExchange exchange) {

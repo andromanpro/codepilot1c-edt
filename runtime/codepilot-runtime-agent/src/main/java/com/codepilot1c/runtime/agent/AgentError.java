@@ -17,7 +17,8 @@ public record AgentError(Code code, String message) {
         PROVIDER_AUTH,
         PROVIDER_HTTP,
         PROVIDER_RESPONSE,
-        TOOL_CATALOG
+        TOOL_CATALOG,
+        TOOL_APPROVAL
     }
 
     public AgentError {

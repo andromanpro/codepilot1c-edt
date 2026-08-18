@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mechanical checks for the archive contract and cross-platform launchers."""
 
+import contextlib
 import os
 import shutil
 import stat
@@ -25,6 +26,23 @@ EXPECTED_ARCHIVE = {
 
 
 class DistributionContractTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def staged_distribution(self):
+        cli_jar = ROOT / "cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar"
+        if not cli_jar.is_file():
+            self.skipTest("build the shaded CLI jar first")
+        with tempfile.TemporaryDirectory(prefix="codepilot launcher smoke ") as temp:
+            root = Path(temp) / "installed distribution"
+            bin_dir = root / "bin"
+            lib_dir = root / "lib"
+            bin_dir.mkdir(parents=True)
+            lib_dir.mkdir()
+            for name in ("codepilot", "codepilot.cmd", "codepilot.ps1"):
+                shutil.copy2(PACKAGING / "launchers" / name, bin_dir / name)
+            os.chmod(bin_dir / "codepilot", 0o755)
+            shutil.copy2(cli_jar, lib_dir / "codepilot-cli.jar")
+            yield root
+
     def test_launcher_line_endings_and_modes(self):
         posix = (PACKAGING / "launchers/codepilot").read_bytes()
         windows = (PACKAGING / "launchers/codepilot.cmd").read_bytes()
@@ -114,6 +132,51 @@ class DistributionContractTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher smoke runs on macOS/Linux hosts")
+    def test_posix_launcher_smokes_built_cli(self):
+        with self.staged_distribution() as root:
+            result = subprocess.run(
+                [str(root / "bin/codepilot"), "version"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.startswith("codepilot "), result.stdout)
+
+    def test_powershell_launcher_smokes_built_cli_when_runner_is_available(self):
+        runner = shutil.which("pwsh") or shutil.which("powershell")
+        if runner is None:
+            self.skipTest("PowerShell runner unavailable; use the documented Windows manual smoke")
+        with self.staged_distribution() as root:
+            environment = os.environ.copy()
+            if os.name != "nt":
+                environment["CODEPILOT_JAVA"] = shutil.which("java") or "java"
+            result = subprocess.run(
+                [runner, "-NoLogo", "-NoProfile", "-File", str(root / "bin/codepilot.ps1"), "version"],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.startswith("codepilot "), result.stdout)
+
+    def test_cmd_launcher_smokes_built_cli_when_runner_is_available(self):
+        runner = (shutil.which("cmd.exe") or shutil.which("cmd")) if os.name == "nt" else None
+        if runner is None:
+            self.skipTest("cmd.exe runner unavailable; use the documented Windows manual smoke")
+        with self.staged_distribution() as root:
+            invocation = subprocess.list2cmdline([str(root / "bin/codepilot.cmd"), "version"])
+            result = subprocess.run(
+                [runner, "/d", "/s", "/c", invocation],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.startswith("codepilot "), result.stdout)
 
 
 if __name__ == "__main__":
