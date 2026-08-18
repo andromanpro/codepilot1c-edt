@@ -4,14 +4,23 @@ package com.codepilot1c.cli.supervisor;
 import java.net.URI;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 /** Versioned, non-secret record shared by CLI and the headless host. */
 public record InstanceRecord(int schemaVersion, String instanceId, long pid, int port, String baseUrl,
         String workspace, String edtHome, String mode, String owner, Instant startedAt,
-        String pluginVersion, String authMode, String logFile) {
+        String pluginVersion, String authMode, String logFile, List<String> capabilities) {
     public static final int SCHEMA_VERSION = 1;
+
+    /** Source-compatible constructor for records produced before optional capabilities existed. */
+    public InstanceRecord(int schemaVersion, String instanceId, long pid, int port, String baseUrl,
+            String workspace, String edtHome, String mode, String owner, Instant startedAt,
+            String pluginVersion, String authMode, String logFile) {
+        this(schemaVersion, instanceId, pid, port, baseUrl, workspace, edtHome, mode, owner,
+                startedAt, pluginVersion, authMode, logFile, List.of());
+    }
 
     public InstanceRecord {
         if (schemaVersion != SCHEMA_VERSION) throw new IllegalArgumentException("unsupported schemaVersion");
@@ -24,6 +33,10 @@ public record InstanceRecord(int schemaVersion, String instanceId, long pid, int
         Objects.requireNonNull(mode, "mode");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(startedAt, "startedAt");
+        capabilities = capabilities == null ? List.of() : List.copyOf(capabilities);
+        if (capabilities.stream().anyMatch(value -> value == null || value.isBlank())) {
+            throw new IllegalArgumentException("capabilities must be non-blank strings");
+        }
         validateBaseUrl(baseUrl, port);
     }
 
@@ -42,6 +55,7 @@ public record InstanceRecord(int schemaVersion, String instanceId, long pid, int
         if (pluginVersion != null && !pluginVersion.isBlank()) value.put("pluginVersion", pluginVersion);
         if (authMode != null && !authMode.isBlank()) value.put("authMode", authMode);
         if (logFile != null && !logFile.isBlank()) value.put("logFile", logFile);
+        if (!capabilities.isEmpty()) value.put("capabilities", capabilities);
         return value;
     }
 

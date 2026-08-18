@@ -15,6 +15,7 @@ java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar version
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar --output json doctor
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar edt installations
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar edt status
+java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar shell
 java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar edt start \
   --workspace /absolute/path/to/workspace --edt-home /absolute/path/to/edt/eclipse \
   --port 8765 --timeout 120
@@ -55,8 +56,153 @@ variants). Discovery never starts EDT and contains no user-specific hardcoded
 paths. `edt start --edt-home` validates exactly the supplied Eclipse home;
 otherwise the first deterministically sorted discovered installation is used.
 
-`doctor` reports independent `java`, `edt`, `config`, and `endpoint` checks in
-text or deterministic JSON.
+`doctor` reports independent `java`, `edt`, `config`, `endpoint`, and `broker`
+checks in text or deterministic JSON. The broker check is additive: when the
+matching schema-v1 instance record does not advertise `llm.v1`, the check
+passes as `broker_not_advertised` for compatibility with old or broker-disabled
+plugins. When advertised, the CLI makes a bounded authenticated capability
+probe and reports unreachable, authentication, protocol, streaming-readiness,
+and no-active-provider failures without printing response bodies or provider
+configuration.
+
+## Interactive shell
+
+Java 17 or newer and an interactive terminal are required. With the packaged
+distribution, start the same shell on each platform as follows:
+
+```sh
+# macOS or Linux, from the unpacked distribution
+bin/codepilot shell
+
+# Or, after putting its bin directory on PATH
+codepilot shell
+```
+
+```powershell
+# Windows PowerShell (canonical Windows launcher)
+pwsh -File .\bin\codepilot.ps1 shell
+```
+
+```bat
+rem Windows cmd.exe convenience launcher
+bin\codepilot.cmd shell
+```
+
+The `.cmd` form has the normal `cmd.exe` metacharacter and `%*` forwarding
+limitations; use the PowerShell launcher for arguments containing arbitrary
+metacharacters. To run the build output without packaging:
+
+```sh
+java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar shell
+```
+
+Running `codepilot` without a command also enters the shell when standard input
+is an interactive terminal. With redirected/non-interactive input it prints
+usage and exits with code `2`; use `agent run --prompt-stdin` for a one-shot
+pipeline rather than treating `shell` as a batch protocol.
+
+The shell grammar is:
+
+```text
+codepilot shell
+  [--mode auto|connected|standalone]
+  [--instance-id UUID | --mcp-endpoint URL]
+  [--mcp-bearer-token-file FILE] [--allow-insecure-http]
+  [--provider openai-compatible]
+  [--provider-endpoint URL] [--model MODEL]
+  [--provider-api-key-file FILE] [--provider-allow-insecure-http]
+  [--max-steps N] [--turn-timeout SECONDS]
+  [--system-prompt-file FILE]
+```
+
+`--max-steps` defaults to `16`; `--turn-timeout` defaults to `300` seconds per
+turn. `--system-prompt-file` reads at most 1 MiB of UTF-8 at session creation.
+`--instance` is an alias for `--instance-id`, and `--endpoint` is an alias for
+`--mcp-endpoint`. The two endpoint selectors are mutually exclusive. Without
+one, registered instances are tried newest-first and the configured MCP
+endpoint is the deterministic fallback. Plain HTTP is accepted automatically
+only for loopback MCP/provider endpoints; the two insecure-HTTP opt-ins are
+independent.
+
+Mode selection is deterministic:
+
+- `connected` requires an authenticated EDT broker with streaming chat.
+- `standalone` requires an explicit usable OpenAI-compatible provider endpoint
+  and model, plus an EDT MCP endpoint for tools.
+- `auto` tries connected candidates first and falls back to standalone only
+  when standalone provider configuration is complete. It does not silently
+  invent a provider endpoint or model.
+
+Connected mode calls the active provider already selected in EDT through the
+authenticated `/llm/v1` broker. The CLI sends no provider/model override and
+does not read, export, persist, or require the provider API key. It reuses the
+same MCP origin and bearer credential for MCP tools and the broker. MCP bearer
+precedence is `--mcp-bearer-token-file`, then
+`-Dcodepilot.mcp.bearerToken`, then `CODEPILOT_MCP_BEARER_TOKEN`.
+
+Standalone mode hosts the OpenAI-compatible provider in the CLI process. Its
+configuration precedence is:
+
+| Value | First | Then | Then |
+|---|---|---|---|
+| Provider type | `--provider` | — | built-in `openai-compatible` |
+| Provider endpoint | `--provider-endpoint` | `-Dcodepilot.provider.endpoint` | `CODEPILOT_PROVIDER_ENDPOINT` |
+| Model | `--model` | `-Dcodepilot.provider.model` | `CODEPILOT_PROVIDER_MODEL` |
+| Provider API key | `--provider-api-key-file` | `-Dcodepilot.provider.apiKey` | `CODEPILOT_PROVIDER_API_KEY` |
+| MCP bearer | `--mcp-bearer-token-file` | `-Dcodepilot.mcp.bearerToken` | `CODEPILOT_MCP_BEARER_TOKEN` |
+
+The accepted provider identifiers are `openai-compatible` and its `openai`
+alias. Secret files are bounded UTF-8, reject symlinks, and on POSIX must not
+be group/other accessible (normally mode `0600`). A file has precedence over
+property/environment credentials. Properties can appear in process listings;
+prefer a private secret file, or an environment variable when a file cannot be
+used. The shell redacts the exact configured provider and MCP secrets from
+terminal output and persisted session content.
+
+Available slash commands are `/help`, `/exit`, `/new`, `/status`, `/tools`,
+`/model`, `/sessions`, and `/resume <session-id>`. `/model` is read-only; exit
+and restart the shell to change provider/model startup selection. Risky tools
+(destructive, confirmation-required, mutating, or lacking trustworthy MCP
+annotations) prompt `y` for one call, `n` to deny, or `a` to allow that tool
+name for the current session. `/new` and `/resume` clear these remembered
+approvals.
+
+The first Ctrl+C during an active turn cancels that turn. A consecutive Ctrl+C
+exits the shell; at an idle input prompt, Ctrl+C exits. Sessions are private
+append-only files under:
+
+```text
+~/.codepilot1c/sessions/<session-id>.meta.json
+~/.codepilot1c/sessions/<session-id>.jsonl
+```
+
+The directory/files are forced to `0700`/`0600` where POSIX permissions are
+available. On Windows the platform defaults apply, so the operator remains
+responsible for a restrictive ACL. Raw endpoint values are represented in
+metadata by a SHA-256 fingerprint; provider-neutral transcripts are stored
+after exact-secret redaction. Session storage is local state and is not an
+encrypted secret store.
+
+For a GUI EDT instance, ensure its MCP host is enabled and set the instance
+preference `mcp.host.llm.enabled=true`, then restart the MCP host/EDT so the
+registry record advertises `llm.v1`. The same preference can be forced at
+startup with `-Dmcp.host.llm.enabled=true` or
+`-Dcodepilot.mcp.host.llm.enabled=true`. Current defaults enable it, but an old
+plugin has no capability field and remains valid. The broker also requires an
+active EDT LLM provider; use `codepilot doctor` and `codepilot edt status --all`
+to distinguish an unadvertised capability from an advertised but unavailable
+broker.
+
+Provider configuration version 2 moves API keys from workspace preferences to
+Eclipse Secure Storage. Migration removes plaintext keys from preferences only
+after every required secure write and preference flush succeeds; otherwise it
+keeps plaintext for retry and logs a sanitized warning. Secure Storage remains
+owned by the EDT/Eclipse installation and OS account: it is not exported to the
+CLI, it may be unavailable in some headless/OS setups, and its contents are not
+made portable by copying a workspace. Rolling back to a pre-v2 plugin cannot
+read the secure copy, so re-enter the key in the old plugin if needed. The
+secure copy is retained and becomes usable again after returning to a v2-aware
+plugin; there is no automatic downgrade migration back to plaintext.
 
 ## EDT supervisor
 
@@ -82,12 +228,15 @@ Instances are stored using atomic replacement in:
 
 Registry schema version `1` contains only non-secret process metadata:
 `instanceId`, `pid`, `port`, `baseUrl`, canonical `workspace`, `edtHome`,
-`mode`, `owner`, `startedAt`, and optionally `pluginVersion`, `authMode`, and
-`logFile`. The headless host may atomically enrich or replace the same record;
+`mode`, `owner`, `startedAt`, and optionally `pluginVersion`, `authMode`,
+`logFile`, and the non-secret `capabilities` array. The headless host may
+atomically enrich or replace the same record;
 readers tolerate optional and unknown forward-compatible fields.
 
 `edt status --all` combines the registry, PID identity, and readiness probe and
 reports one of `starting`, `ready`, `degraded`, or `stale` for each instance.
+It prints `llm.v1` only when that exact value occurs in the record's optional
+capability array; old records remain readable and show no broker capability.
 Plain `edt status` retains the configured-endpoint probe.
 
 `edt stop --id` first makes a best-effort `DELETE /mcp`, then requests normal
@@ -165,12 +314,10 @@ Plain HTTP is accepted automatically only for loopback endpoints. Use
 `--allow-insecure-http` only for a trusted non-loopback HTTP endpoint; HTTPS
 needs no override.
 
-## Connected shell LLM broker
+## Connected shell LLM broker contract
 
-The shell module contains a provider-neutral client for the authenticated EDT
-LLM broker at `/llm/v1/capabilities` and `/llm/v1/chat`. This slice supplies
-the transport and `StreamingAgentModel` adapter only; shell/controller mode
-selection and root-command wiring are separate work.
+The connected shell uses a provider-neutral client for the authenticated EDT
+LLM broker at `/llm/v1/capabilities` and `/llm/v1/chat`.
 
 `BrokerClient` is constructed with the MCP endpoint and bearer token already
 selected by the MCP connection path. It deliberately defines no additional

@@ -73,9 +73,13 @@ public class InstanceRegistryTest {
         InstanceRecord capable = registry.find(ID).orElseThrow();
         assertEquals(1, capable.schemaVersion());
         assertEquals("cli", capable.owner());
+        assertEquals(List.of("llm.v1"), capable.capabilities());
+        assertEquals(List.of("llm.v1"), capable.toJsonValue().get("capabilities"));
 
         files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(""));
-        assertEquals(capable, registry.find(ID).orElseThrow());
+        InstanceRecord older = registry.find(ID).orElseThrow();
+        assertEquals(List.of(), older.capabilities());
+        assertFalse(older.toJsonValue().containsKey("capabilities"));
     }
 
     @Test public void rejectsRecordIdentityMismatchAndNonLoopbackEndpoint() throws Exception {

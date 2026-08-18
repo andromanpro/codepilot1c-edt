@@ -65,7 +65,7 @@ public final class InstanceRegistry {
                 string(value, "workspace"), string(value, "edtHome"), string(value, "mode"),
                 string(value, "owner"), Instant.parse(string(value, "startedAt")),
                 nullableString(value, "pluginVersion"), nullableString(value, "authMode"),
-                nullableString(value, "logFile"));
+                nullableString(value, "logFile"), nullableStringList(value, "capabilities"));
     }
 
     private static String string(Map<String, Object> value, String key) {
@@ -79,6 +79,18 @@ public final class InstanceRegistry {
         if (item == null) return null;
         if (!(item instanceof String text)) throw new IllegalArgumentException("invalid string: " + key);
         return text;
+    }
+
+    private static List<String> nullableStringList(Map<String, Object> value, String key) {
+        Object item = value.get(key);
+        if (item == null) return List.of();
+        if (!(item instanceof List<?> items)) throw new IllegalArgumentException("invalid array: " + key);
+        List<String> result = new ArrayList<>();
+        for (Object element : items) {
+            if (!(element instanceof String text)) throw new IllegalArgumentException("invalid array: " + key);
+            result.add(text);
+        }
+        return List.copyOf(result);
     }
 
     private static long number(Map<String, Object> value, String key) {

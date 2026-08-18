@@ -44,9 +44,14 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 > надёжный откат на 1.0.x невозможен.
 
 Начиная с версии конфигурации LLM-провайдеров 2, их API-ключи переносятся из настроек workspace
-в Eclipse Secure Storage. При откате на старую версию плагина ключ может потребоваться ввести
-повторно: старая версия не умеет читать новое хранилище, но сохранённый в Secure Storage ключ
-при этом не удаляется.
+в Eclipse Secure Storage. Plaintext удаляется из preferences только после успешной записи всех
+нужных ключей в Secure Storage и сохранения preferences. Если secure-хранилище недоступно,
+плагин сохраняет прежний plaintext для повторной попытки и пишет предупреждение без значения
+ключа. Secure Storage привязан к установке Eclipse/EDT и учётной записи ОС: перенос workspace
+сам по себе не переносит ключи, а в некоторых headless/OS-конфигурациях хранилище может быть
+недоступно. При откате на плагин без поддержки config v2 ключ потребуется ввести повторно:
+старая версия не читает Secure Storage и автоматического обратного переноса в plaintext нет.
+Secure-копия при этом не удаляется и снова доступна после возврата на v2-aware плагин.
 
 Прямая доустановка через `Install New Software` может не разрешиться: `com.codepilot1c.core` и
 `com.codepilot1c.ui` являются singleton-бандлами, а update site уже не содержит артефакты
@@ -370,6 +375,56 @@ pgrep -f '1cedt' | while read -r pid; do lsof -p "$pid" 2>/dev/null | grep codep
 `com._1c.g5.*` не имеют версионных диапазонов: OSGi resolver формально принимает более новую EDT, но
 это не гарантирует бинарную совместимость. Сборка проверена на `2025.2.3+30`; установка на `2026.2.0`
 выполнялась вручную.
+
+## Интерактивный CLI shell
+
+Для shell нужен Java 17+ и интерактивный терминал. После распаковки CLI-дистрибутива запускайте:
+
+```sh
+# macOS / Linux
+bin/codepilot shell
+```
+
+```powershell
+# Windows PowerShell — канонический Windows launcher
+pwsh -File .\bin\codepilot.ps1 shell
+```
+
+```bat
+rem Windows cmd.exe — convenience wrapper с обычными ограничениями %*
+bin\codepilot.cmd shell
+```
+
+Прямой запуск jar из дистрибутива — `java -jar lib/codepilot-cli.jar shell`, а из дерева сборки —
+`java -jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar shell`. В интерактивном
+терминале `codepilot` без команды также открывает shell; с redirected stdin он печатает usage и
+возвращает код `2`, поэтому для batch-сценариев используйте `agent run`.
+
+`--mode connected` использует активный LLM-провайдер EDT через authenticated broker и не читает,
+не экспортирует и не сохраняет его API-ключ. Broker должен быть включён instance preference
+`mcp.host.llm.enabled=true` (эквивалентные startup overrides:
+`-Dmcp.host.llm.enabled=true` или `-Dcodepilot.mcp.host.llm.enabled=true`), MCP host нужно
+перезапустить, а в EDT должен быть выбран активный provider. `codepilot edt status --all`
+показывает `llm.v1` только если capability опубликована в registry; старые записи без поля
+остаются совместимыми. `codepilot doctor` отдельно проверяет доступность broker и active provider,
+не выводя response body, bearer/API keys, custom headers или provider base URL.
+
+`--mode standalone` запускает OpenAI-compatible provider внутри CLI и требует endpoint/model;
+`--mode auto` сначала пробует connected, затем только полностью настроенный standalone. Для
+standalone порядок endpoint и model: CLI flag → Java property → environment; для provider key:
+`--provider-api-key-file` → `codepilot.provider.apiKey` → `CODEPILOT_PROVIDER_API_KEY`; для MCP
+bearer: `--mcp-bearer-token-file` → `codepilot.mcp.bearerToken` →
+`CODEPILOT_MCP_BEARER_TOKEN`. Secret-файл имеет приоритет и предпочтительнее property, видимой в
+process list.
+
+Команды shell: `/help`, `/exit`, `/new`, `/status`, `/tools`, `/model`, `/sessions`,
+`/resume <session-id>`. Для рискованных, mutating или неаннотированных MCP tools shell спрашивает
+`y` (один вызов), `n` (запрет) или `a` (разрешить это имя tool до `/new`/`/resume`). Первый Ctrl+C
+во время turn отменяет turn, следующий завершает shell; в idle prompt Ctrl+C завершает shell.
+Сессии лежат в `~/.codepilot1c/sessions/` как `<id>.meta.json` и `<id>.jsonl`; это локальные
+redacted transcript-файлы, а не encrypted secret store. Полная грамматика options, правила
+permissions/ACL и ограничения описаны в [`cli/README.md`](cli/README.md#interactive-shell), а
+launcher/install layout — в [`packaging/README.md`](packaging/README.md#start-the-interactive-shell).
 
 ## Сборка
 

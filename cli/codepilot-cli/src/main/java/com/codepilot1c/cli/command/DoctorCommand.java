@@ -2,15 +2,26 @@
 package com.codepilot1c.cli.command;
 
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 
 import com.codepilot1c.cli.EndpointProbe.ProbeResult;
 import com.codepilot1c.cli.ExitCodes;
+import com.codepilot1c.cli.shell.broker.BrokerClient;
+import com.codepilot1c.cli.shell.broker.BrokerInfo;
+import com.codepilot1c.cli.supervisor.DefaultSupervisorFileSystem;
+import com.codepilot1c.cli.supervisor.InstanceRecord;
+import com.codepilot1c.cli.supervisor.InstanceRegistry;
+import com.codepilot1c.runtime.agent.AgentModelException;
 
 import picocli.CommandLine.Command;
 
@@ -25,6 +36,7 @@ final class DoctorCommand implements Callable<Integer> {
         checks.add(edtCheck());
         checks.add(configCheck());
         checks.add(endpointCheck());
+        checks.add(brokerCheck());
         boolean healthy = checks.stream().allMatch(Check::passed);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -64,10 +76,120 @@ final class DoctorCommand implements Callable<Integer> {
             URI endpoint = root.services().configuration().endpoint();
             ProbeResult probe = root.services().endpointProbe().probe(endpoint);
             return new Check("endpoint", probe.reachable(), probe.reachable() ? "endpoint_ready" : "endpoint_unavailable",
-                    endpoint + " " + probe.detail());
+                    "Configured MCP endpoint: " + safeProbeDetail(probe));
         } catch (Exception exception) {
-            return new Check("endpoint", false, "invalid_endpoint", exception.getMessage());
+            return new Check("endpoint", false, "invalid_endpoint", "Configured MCP endpoint is invalid");
         }
+    }
+
+    private Check brokerCheck() {
+        URI endpoint;
+        try { endpoint = root.services().configuration().endpoint(); }
+        catch (Exception exception) {
+            return new Check("broker", false, "broker_invalid_endpoint",
+                    "Cannot probe the EDT LLM broker until the MCP endpoint is valid");
+        }
+        if (!advertisesBroker(endpoint)) {
+            return new Check("broker", true, "broker_not_advertised",
+                    "llm.v1 is not advertised; older and broker-disabled plugins remain supported");
+        }
+
+        char[] token = brokerToken();
+        try (BrokerClient broker = new BrokerClient(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build(),
+                endpoint, token, false, Duration.ofSeconds(2))) {
+            BrokerInfo info = broker.probe().toCompletableFuture().get();
+            if (!info.chat() || !info.streaming() || !info.provider().streamingEnabled()) {
+                return new Check("broker", false, "broker_not_ready",
+                        "EDT LLM broker is reachable but streaming chat is unavailable");
+            }
+            return new Check("broker", true, "broker_ready",
+                    "EDT LLM broker is reachable and an active provider is available");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return new Check("broker", false, "broker_interrupted", "EDT LLM broker probe was interrupted");
+        } catch (ExecutionException exception) {
+            return brokerFailure(exception.getCause());
+        } catch (RuntimeException exception) {
+            return brokerFailure(exception);
+        } finally {
+            if (token != null) Arrays.fill(token, '\0');
+        }
+    }
+
+    private boolean advertisesBroker(URI endpoint) {
+        Path directory = Path.of(root.services().host().userHome(), ".codepilot1c", "instances");
+        InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(), directory);
+        try {
+            return registry.list().stream().anyMatch(record -> sameOrigin(endpoint, record)
+                    && record.capabilities().contains("llm.v1"));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean sameOrigin(URI endpoint, InstanceRecord record) {
+        try {
+            URI registered = URI.create(record.baseUrl());
+            return endpoint.getScheme().equalsIgnoreCase(registered.getScheme())
+                    && sameHost(endpoint.getHost(), registered.getHost())
+                    && effectivePort(endpoint) == effectivePort(registered);
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private static boolean sameHost(String left, String right) {
+        if (left.equalsIgnoreCase(right)) return true;
+        return loopback(left) && loopback(right);
+    }
+
+    private static boolean loopback(String host) {
+        return "localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host) || "::1".equals(host);
+    }
+
+    private static int effectivePort(URI endpoint) {
+        if (endpoint.getPort() >= 0) return endpoint.getPort();
+        return "https".equalsIgnoreCase(endpoint.getScheme()) ? 443 : 80;
+    }
+
+    private char[] brokerToken() {
+        String value = first(root.services().host().systemProperty("codepilot.mcp.bearerToken"),
+                root.services().host().environment("CODEPILOT_MCP_BEARER_TOKEN"));
+        return value == null ? null : value.toCharArray();
+    }
+
+    private static String first(String first, String second) {
+        if (first != null && !first.isBlank()) return first;
+        if (second != null && !second.isBlank()) return second;
+        return null;
+    }
+
+    private static Check brokerFailure(Throwable failure) {
+        if (failure instanceof AgentModelException modelFailure) {
+            if (modelFailure.kind() == AgentModelException.Kind.HTTP) {
+                return switch (modelFailure.httpStatus()) {
+                    case 401, 403 -> new Check("broker", false, "broker_authentication_failed",
+                            "EDT LLM broker rejected authentication; verify the MCP bearer token");
+                    case 503 -> new Check("broker", false, "provider_unavailable",
+                            "No active LLM provider is available; configure and select a provider in EDT");
+                    default -> new Check("broker", false, "broker_http_error",
+                            "EDT LLM broker returned HTTP " + modelFailure.httpStatus());
+                };
+            }
+            if (modelFailure.kind() == AgentModelException.Kind.MALFORMED_RESPONSE) {
+                return new Check("broker", false, "broker_protocol_error",
+                        "EDT LLM broker returned an incompatible capability response");
+            }
+        }
+        return new Check("broker", false, "broker_unreachable",
+                "EDT advertises llm.v1 but its broker is unreachable; verify EDT and MCP connectivity");
+    }
+
+    private static String safeProbeDetail(ProbeResult probe) {
+        if (probe.httpStatus() > 0) return "HTTP " + probe.httpStatus();
+        if ("interrupted".equals(probe.detail())) return "interrupted";
+        return "unreachable";
     }
 
     static int javaFeature(String version) {
