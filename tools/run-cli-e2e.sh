@@ -30,6 +30,25 @@ START_STDOUT=""
 START_STDERR=""
 STOPPED="false"
 
+# Installed as soon as the owned marker exists. This deliberately has no
+# dependency on the later full cleanup functions, so setup failures (including
+# an invalid HOME) cannot leak the newly allocated temp root.
+minimal_owned_root_cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM HUP
+    if [[ -n "$TMP_ROOT" && -n "$TMP_MARKER" \
+        && -d "$TMP_ROOT" && ! -L "$TMP_ROOT" \
+        && -f "$TMP_MARKER" && ! -L "$TMP_MARKER" ]]; then
+        local actual marker_value
+        actual=$(CDPATH= cd -- "$TMP_ROOT" && pwd -P 2>/dev/null) || actual=""
+        marker_value=$(<"$TMP_MARKER") || marker_value=""
+        if [[ "$actual" == "$TMP_ROOT" && "$marker_value" == "$TMP_ROOT" ]]; then
+            rm -rf -- "$TMP_ROOT"
+        fi
+    fi
+    exit "$exit_code"
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -108,12 +127,16 @@ fi
 TMP_ROOT=$(env -u TMPDIR -u TMP -u TEMP mktemp -d -t codepilot-cli-e2e)
 TMP_ROOT=$(CDPATH= cd -- "$TMP_ROOT" && pwd -P)
 TMP_MARKER="$TMP_ROOT/.codepilot-cli-e2e-owned"
+printf '%s\n' "$TMP_ROOT" >"$TMP_MARKER"
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap minimal_owned_root_cleanup EXIT
+chmod 600 "$TMP_MARKER"
 RUN_HOME="$TMP_ROOT/home"
 WORKSPACE="$TMP_ROOT/workspace"
 REGISTRY_DIR="$RUN_HOME/.codepilot1c/instances"
 mkdir -p "$RUN_HOME" "$WORKSPACE"
-printf '%s\n' "$TMP_ROOT" >"$TMP_MARKER"
-chmod 600 "$TMP_MARKER"
 
 path_is_within() {
     local child=$1
