@@ -22,6 +22,7 @@ import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
@@ -129,6 +130,59 @@ public class EventHandlerWiringTest {
     }
 
     @Test
+    public void extensionEventIsWiredOnExtInfoOwner() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event startChoice = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        service = serviceForExtensionEvent(field, extInfo, startChoice);
+
+        applyFormModelOperations(form, List.of(
+                opAddEventHandlerByItemId(1, "StartChoice", "FieldStartChoice"))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(field.getHandlers().isEmpty());
+        assertEquals(1, extInfo.getHandlers().size());
+        assertEquals(startChoice, extInfo.getHandlers().get(0).getEvent());
+    }
+
+    @Test
+    public void extensionEventUpsertMatchesStableEventNameNotObjectIdentity() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event catalogEvent = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(createEvent("StartChoice", "НачалоВыбора")); //$NON-NLS-1$ //$NON-NLS-2$
+        existing.setName("OldName"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        service = serviceForExtensionEvent(field, extInfo, catalogEvent);
+
+        applyFormModelOperations(form, List.of(
+                opSetEventHandler(null, 1, "StartChoice", "NewName"))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(1, extInfo.getHandlers().size());
+        assertEquals("NewName", extInfo.getHandlers().get(0).getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void removeExtensionEventUsesExtInfoOwner() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event startChoice = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(startChoice);
+        existing.setName("FieldStartChoice"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        service = serviceForExtensionEvent(field, extInfo, startChoice);
+
+        applyFormModelOperations(form, List.of(
+                opRemoveEventHandler(null, 1, "StartChoice"))); //$NON-NLS-1$
+
+        assertTrue(extInfo.getHandlers().isEmpty());
+    }
+
+    @Test
     public void addEventHandlerOnButtonThrowsInvalidMetadataChangeRedirectingToAddCommand() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         Button button = FormFactory.eINSTANCE.createButton();
@@ -212,11 +266,86 @@ public class EventHandlerWiringTest {
         assertEquals(0, form.getHandlers().size());
     }
 
+    @Test
+    public void nativeRemoveIgnoresCallType() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(onOpenEvent);
+        existing.setName("FormOnOpen"); //$NON-NLS-1$
+        form.getHandlers().add(existing);
+        Map<String, Object> remove = opRemoveEventHandler("form", null, EVENT_ON_OPEN_EN);
+        remove.put("call_type", "not-an-extension-call-type"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        applyFormModelOperations(form, List.of(remove));
+
+        assertTrue(form.getHandlers().isEmpty());
+    }
+
+    @Test
+    public void compensationRemovesHandlerCreatedByFailedMutation() {
+        Form form = FormFactory.eINSTANCE.createForm();
+        EventHandler created = FormFactory.eINSTANCE.createEventHandler();
+        created.setEvent(onOpenEvent);
+        created.setName("NewName"); //$NON-NLS-1$
+        form.getHandlers().add(created);
+
+        service.restoreHandlerSnapshot(
+                form, onOpenEvent, false, null,
+                EdtMetadataService.HandlerMutationSnapshot.capture(null));
+
+        assertTrue(form.getHandlers().isEmpty());
+    }
+
+    @Test
+    public void writeOrFreshVerificationFailureCompensationRestoresPreExistingHandlerName() {
+        Form form = FormFactory.eINSTANCE.createForm();
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(onOpenEvent);
+        existing.setName("OldName"); //$NON-NLS-1$
+        form.getHandlers().add(existing);
+        EdtMetadataService.HandlerMutationSnapshot snapshot =
+                EdtMetadataService.HandlerMutationSnapshot.capture(existing);
+        existing.setName("NewName"); //$NON-NLS-1$
+
+        service.restoreHandlerSnapshot(form, onOpenEvent, false, null, snapshot);
+
+        assertEquals(1, form.getHandlers().size());
+        assertEquals("OldName", form.getHandlers().get(0).getName()); //$NON-NLS-1$
+    }
+
     private static Event createEvent(String nameEn, String nameRu) {
         Event event = McoreFactory.eINSTANCE.createEvent();
         event.setName(nameEn);
         event.setNameRu(nameRu);
         return event;
+    }
+
+    private static FormField createInputField(Form form) {
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("MyField"); //$NON-NLS-1$
+        field.setExtInfo(FormFactory.eINSTANCE.createInputFieldExtInfo());
+        form.getItems().add(field);
+        return field;
+    }
+
+    private static EdtMetadataService serviceForExtensionEvent(
+            FormField field, InputFieldExtInfo extInfo, Event extensionEvent) {
+        EventHandlerCatalog catalog = new EventHandlerCatalog() {
+            @Override
+            public List<Event> allowedEvents(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                return List.of(extensionEvent);
+            }
+
+            @Override
+            public List<EventSurface> eventSurfaces(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                if (item == field) {
+                    return List.of(new EventSurface(extInfo, List.of(extensionEvent)));
+                }
+                return EventHandlerCatalog.super.eventSurfaces(item);
+            }
+        };
+        return new EdtMetadataService(new EdtMetadataGateway(), new EventHandlerTargetResolver(catalog));
     }
 
     private static Map<String, Object> opAddEventHandler(String target, Integer itemId, String event, String handlerName) {

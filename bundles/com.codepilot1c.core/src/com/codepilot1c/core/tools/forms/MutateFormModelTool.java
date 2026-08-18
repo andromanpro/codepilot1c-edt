@@ -87,6 +87,11 @@ public class MutateFormModelTool extends AbstractTool {
                         "type": "string",
                         "description": "BSL handler procedure name for the event op. Strongly recommended; a deterministic name is used when omitted."
                       },
+                      "call_type": {
+                        "type": "string",
+                        "enum": ["BEFORE", "AFTER", "OVERRIDE", "CHANGE_AND_VALIDATE"],
+                        "description": "For adopted-form event operations, selects the exact extension handler tuple. Allowed values: BEFORE, AFTER, OVERRIDE, CHANGE_AND_VALIDATE. Defaults to BEFORE. Ignored for native forms."
+                      },
                       "target": {
                         "type": "string",
                         "description": "For event ops: 'form' for form-level events, or omit and pass item_id/item_name for a field/table event."

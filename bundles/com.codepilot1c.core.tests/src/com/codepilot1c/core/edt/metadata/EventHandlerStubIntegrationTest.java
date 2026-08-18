@@ -99,7 +99,9 @@ public class EventHandlerStubIntegrationTest {
         StubText stub = new BslHandlerStubGenerator().generate(onOpenEvent, HANDLER_NAME, ScriptVariant.RUSSIAN);
 
         FakeHandlerContainer container = new FakeHandlerContainer();
-        container.addHandler(HANDLER_NAME);
+        String previousHandlerName = "OldFormOnOpen"; //$NON-NLS-1$
+        container.addHandler(previousHandlerName);
+        container.renameHandler(previousHandlerName, HANDLER_NAME);
         assertTrue(container.hasHandler(HANDLER_NAME));
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
@@ -163,7 +165,9 @@ public class EventHandlerStubIntegrationTest {
         StubText stub = new BslHandlerStubGenerator().generate(onOpenEvent, HANDLER_NAME, ScriptVariant.RUSSIAN);
 
         FakeHandlerContainer container = new FakeHandlerContainer();
-        container.addHandler(HANDLER_NAME);
+        String previousHandlerName = "OldFormOnOpen"; //$NON-NLS-1$
+        container.addHandler(previousHandlerName);
+        container.renameHandler(previousHandlerName, HANDLER_NAME);
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
         HandlerStubReport report = new HandlerStubReport(List.of(), List.of(HANDLER_NAME));
@@ -171,6 +175,8 @@ public class EventHandlerStubIntegrationTest {
         assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, outcome);
         assertEquals("model slot must stay wired on SKIPPED_EXISTING_WARN (Pitfall 3, no rollback)", //$NON-NLS-1$
                 true, container.hasHandler(HANDLER_NAME));
+        assertFalse("SKIPPED must not restore the pre-upsert snapshot", //$NON-NLS-1$
+                container.hasHandler(previousHandlerName));
         assertEquals(existingText, writer.read(MODULE_PATH));
         assertTrue(report.formatForLlm().contains("Пропущено заглушек (уже существуют): 1")); //$NON-NLS-1$
     }
@@ -301,8 +307,11 @@ public class EventHandlerStubIntegrationTest {
             handlerNames.add(name);
         }
 
-        void removeHandler(String name) {
-            handlerNames.remove(name);
+        void renameHandler(String oldName, String newName) {
+            int index = handlerNames.indexOf(oldName);
+            if (index >= 0) {
+                handlerNames.set(index, newName);
+            }
         }
 
         boolean hasHandler(String name) {

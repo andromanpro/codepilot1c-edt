@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.forms;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 

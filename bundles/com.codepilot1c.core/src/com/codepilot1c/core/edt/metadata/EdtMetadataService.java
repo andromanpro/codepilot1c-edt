@@ -148,11 +148,13 @@ import com._1c.g5.v8.dt.moxel.Row;
 import com._1c.g5.v8.dt.moxel.RowsArea;
 import com._1c.g5.v8.dt.moxel.SpreadsheetDocument;
 import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator;
+import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator.TargetContext;
 import com.codepilot1c.core.edt.forms.BslHandlerStubWriter;
 import com.codepilot1c.core.edt.forms.BslHandlerStubWriter.StubWriteOutcome;
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.CreateFormResult;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
+import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver.ResolvedEvent;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
 import com.codepilot1c.core.edt.forms.FormHandlerRegionResolver;
 import com.codepilot1c.core.edt.forms.FormItemInformationEventCatalog;
@@ -681,7 +683,41 @@ public class EdtMetadataService {
                             skippedExisting,
                             rollback);
                 }
-                default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
+                // WRITTEN and SKIPPED are both valid paired states. Never compensate a
+                // skipped existing procedure merely because a later handler fails.
+                awaitingStub.remove(0);
+            }
+            return summaries;
+        } catch (RuntimeException failure) {
+            compensateHandlerMutations(
+                    project, configuration, formFqn, topLevelFqn, awaitingStub, opId, failure);
+            throw failure;
+        }
+    }
+
+    private void compensateHandlerMutations(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId,
+            RuntimeException originalFailure) {
+        if (pendingStubs.isEmpty()) {
+            return;
+        }
+        LOG.error("[%s] Post-commit handler processing failed; compensating %d mutation(s)", //$NON-NLS-1$
+                opId, Integer.valueOf(pendingStubs.size()));
+        // Reverse mutation order so sequential upserts of the same event unwind to
+        // the original pre-request state rather than an intermediate snapshot.
+        for (int index = pendingStubs.size() - 1; index >= 0; index--) {
+            PendingStub pending = pendingStubs.get(index);
+            try {
+                rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
+            } catch (RuntimeException rollbackFailure) {
+                originalFailure.addSuppressed(rollbackFailure);
+                LOG.error("[%s] Handler compensation failed for event=%s handler=%s: %s", //$NON-NLS-1$
+                        opId, pending.eventName(), pending.handlerName(), rollbackFailure.toString());
             }
         }
         return new StubPhaseOutcome(written, skippedExisting);
@@ -1665,14 +1701,27 @@ public class EdtMetadataService {
                 }
                 case "removeeventhandler" -> {
                     FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
-                    EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
                     String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
-                    Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
-                    EventHandler existing = findExistingHandler(container, event);
+                    ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+                    Event event = resolvedEvent.event();
+                    boolean adopted = isAdoptedTarget(formModel);
+                    ExtendedMethodCallType callType = adopted
+                            ? extendedMethodCallTypeResolver.resolve(
+                                    asString(getMapValueIgnoreCase(operation, "call_type"))) //$NON-NLS-1$
+                            : null;
+                    EventHandler existing = findExistingHandler(
+                            resolvedEvent.owner(), event, adopted, callType);
                     if (existing != null) {
-                        container.getHandlers().remove(existing);
+                        resolvedEvent.owner().getHandlers().remove(existing);
                     }
-                    summaries.add("remove_event_handler[" + operationIndex + "]: event=" + event.getName()); //$NON-NLS-1$ //$NON-NLS-2$
+                    StringBuilder summary = new StringBuilder("remove_event_handler[") //$NON-NLS-1$
+                            .append(operationIndex)
+                            .append("]: event=") //$NON-NLS-1$
+                            .append(event.getName());
+                    if (adopted) {
+                        summary.append(", call_type=").append(callType.getLiteral()); //$NON-NLS-1$
+                    }
+                    summaries.add(summary.toString());
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -1705,8 +1754,10 @@ public class EdtMetadataService {
     }
 
     /**
-     * Upsert-by-(target,event) implementation shared by {@code add_event_handler} and
-     * {@code set_event_handler}: re-wiring the same event never duplicates the handler.
+     * Upsert implementation shared by {@code add_event_handler} and
+     * {@code set_event_handler}. Native identity is {@code (owner,eventName)}. Adopted
+     * identity mirrors EDT {@code ModelUtils}: {@code (owner,eventName,callType)}, so
+     * BEFORE and AFTER handlers may coexist while an exact tuple is updated in place.
      *
      * <p>Extension-adoption branch (EXT-01/EXT-02/EXT-03, Phase 8): if the form's owning
      * {@code BasicForm} is {@link ObjectBelonging#ADOPTED} (a single uniform signal reached
@@ -1729,9 +1780,10 @@ public class EdtMetadataService {
      */
     private WiredEventHandler wireEventHandler(Form formModel, Map<String, Object> operation) {
         FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
-        EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
         String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
-        Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
+        ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+        EventHandlerContainer owner = resolvedEvent.owner();
+        Event event = resolvedEvent.event();
         String handlerName = asString(getMapValueIgnoreCase(operation, "handler_name")); //$NON-NLS-1$
         if (handlerName == null || handlerName.isBlank()) {
             handlerName = defaultHandlerName(target, event);
@@ -1749,9 +1801,7 @@ public class EdtMetadataService {
         if (handler == null) {
             handler = createHandlerForTarget(adopted, requestedCallType);
             handler.setEvent(event);
-            container.getHandlers().add(handler);
-        } else if (adopted && handler instanceof EventHandlerExtension extensionHandler) {
-            extensionHandler.setCallType(requestedCallType);
+            owner.getHandlers().add(handler);
         }
         handler.setName(handlerName);
         boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
@@ -1820,10 +1870,13 @@ public class EdtMetadataService {
             // never a hard failure of the wiring operation itself.
             return false;
         }
-        if (!(baseTarget instanceof EventHandlerContainer baseContainer)) {
+        ResolvedEvent baseEvent;
+        try {
+            baseEvent = eventHandlerTargetResolver.resolveEvent(baseTarget, event.getName());
+        } catch (RuntimeException e) {
             return false;
         }
-        return containsHandlerForEventName(baseContainer, event.getName());
+        return containsHandlerForEventName(baseEvent.owner(), event.getName());
     }
 
     /**
@@ -1844,10 +1897,26 @@ public class EdtMetadataService {
         return false;
     }
 
-    private EventHandler findExistingHandler(EventHandlerContainer container, Event event) {
+    private EventHandler findExistingHandler(
+            EventHandlerContainer container,
+            Event event,
+            boolean adopted,
+            ExtendedMethodCallType callType) {
+        String eventName = event != null ? event.getName() : null;
+        if (eventName == null) {
+            return null;
+        }
         for (EventHandler handler : container.getHandlers()) {
-            if (handler != null && handler.getEvent() == event) {
+            if (handler == null || handler.getEvent() == null
+                    || !eventName.equals(handler.getEvent().getName())) {
+                continue;
+            }
+            if (!adopted) {
                 return handler;
+            }
+            if (handler instanceof EventHandlerExtension extensionHandler
+                    && extensionHandler.getCallType() == callType) {
+                return extensionHandler;
             }
         }
         return null;
@@ -3906,7 +3975,7 @@ public class EdtMetadataService {
         if (includeProperties) {
             result.put("properties", collectScalarProperties(formModel, includeTitles)); //$NON-NLS-1$
         }
-        List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = collectEventHandlerInfos(formModel);
+        List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = collectEventHandlerInfosForTarget(formModel);
         if (!eventHandlers.isEmpty()) {
             result.put("eventHandlers", eventHandlers); //$NON-NLS-1$
         }
@@ -3914,7 +3983,7 @@ public class EdtMetadataService {
     }
 
     /**
-     * Surfaces the {@code {event, handlerName}} pairs already wired on an
+     * Surfaces the {@code {event, handlerName, callType}} values already wired on an
      * {@link EventHandlerContainer} (form root or a form item). Read path only,
      * unconditional (not gated by include_properties/include_titles) — INSP-01.
      * Handlers whose {@link EventHandler#getEvent()} is {@code null} are skipped.
@@ -3926,8 +3995,22 @@ public class EdtMetadataService {
         return container.getHandlers().stream()
                 .filter(handler -> handler != null && handler.getEvent() != null)
                 .map(handler -> new InspectFormLayoutResult.EventHandlerInfo(
-                        handler.getEvent().getName(), handler.getName()))
+                        handler.getEvent().getName(),
+                        handler.getName(),
+                        handler instanceof EventHandlerExtension extensionHandler
+                                ? extensionHandler.getCallType().getLiteral()
+                                : null))
                 .toList();
+    }
+
+    /** Aggregates handlers from the visual item and its concrete ExtInfo owner. */
+    private List<InspectFormLayoutResult.EventHandlerInfo> collectEventHandlerInfosForTarget(
+            FormVisualEntity target) {
+        List<InspectFormLayoutResult.EventHandlerInfo> result = new ArrayList<>();
+        for (EventHandlerContainer owner : eventHandlerTargetResolver.resolveHandlerOwners(target)) {
+            result.addAll(collectEventHandlerInfos(owner));
+        }
+        return result;
     }
 
     private List<InspectFormLayoutResult.FormItemNode> collectFormItemNodes(
@@ -4009,9 +4092,8 @@ public class EdtMetadataService {
                     commandRef = namedCmd.getName();
                 }
             }
-            List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = item instanceof EventHandlerContainer handlerContainer
-                    ? collectEventHandlerInfos(handlerContainer)
-                    : List.of();
+            List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers =
+                    collectEventHandlerInfosForTarget(item);
 
             result.add(new InspectFormLayoutResult.FormItemNode(
                     item.getId(),
