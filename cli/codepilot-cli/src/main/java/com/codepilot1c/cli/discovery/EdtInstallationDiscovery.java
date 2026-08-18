@@ -35,13 +35,25 @@ public final class EdtInstallationDiscovery {
                 .toList();
     }
 
+    /** Applies configured-home precedence before falling back to deterministic discovery. */
+    public Optional<EdtInstallation> preferred() {
+        Optional<EdtInstallation> property = validateHome(host.systemProperty("edt.home"), "system-property");
+        if (property.isPresent()) return property;
+        Optional<EdtInstallation> environment = validateHome(host.environment("EDT_HOME"), "environment");
+        return environment.isPresent() ? environment : discover().stream().findFirst();
+    }
+
     /** Validates one explicit Eclipse home without mutating process properties. */
     public Optional<EdtInstallation> validateHome(String home) {
+        return validateHome(home, "command-line");
+    }
+
+    private Optional<EdtInstallation> validateHome(String home, String source) {
         if (home == null || home.isBlank()) return Optional.empty();
         OperatingSystem os = OperatingSystem.from(host.osName());
         Map<String, EdtInstallation> found = new LinkedHashMap<>();
-        detectHome(home.trim(), "command-line", os, found);
-        detectApp(home.trim(), "command-line", os, found);
+        detectHome(home.trim(), source, os, found);
+        detectApp(home.trim(), source, os, found);
         return found.values().stream().findFirst();
     }
 

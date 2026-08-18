@@ -235,7 +235,7 @@ public final class EdtSupervisor {
 
     private EdtInstallation selectInstallation(String explicitHome) throws SupervisorException {
         Optional<EdtInstallation> selected = explicitHome == null || explicitHome.isBlank()
-                ? discovery.discover().stream().findFirst() : discovery.validateHome(explicitHome);
+                ? discovery.preferred() : discovery.validateHome(explicitHome);
         return selected.orElseThrow(() -> failure(ExitCodes.EDT_UNAVAILABLE, "edt_not_found",
                 "no validated EDT installation with 1cedtcli/1cedt launcher was found"));
     }

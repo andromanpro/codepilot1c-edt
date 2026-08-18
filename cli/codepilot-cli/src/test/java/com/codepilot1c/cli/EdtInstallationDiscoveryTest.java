@@ -55,4 +55,21 @@ public class EdtInstallationDiscoveryTest {
         assertEquals(1, result.size());
         assertEquals(edt, result.get(0).home());
     }
+
+    @Test public void preferredHonorsSystemPropertyBeforeSortedStandardInstallations() {
+        FakeHostSystem host = new FakeHostSystem();
+        String configured = "/opt/edt-2025.2";
+        String standardRoot = "/opt/1C/1CE/components";
+        String older = standardRoot + "/edt-2025.1";
+        host.properties.put("edt.home", configured);
+        host.directory(configured);
+        host.file(configured + "/1cedtcli");
+        host.directory(standardRoot, older);
+        host.directory(older);
+        host.file(older + "/1cedtcli");
+
+        EdtInstallation preferred = new EdtInstallationDiscovery(host).preferred().orElseThrow();
+        assertEquals(configured, preferred.home());
+        assertEquals("system-property", preferred.source());
+    }
 }
