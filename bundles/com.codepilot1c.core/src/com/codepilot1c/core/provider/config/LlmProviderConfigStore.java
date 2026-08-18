@@ -156,39 +156,45 @@ public class LlmProviderConfigStore {
 
     /**
      * Sets the active provider by ID.
+     *
+     * @return {@code true} when preferences were persisted
      */
-    public void setActiveProviderId(String id) {
+    public boolean setActiveProviderId(String id) {
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
-        persistCandidate(cachedConfigs, id);
+        return persistCandidate(cachedConfigs, id);
     }
 
     /**
      * Adds a new provider configuration.
+     *
+     * @return {@code true} when the provider was persisted
      */
-    public void addProvider(LlmProviderConfig config) {
+    public boolean addProvider(LlmProviderConfig config) {
         if (config == null || isReservedId(config.getId())) {
             VibeCorePlugin.logWarn("Ignoring provider config with reserved ID: " //$NON-NLS-1$
                     + (config != null ? config.getId() : "null")); //$NON-NLS-1$
-            return;
+            return false;
         }
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
         List<LlmProviderConfig> candidate = copies(cachedConfigs);
         candidate.add(config.copy());
-        persistCandidate(candidate, cachedActiveProviderId);
+        return persistCandidate(candidate, cachedActiveProviderId);
     }
 
     /**
      * Updates an existing provider configuration.
+     *
+     * @return {@code true} when the provider was persisted
      */
-    public void updateProvider(LlmProviderConfig config) {
+    public boolean updateProvider(LlmProviderConfig config) {
         if (config == null || isReservedId(config.getId())) {
             VibeCorePlugin.logWarn("Ignoring update for provider config with reserved ID: " //$NON-NLS-1$
                     + (config != null ? config.getId() : "null")); //$NON-NLS-1$
-            return;
+            return false;
         }
         if (cachedConfigs == null) {
             loadFromPreferences();
@@ -200,13 +206,15 @@ public class LlmProviderConfigStore {
                 break;
             }
         }
-        persistCandidate(candidate, cachedActiveProviderId);
+        return persistCandidate(candidate, cachedActiveProviderId);
     }
 
     /**
      * Removes a provider by ID.
+     *
+     * @return {@code true} when the provider was removed and preferences were persisted
      */
-    public void removeProvider(String id) {
+    public boolean removeProvider(String id) {
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
@@ -217,17 +225,30 @@ public class LlmProviderConfigStore {
         if (id != null && id.equals(cachedActiveProviderId)) {
             candidateActiveId = null;
         }
-        persistCandidate(candidate, candidateActiveId);
+        return persistCandidate(candidate, candidateActiveId);
     }
 
     /**
      * Saves all providers at once (for batch updates).
+     *
+     * @return {@code true} when providers were persisted
      */
-    public void saveProviders(List<LlmProviderConfig> providers) {
+    public boolean saveProviders(List<LlmProviderConfig> providers) {
+        return saveProviders(providers, cachedActiveProviderId);
+    }
+
+    /**
+     * Saves providers and their active selection in one compensating transaction.
+     *
+     * @param providers provider configurations
+     * @param activeProviderId active provider ID, or {@code null} to clear it
+     * @return {@code true} when providers and the active selection were persisted
+     */
+    public boolean saveProviders(List<LlmProviderConfig> providers, String activeProviderId) {
         LoadedState sanitized = sanitizeLoadedState(
                 providers != null ? providers : List.of(),
-                cachedActiveProviderId);
-        persistCandidate(sanitized.configs(), sanitized.activeProviderId());
+                activeProviderId);
+        return persistCandidate(sanitized.configs(), sanitized.activeProviderId());
     }
 
     /**

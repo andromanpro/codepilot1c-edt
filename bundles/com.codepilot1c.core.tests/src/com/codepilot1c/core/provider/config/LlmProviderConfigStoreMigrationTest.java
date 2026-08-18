@@ -131,13 +131,13 @@ public class LlmProviderConfigStoreMigrationTest {
         LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, warnings::add);
         LlmProviderConfig config = configured("new-provider", SECRET_A); //$NON-NLS-1$
 
-        store.addProvider(config);
+        assertTrue(store.addProvider(config));
 
         assertEquals(SECRET_A, storage.keys.get("new-provider")); //$NON-NLS-1$
         assertFalse(preferences.providersJson().contains(SECRET_A));
         assertFalse(preferences.providersJson().contains("apiKey")); //$NON-NLS-1$
 
-        store.removeProvider("new-provider"); //$NON-NLS-1$
+        assertTrue(store.removeProvider("new-provider")); //$NON-NLS-1$
 
         assertNull(storage.keys.get("new-provider")); //$NON-NLS-1$
         assertEquals(List.of("new-provider"), storage.removeAttempts); //$NON-NLS-1$
@@ -171,7 +171,7 @@ public class LlmProviderConfigStoreMigrationTest {
 
         LlmProviderConfig cleared = store.getProviders().get(0).copy();
         cleared.setApiKey(""); //$NON-NLS-1$
-        store.saveProviders(List.of(cleared));
+        assertTrue(store.saveProviders(List.of(cleared)));
 
         assertFalse(storage.keys.containsKey("provider")); //$NON-NLS-1$
         assertEquals("", store.getProviders().get(0).getApiKey()); //$NON-NLS-1$
@@ -232,7 +232,7 @@ public class LlmProviderConfigStoreMigrationTest {
         LlmProviderConfig cleared = store.getProviders().get(0).copy();
         cleared.setApiKey(""); //$NON-NLS-1$
         storage.failRemoves.add("rollback"); //$NON-NLS-1$
-        store.saveProviders(List.of(cleared));
+        assertFalse(store.saveProviders(List.of(cleared)));
 
         assertEquals(SECRET_A, storage.keys.get("rollback")); //$NON-NLS-1$
         assertEquals(SECRET_A, store.getProviders().get(0).getApiKey());
@@ -255,30 +255,32 @@ public class LlmProviderConfigStoreMigrationTest {
             LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, warnings::add);
 
             LlmProviderConfig changed = store.getProviders().get(0).copy();
+            boolean saved;
             switch (operation) {
             case CLEAR:
                 changed.setApiKey(""); //$NON-NLS-1$
-                store.saveProviders(List.of(changed));
+                saved = store.saveProviders(List.of(changed));
                 break;
             case REPLACE:
                 changed.setApiKey(SECRET_B);
-                store.saveProviders(List.of(changed));
+                saved = store.saveProviders(List.of(changed));
                 break;
             case ENDPOINT:
                 changed.setBaseUrl("https://other.example/v1"); //$NON-NLS-1$
-                store.saveProviders(List.of(changed));
+                saved = store.saveProviders(List.of(changed));
                 break;
             case TYPE:
                 changed.setType(ProviderType.ANTHROPIC);
-                store.saveProviders(List.of(changed));
+                saved = store.saveProviders(List.of(changed));
                 break;
             case DELETE:
-                store.removeProvider(id);
+                saved = store.removeProvider(id);
                 break;
             default:
                 throw new AssertionError(operation);
             }
 
+            assertFalse(saved);
             assertEquals(beforeJson, preferences.providersJson());
             assertEquals(id, preferences.get(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, "")); //$NON-NLS-1$
             assertEquals(2, preferences.getInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, -1));
@@ -307,7 +309,7 @@ public class LlmProviderConfigStoreMigrationTest {
         changed.setApiKey(""); //$NON-NLS-1$
 
         assertEquals(ApiKeyReadStatus.ABSENT, storage.retrieveApiKey(id).status());
-        store.saveProviders(List.of(changed));
+        assertTrue(store.saveProviders(List.of(changed)));
 
         assertEquals("https://other.example/v1", store.getProviders().get(0).getBaseUrl()); //$NON-NLS-1$
         assertTrue(preferences.providersJson().contains("https://other.example/v1")); //$NON-NLS-1$
