@@ -14,10 +14,13 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.codepilot1c.runtime.spi.LogSink;
 import com.codepilot1c.runtime.spi.LogSink.Event;
@@ -108,6 +111,9 @@ public final class AgentRuntime implements AutoCloseable {
         private final ArrayList<AgentMessage> transcript;
         private final RunFuture result = new RunFuture();
         private final Set<String> seenToolCallIds = new HashSet<>();
+        private final AtomicBoolean terminal = new AtomicBoolean();
+        private final AtomicReference<Thread> terminalOwner = new AtomicReference<>();
+        private final CountDownLatch terminalPublished = new CountDownLatch(1);
         private int steps;
         private Set<String> availableTools = Set.of();
         private ScheduledFuture<?> timeoutTask;
@@ -126,17 +132,13 @@ public final class AgentRuntime implements AutoCloseable {
                 finish(AgentResult.Status.TIMED_OUT, null,
                         new AgentError(AgentError.Code.TIMEOUT, "Agent run timed out")); //$NON-NLS-1$
             }, config.timeout().toNanos(), TimeUnit.NANOSECONDS);
-            externalRegistration = externalCancellation.onCancel(() -> {
+            CancellationToken.Registration registration = externalCancellation.onCancel(() -> {
                 cancellation.cancel();
                 finish(AgentResult.Status.CANCELLED, null,
                         new AgentError(AgentError.Code.CANCELLED, "Agent run was cancelled")); //$NON-NLS-1$
             });
-            result.whenComplete((ignored, failure) -> {
-                cleanup();
-                synchronized (lifecycleLock) {
-                    activeRuns.remove(this);
-                }
-            });
+            externalRegistration = registration;
+            if (terminal.get()) registration.close();
         }
 
         void begin() {
@@ -146,14 +148,24 @@ public final class AgentRuntime implements AutoCloseable {
             }
         }
 
-        void cancelFromCaller() {
+        boolean cancelFromCaller(boolean mayInterruptIfRunning) {
+            if (!terminal.compareAndSet(false, true)) return false;
+            terminalOwner.set(Thread.currentThread());
             cancellation.cancel();
+            try {
+                cleanupAndRemove();
+                return result.cancelDirect(mayInterruptIfRunning);
+            } finally {
+                terminalOwner.set(null);
+                terminalPublished.countDown();
+            }
         }
 
         void closeByRuntime() {
             cancellation.cancel();
             finish(AgentResult.Status.CANCELLED, null,
                     new AgentError(AgentError.Code.CLOSED, "Agent runtime was closed")); //$NON-NLS-1$
+            awaitTerminalPublication();
         }
 
         void nextStep() {
@@ -340,23 +352,51 @@ public final class AgentRuntime implements AutoCloseable {
         }
 
         void finish(AgentResult.Status status, String text, AgentError error) {
+            if (!terminal.compareAndSet(false, true)) return;
+            terminalOwner.set(Thread.currentThread());
             final List<AgentMessage> snapshot;
             final int completedSteps;
             synchronized (this) {
                 snapshot = List.copyOf(transcript);
                 completedSteps = steps;
             }
-            AgentResult terminal = new AgentResult(status, Optional.ofNullable(text), snapshot,
+            AgentResult terminalResult = new AgentResult(status, Optional.ofNullable(text), snapshot,
                     completedSteps, Optional.ofNullable(error));
-            if (result.complete(terminal)) {
-                log(status == AgentResult.Status.COMPLETED ? Level.INFO : Level.WARN,
-                        "run finished; status=" + status + "; steps=" + completedSteps); //$NON-NLS-1$ //$NON-NLS-2$
+            try {
+                cleanupAndRemove();
+                result.complete(terminalResult);
+            } finally {
+                terminalOwner.set(null);
+                terminalPublished.countDown();
+            }
+            log(status == AgentResult.Status.COMPLETED ? Level.INFO : Level.WARN,
+                    "run finished; status=" + status + "; steps=" + completedSteps); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        void cleanupAndRemove() {
+            if (timeoutTask != null) timeoutTask.cancel(false);
+            try {
+                if (externalRegistration != null) externalRegistration.close();
+            } catch (RuntimeException ignored) {
+                // Host cancellation callback cleanup cannot block terminal publication.
+            } finally {
+                synchronized (lifecycleLock) {
+                    activeRuns.remove(this);
+                }
             }
         }
 
-        void cleanup() {
-            if (timeoutTask != null) timeoutTask.cancel(false);
-            if (externalRegistration != null) externalRegistration.close();
+        void awaitTerminalPublication() {
+            if (terminalOwner.get() == Thread.currentThread()) return;
+            boolean interrupted = false;
+            while (terminalPublished.getCount() != 0) {
+                try {
+                    terminalPublished.await();
+                } catch (InterruptedException interruption) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
         }
 
         void log(Level level, String message) {
@@ -396,17 +436,19 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     private static final class RunFuture extends CompletableFuture<AgentResult> {
-        private volatile Runnable cancelAction = () -> { };
+        private volatile java.util.function.Predicate<Boolean> cancelAction = ignored -> false;
 
-        void onCancel(Runnable action) {
+        void onCancel(java.util.function.Predicate<Boolean> action) {
             cancelAction = Objects.requireNonNull(action, "action"); //$NON-NLS-1$
         }
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
-            boolean cancelled = super.cancel(mayInterruptIfRunning);
-            if (cancelled) cancelAction.run();
-            return cancelled;
+            return cancelAction.test(mayInterruptIfRunning);
+        }
+
+        boolean cancelDirect(boolean mayInterruptIfRunning) {
+            return super.cancel(mayInterruptIfRunning);
         }
     }
 
