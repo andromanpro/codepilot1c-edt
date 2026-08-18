@@ -103,7 +103,7 @@ public final class SecureStorageUtil {
      * @return true if stored successfully
      */
     public static boolean storeApiKey(String providerId, String apiKey) {
-        return storeSecurely(providerId + ".apiKey", apiKey); //$NON-NLS-1$
+        return storeSecurelySilently(providerId + ".apiKey", apiKey); //$NON-NLS-1$
     }
 
     /**
@@ -114,5 +114,37 @@ public final class SecureStorageUtil {
      */
     public static String retrieveApiKey(String providerId) {
         return retrieveSecurely(providerId + ".apiKey", ""); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Removes a provider API key from secure storage.
+     *
+     * @param providerId the provider ID
+     * @return true if the key was removed successfully
+     */
+    public static boolean removeApiKey(String providerId) {
+        try {
+            ISecurePreferences root = SecurePreferencesFactory.getDefault();
+            ISecurePreferences node = root.node(SECURE_NODE_PATH);
+            node.remove(providerId + ".apiKey"); //$NON-NLS-1$
+            node.flush();
+            return true;
+        } catch (Exception e) {
+            // The caller owns sanitized, rate-limited diagnostics for provider credentials.
+            return false;
+        }
+    }
+
+    private static boolean storeSecurelySilently(String key, String value) {
+        try {
+            ISecurePreferences root = SecurePreferencesFactory.getDefault();
+            ISecurePreferences node = root.node(SECURE_NODE_PATH);
+            node.put(key, value, true);
+            node.flush();
+            return true;
+        } catch (Exception e) {
+            // The caller owns sanitized, rate-limited diagnostics for provider credentials.
+            return false;
+        }
     }
 }
