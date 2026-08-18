@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -41,10 +43,13 @@ public final class McpClient implements AutoCloseable {
     private CompletableFuture<InitializeResult> initialization;
 
     public McpClient(McpClientConfig config) {
+        this(java.util.Objects.requireNonNull(config, "config"),
+                HttpClient.newBuilder().connectTimeout(config.connectTimeout()).build());
+    }
+
+    McpClient(McpClientConfig config, HttpClient httpClient) {
         this.config = java.util.Objects.requireNonNull(config, "config");
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(config.connectTimeout())
-                .build();
+        this.httpClient = java.util.Objects.requireNonNull(httpClient, "httpClient");
     }
 
     /** GET /health/ready; a 503 is a valid not-ready result, not a client failure. */
@@ -54,7 +59,7 @@ public final class McpClient implements AutoCloseable {
                 .timeout(config.requestTimeout())
                 .header("Accept", "application/json")
                 .GET();
-        return execute(builder.build()).thenApply(response -> {
+        return mapCancellable(execute(builder.build()), response -> {
             JsonObject body = parseOptionalObject(response.body());
             return new HealthReadyResult(response.statusCode(), response.statusCode() == 200, body);
         });
@@ -83,8 +88,8 @@ public final class McpClient implements AutoCloseable {
     }
 
     public CompletableFuture<ToolsListResult> listTools() {
-        return requireSession().thenCompose(ignored ->
-                request("tools/list", new JsonObject()).thenApply(this::parseToolsList));
+        return composeCancellable(requireSession(), ignored ->
+                mapCancellable(request("tools/list", new JsonObject()), this::parseToolsList));
     }
 
     public CompletableFuture<ToolCallResult> callTool(String name, JsonObject arguments) {
@@ -95,12 +100,13 @@ public final class McpClient implements AutoCloseable {
         JsonObject params = new JsonObject();
         params.addProperty("name", name);
         params.add("arguments", arguments == null ? new JsonObject() : arguments.deepCopy());
-        return requireSession().thenCompose(ignored ->
-                request("tools/call", params).thenApply(this::parseToolCall));
+        return composeCancellable(requireSession(), ignored ->
+                mapCancellable(request("tools/call", params), this::parseToolCall));
     }
 
     public CompletableFuture<Void> ping() {
-        return requireSession().thenCompose(ignored -> request("ping", new JsonObject()).thenApply(ignoredResult -> null));
+        return composeCancellable(requireSession(), ignored ->
+                mapCancellable(request("ping", new JsonObject()), ignoredResult -> null));
     }
 
     public boolean isInitialized() { return sessionId != null && !closed; }
@@ -249,18 +255,26 @@ public final class McpClient implements AutoCloseable {
                 .POST(HttpRequest.BodyPublishers.ofString(request.toString(), java.nio.charset.StandardCharsets.UTF_8));
         if (session != null && !session.isBlank()) builder.header(SESSION_HEADER, session);
         addAuthorization(builder);
-        return execute(builder.build()).thenApply(response -> parseRpcResponse(response, session, protocol));
+        return mapCancellable(execute(builder.build()),
+                response -> parseRpcResponse(response, session, protocol));
     }
 
     private CompletableFuture<HttpResponse<String>> execute(HttpRequest request) {
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .handle((response, error) -> {
-                    if (error != null) {
-                        throw new CompletionException(new McpClientException(
-                                McpClientException.Kind.TRANSPORT, "MCP HTTP request failed", unwrapCause(error)));
-                    }
-                    return response;
-                });
+        CompletableFuture<HttpResponse<String>> root = httpClient.sendAsync(
+                request, HttpResponse.BodyHandlers.ofString());
+        CompletableFuture<HttpResponse<String>> result = new CompletableFuture<>();
+        root.whenComplete((response, error) -> {
+            if (error != null) {
+                result.completeExceptionally(new McpClientException(
+                        McpClientException.Kind.TRANSPORT, "MCP HTTP request failed", unwrapCause(error)));
+            } else {
+                result.complete(response);
+            }
+        });
+        result.whenComplete((ignored, failure) -> {
+            if (result.isCancelled()) root.cancel(true);
+        });
+        return result;
     }
 
     private HttpEnvelope parseRpcResponse(HttpResponse<String> response, String requestedSession, String requestedProtocol)
@@ -423,6 +437,62 @@ public final class McpClient implements AutoCloseable {
 
     private static McpClientException stateError(String message) {
         return new McpClientException(McpClientException.Kind.STATE, message);
+    }
+
+    private static <S, T> CompletableFuture<T> mapCancellable(
+            CompletableFuture<S> source, Function<S, T> mapper) {
+        CompletableFuture<T> target = new CompletableFuture<>();
+        source.whenComplete((value, failure) -> {
+            if (failure != null) {
+                target.completeExceptionally(failure);
+                return;
+            }
+            try {
+                target.complete(mapper.apply(value));
+            } catch (RuntimeException mappingFailure) {
+                target.completeExceptionally(mappingFailure);
+            }
+        });
+        target.whenComplete((ignored, failure) -> {
+            if (target.isCancelled()) source.cancel(true);
+        });
+        return target;
+    }
+
+    private static <S, T> CompletableFuture<T> composeCancellable(
+            CompletableFuture<S> source, Function<S, CompletableFuture<T>> mapper) {
+        CompletableFuture<T> target = new CompletableFuture<>();
+        AtomicReference<CompletableFuture<T>> child = new AtomicReference<>();
+        source.whenComplete((value, failure) -> {
+            if (failure != null) {
+                target.completeExceptionally(failure);
+                return;
+            }
+            if (target.isDone()) return;
+            final CompletableFuture<T> mapped;
+            try {
+                mapped = java.util.Objects.requireNonNull(mapper.apply(value), "mapped future");
+            } catch (RuntimeException mappingFailure) {
+                target.completeExceptionally(mappingFailure);
+                return;
+            }
+            child.set(mapped);
+            if (target.isCancelled()) {
+                mapped.cancel(true);
+                return;
+            }
+            mapped.whenComplete((mappedValue, mappedFailure) -> {
+                if (mappedFailure != null) target.completeExceptionally(mappedFailure);
+                else target.complete(mappedValue);
+            });
+        });
+        target.whenComplete((ignored, failure) -> {
+            if (!target.isCancelled()) return;
+            source.cancel(true);
+            CompletableFuture<T> mapped = child.get();
+            if (mapped != null) mapped.cancel(true);
+        });
+        return target;
     }
 
     private static <T> CompletableFuture<T> failed(McpClientException exception) {

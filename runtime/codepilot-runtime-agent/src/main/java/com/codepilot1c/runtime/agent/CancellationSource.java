@@ -38,6 +38,10 @@ public final class CancellationSource implements CancellationToken {
         return true;
     }
 
+    int listenerCount() {
+        return actions.size();
+    }
+
     private static void runSafely(Runnable action) {
         try {
             action.run();

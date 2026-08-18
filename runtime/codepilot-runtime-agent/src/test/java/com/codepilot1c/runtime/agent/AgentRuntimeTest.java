@@ -14,6 +14,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -138,6 +142,28 @@ public class AgentRuntimeTest {
     }
 
     @Test
+    public void toolCallIdsMustBeUniqueAcrossTheEntireRun() throws Exception {
+        AtomicInteger turns = new AtomicInteger();
+        AtomicInteger executions = new AtomicInteger();
+        AgentModel model = (request, cancellation) -> CompletableFuture.completedFuture(
+                AgentMessage.Assistant.tools(List.of(new ToolCall(
+                        "reused", "echo", "{}")))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        ToolRuntime tools = tools(List.of("echo"), (name, arguments, cancellation) -> { //$NON-NLS-1$
+            executions.incrementAndGet();
+            turns.incrementAndGet();
+            return CompletableFuture.completedFuture(ToolExecutionResult.success(new JsonObject()));
+        });
+
+        try (AgentRuntime runtime = runtime(model, tools, 3, Duration.ofSeconds(2))) {
+            AgentResult result = runtime.run(request("reuse id")).get(2, TimeUnit.SECONDS); //$NON-NLS-1$
+            assertEquals(AgentResult.Status.FAILED, result.status());
+            assertEquals(AgentError.Code.PROVIDER_RESPONSE, result.error().orElseThrow().code());
+            assertEquals(1, executions.get());
+            assertEquals(1, turns.get());
+        }
+    }
+
+    @Test
     public void stopsAtConfiguredStepLimit() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicInteger executions = new AtomicInteger();
@@ -184,6 +210,126 @@ public class AgentRuntimeTest {
             assertEquals(AgentResult.Status.TIMED_OUT, result.status());
             assertEquals(AgentError.Code.TIMEOUT, result.error().orElseThrow().code());
             assertTrue(inFlight.isCancelled());
+        }
+    }
+
+    @Test
+    public void closeCompletesActiveRunAndCancelsModelFuture() throws Exception {
+        CompletableFuture<AgentMessage.Assistant> inFlight = new CompletableFuture<>();
+        AgentRuntime runtime = runtime((request, cancellation) -> inFlight,
+                emptyTools(), 2, Duration.ofSeconds(5));
+        CompletableFuture<AgentResult> running = runtime.run(request("wait")); //$NON-NLS-1$
+        assertEquals(1, runtime.activeRunCount());
+
+        runtime.close();
+        AgentResult result = running.get(2, TimeUnit.SECONDS);
+
+        assertEquals(AgentResult.Status.CANCELLED, result.status());
+        assertEquals(AgentError.Code.CLOSED, result.error().orElseThrow().code());
+        assertTrue(inFlight.isCancelled());
+        assertEquals(0, runtime.activeRunCount());
+    }
+
+    @Test
+    public void closeCancelsActiveToolFuture() throws Exception {
+        CountDownLatch toolStarted = new CountDownLatch(1);
+        CompletableFuture<ToolExecutionResult> inFlight = new CompletableFuture<>();
+        AgentModel model = (request, cancellation) -> CompletableFuture.completedFuture(
+                AgentMessage.Assistant.tools(List.of(new ToolCall("call", "slow", "{}")))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        ToolRuntime tools = tools(List.of("slow"), (name, arguments, cancellation) -> { //$NON-NLS-1$
+            toolStarted.countDown();
+            return inFlight;
+        });
+        AgentRuntime runtime = runtime(model, tools, 2, Duration.ofSeconds(5));
+        CompletableFuture<AgentResult> running = runtime.run(request("tool")); //$NON-NLS-1$
+        assertTrue(toolStarted.await(2, TimeUnit.SECONDS));
+
+        runtime.close();
+        AgentResult result = running.get(2, TimeUnit.SECONDS);
+
+        assertEquals(AgentError.Code.CLOSED, result.error().orElseThrow().code());
+        assertTrue(inFlight.isCancelled());
+        assertEquals(0, runtime.activeRunCount());
+    }
+
+    @Test
+    public void cancellingReturnedFutureCancelsCurrentWorkAndCleansRun() {
+        CompletableFuture<AgentMessage.Assistant> inFlight = new CompletableFuture<>();
+        AgentRuntime runtime = runtime((request, cancellation) -> inFlight,
+                emptyTools(), 2, Duration.ofSeconds(5));
+        CompletableFuture<AgentResult> running = runtime.run(request("cancel future")); //$NON-NLS-1$
+
+        assertTrue(running.cancel(true));
+
+        assertTrue(running.isCancelled());
+        assertTrue(inFlight.isCancelled());
+        assertEquals(0, runtime.activeRunCount());
+        runtime.close();
+    }
+
+    @Test
+    public void runAfterCloseReturnsTypedClosedResult() throws Exception {
+        AgentRuntime runtime = runtime((request, cancellation) ->
+                CompletableFuture.completedFuture(AgentMessage.Assistant.text("unused")), //$NON-NLS-1$
+                emptyTools(), 2, Duration.ofSeconds(2));
+        runtime.close();
+
+        AgentResult result = runtime.run(request("after close")).get(2, TimeUnit.SECONDS); //$NON-NLS-1$
+
+        assertEquals(AgentResult.Status.CANCELLED, result.status());
+        assertEquals(AgentError.Code.CLOSED, result.error().orElseThrow().code());
+        assertEquals(0, result.steps());
+    }
+
+    @Test
+    public void concurrentRunAndCloseNeverRejectsScheduling() throws Exception {
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int iteration = 0; iteration < 20; iteration++) {
+                AgentRuntime runtime = runtime((request, cancellation) -> new CompletableFuture<>(),
+                        emptyTools(), 2, Duration.ofSeconds(2));
+                CountDownLatch start = new CountDownLatch(1);
+                CompletableFuture<AgentResult> runResult = CompletableFuture.supplyAsync(() -> {
+                    await(start);
+                    return runtime.run(request("race close")).join(); //$NON-NLS-1$
+                }, workers);
+                CompletableFuture<Void> closeResult = CompletableFuture.runAsync(() -> {
+                    await(start);
+                    runtime.close();
+                }, workers);
+                start.countDown();
+
+                AgentResult result = runResult.get(2, TimeUnit.SECONDS);
+                closeResult.get(2, TimeUnit.SECONDS);
+                assertEquals(AgentResult.Status.CANCELLED, result.status());
+                assertEquals(AgentError.Code.CLOSED, result.error().orElseThrow().code());
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    public void timeoutAndCompletionRaceAlwaysCleansCallbacksAndActiveRun() throws Exception {
+        ScheduledExecutorService completions = Executors.newSingleThreadScheduledExecutor();
+        AgentRuntime runtime = runtime((request, cancellation) -> {
+            CompletableFuture<AgentMessage.Assistant> future = new CompletableFuture<>();
+            completions.schedule(() -> future.complete(AgentMessage.Assistant.text("done")), //$NON-NLS-1$
+                    5, TimeUnit.MILLISECONDS);
+            return future;
+        }, emptyTools(), 2, Duration.ofMillis(5));
+        try {
+            for (int iteration = 0; iteration < 30; iteration++) {
+                CancellationSource external = new CancellationSource();
+                AgentResult result = runtime.run(request("race"), external).get(2, TimeUnit.SECONDS); //$NON-NLS-1$
+                assertTrue(result.status() == AgentResult.Status.COMPLETED
+                        || result.status() == AgentResult.Status.TIMED_OUT);
+                assertEquals(0, runtime.activeRunCount());
+                assertEquals(0, external.listenerCount());
+            }
+        } finally {
+            runtime.close();
+            completions.shutdownNow();
         }
     }
 
@@ -248,6 +394,15 @@ public class AgentRuntimeTest {
         schema.addProperty("type", "object"); //$NON-NLS-1$ //$NON-NLS-2$
         schema.add("properties", new JsonObject()); //$NON-NLS-1$
         return schema;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
     }
 
     @FunctionalInterface

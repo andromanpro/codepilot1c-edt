@@ -45,7 +45,9 @@ public final class AgentRuntime implements AutoCloseable {
     private final AgentRunConfig config;
     private final LogSink logSink;
     private final ScheduledExecutorService scheduler;
-    private volatile boolean closed;
+    private final Object lifecycleLock = new Object();
+    private final Set<RunContext> activeRuns = new HashSet<>();
+    private boolean closed;
 
     public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink) {
         this.model = Objects.requireNonNull(model, "model"); //$NON-NLS-1$
@@ -70,16 +72,33 @@ public final class AgentRuntime implements AutoCloseable {
     public CompletableFuture<AgentResult> run(AgentRequest request, CancellationToken cancellation) {
         Objects.requireNonNull(request, "request"); //$NON-NLS-1$
         Objects.requireNonNull(cancellation, "cancellation"); //$NON-NLS-1$
-        if (closed) throw new IllegalStateException("agent runtime is closed"); //$NON-NLS-1$
-        RunContext context = new RunContext(request, cancellation);
-        context.start();
+        RunContext context;
+        synchronized (lifecycleLock) {
+            if (closed) return CompletableFuture.completedFuture(closedResult(request));
+            context = new RunContext(request, cancellation);
+            activeRuns.add(context);
+            context.arm();
+        }
+        context.begin();
         return context.result;
     }
 
     @Override
     public void close() {
-        closed = true;
+        List<RunContext> runs;
+        synchronized (lifecycleLock) {
+            if (closed) return;
+            closed = true;
+            runs = List.copyOf(activeRuns);
+        }
+        for (RunContext run : runs) run.closeByRuntime();
         scheduler.shutdownNow();
+    }
+
+    int activeRunCount() {
+        synchronized (lifecycleLock) {
+            return activeRuns.size();
+        }
     }
 
     private final class RunContext {
@@ -87,7 +106,8 @@ public final class AgentRuntime implements AutoCloseable {
         private final CancellationToken externalCancellation;
         private final CancellationSource cancellation = new CancellationSource();
         private final ArrayList<AgentMessage> transcript;
-        private final CompletableFuture<AgentResult> result = new CompletableFuture<>();
+        private final RunFuture result = new RunFuture();
+        private final Set<String> seenToolCallIds = new HashSet<>();
         private int steps;
         private Set<String> availableTools = Set.of();
         private ScheduledFuture<?> timeoutTask;
@@ -97,9 +117,10 @@ public final class AgentRuntime implements AutoCloseable {
             this.request = request;
             this.externalCancellation = externalCancellation;
             this.transcript = new ArrayList<>(request.messages());
+            result.onCancel(this::cancelFromCaller);
         }
 
-        void start() {
+        void arm() {
             timeoutTask = scheduler.schedule(() -> {
                 cancellation.cancel();
                 finish(AgentResult.Status.TIMED_OUT, null,
@@ -110,11 +131,29 @@ public final class AgentRuntime implements AutoCloseable {
                 finish(AgentResult.Status.CANCELLED, null,
                         new AgentError(AgentError.Code.CANCELLED, "Agent run was cancelled")); //$NON-NLS-1$
             });
-            result.whenComplete((ignored, failure) -> cleanup());
+            result.whenComplete((ignored, failure) -> {
+                cleanup();
+                synchronized (lifecycleLock) {
+                    activeRuns.remove(this);
+                }
+            });
+        }
+
+        void begin() {
             if (!result.isDone()) {
                 log(Level.INFO, "run started; maxSteps=" + config.maxSteps()); //$NON-NLS-1$
                 nextStep();
             }
+        }
+
+        void cancelFromCaller() {
+            cancellation.cancel();
+        }
+
+        void closeByRuntime() {
+            cancellation.cancel();
+            finish(AgentResult.Status.CANCELLED, null,
+                    new AgentError(AgentError.Code.CLOSED, "Agent runtime was closed")); //$NON-NLS-1$
         }
 
         void nextStep() {
@@ -162,7 +201,7 @@ public final class AgentRuntime implements AutoCloseable {
                         "Provider returned no assistant message")); //$NON-NLS-1$
                 return;
             }
-            if (hasDuplicateCallIds(assistant.toolCalls())) {
+            if (!reserveToolCallIds(assistant.toolCalls())) {
                 providerFailure(new AgentModelException(AgentModelException.Kind.MALFORMED_RESPONSE,
                         "Provider returned duplicate tool-call ids")); //$NON-NLS-1$
                 return;
@@ -231,6 +270,17 @@ public final class AgentRuntime implements AutoCloseable {
         boolean toolExists(String name) {
             synchronized (this) {
                 return availableTools.contains(name);
+            }
+        }
+
+        boolean reserveToolCallIds(List<ToolCall> calls) {
+            Set<String> newIds = new HashSet<>();
+            synchronized (this) {
+                for (ToolCall call : calls) {
+                    if (seenToolCallIds.contains(call.id()) || !newIds.add(call.id())) return false;
+                }
+                seenToolCallIds.addAll(newIds);
+                return true;
             }
         }
 
@@ -340,9 +390,24 @@ public final class AgentRuntime implements AutoCloseable {
         }
     }
 
-    private boolean hasDuplicateCallIds(List<ToolCall> calls) {
-        Set<String> ids = new HashSet<>();
-        return calls.stream().anyMatch(call -> !ids.add(call.id()));
+    private AgentResult closedResult(AgentRequest request) {
+        return new AgentResult(AgentResult.Status.CANCELLED, Optional.empty(), request.messages(), 0,
+                Optional.of(new AgentError(AgentError.Code.CLOSED, "Agent runtime is closed"))); //$NON-NLS-1$
+    }
+
+    private static final class RunFuture extends CompletableFuture<AgentResult> {
+        private volatile Runnable cancelAction = () -> { };
+
+        void onCancel(Runnable action) {
+            cancelAction = Objects.requireNonNull(action, "action"); //$NON-NLS-1$
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            boolean cancelled = super.cancel(mayInterruptIfRunning);
+            if (cancelled) cancelAction.run();
+            return cancelled;
+        }
     }
 
     private Throwable unwrap(Throwable failure) {

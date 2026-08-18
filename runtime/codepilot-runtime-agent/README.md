@@ -12,6 +12,12 @@ expected failures are represented by a stable `AgentError.Code`. A step
 includes its requested tool executions, so a tool-producing final allowed
 step is executed before the `STEP_LIMIT` result is returned.
 
+`AgentRuntime.close()` atomically stops admission, returns `CANCELLED/CLOSED`
+for every active run, and propagates cancellation to the current provider or
+tool request. Cancelling the `CompletableFuture` returned by `run(...)` also
+cancels that run's current work. Tool-call IDs are unique for the entire run,
+not only within one assistant response.
+
 The module contains two boundary adapters:
 
 - `OpenAiCompatibleAgentModel` maps neutral messages and JSON schemas to the

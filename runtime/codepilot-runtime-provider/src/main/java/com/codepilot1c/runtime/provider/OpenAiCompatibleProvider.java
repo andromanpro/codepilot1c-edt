@@ -86,8 +86,17 @@ public final class OpenAiCompatibleProvider {
         }
         addAuthorization(builder);
 
-        return httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-                .thenApply(response -> new ChatCompletionResponse(response.statusCode(), response.body()));
+        CompletableFuture<HttpResponse<String>> request = httpClient.sendAsync(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        CompletableFuture<ChatCompletionResponse> response = new CompletableFuture<>();
+        request.whenComplete((value, failure) -> {
+            if (failure != null) response.completeExceptionally(failure);
+            else response.complete(new ChatCompletionResponse(value.statusCode(), value.body()));
+        });
+        response.whenComplete((ignored, failure) -> {
+            if (response.isCancelled()) request.cancel(true);
+        });
+        return response;
     }
 
     private void addAuthorization(HttpRequest.Builder builder) {

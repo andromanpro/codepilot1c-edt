@@ -10,6 +10,7 @@ import java.util.Objects;
 public record AgentError(Code code, String message) {
     public enum Code {
         CANCELLED,
+        CLOSED,
         TIMEOUT,
         STEP_LIMIT,
         PROVIDER_TRANSPORT,

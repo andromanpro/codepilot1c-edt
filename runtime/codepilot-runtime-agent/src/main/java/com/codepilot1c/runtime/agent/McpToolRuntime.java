@@ -66,11 +66,22 @@ public final class McpToolRuntime implements ToolRuntime {
         CompletableFuture<com.codepilot1c.runtime.mcp.ToolCallResult> future =
                 client.callTool(name, arguments);
         CancellationToken.Registration registration = cancellation.onCancel(() -> future.cancel(true));
-        return future.whenComplete((ignored, failure) -> registration.close()).thenApply(result ->
-                result.isError()
-                    ? ToolExecutionResult.failure("MCP_TOOL_ERROR", "MCP tool reported an error", //$NON-NLS-1$ //$NON-NLS-2$
-                            result.rawResult())
-                    : ToolExecutionResult.success(result.rawResult()));
+        CompletableFuture<ToolExecutionResult> mapped = new CompletableFuture<>();
+        future.whenComplete((result, failure) -> {
+            registration.close();
+            if (failure != null) {
+                mapped.completeExceptionally(failure);
+            } else if (result.isError()) {
+                mapped.complete(ToolExecutionResult.failure(
+                        "MCP_TOOL_ERROR", "MCP tool reported an error", result.rawResult())); //$NON-NLS-1$ //$NON-NLS-2$
+            } else {
+                mapped.complete(ToolExecutionResult.success(result.rawResult()));
+            }
+        });
+        mapped.whenComplete((ignored, failure) -> {
+            if (mapped.isCancelled()) future.cancel(true);
+        });
+        return mapped;
     }
 
     private static JsonObject schema(JsonElement value) {
