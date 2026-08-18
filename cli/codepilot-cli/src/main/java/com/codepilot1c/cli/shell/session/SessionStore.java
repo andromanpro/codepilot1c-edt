@@ -329,6 +329,8 @@ public final class SessionStore {
         } else if (message instanceof AgentMessage.Assistant assistant) {
             object.addProperty("type", "assistant"); //$NON-NLS-1$ //$NON-NLS-2$
             assistant.text().ifPresent(value -> object.addProperty("text", redact(value))); //$NON-NLS-1$
+            assistant.reasoning().ifPresent(value ->
+                    object.addProperty("reasoning", redact(value))); //$NON-NLS-1$
             JsonArray calls = new JsonArray();
             for (ToolCall call : assistant.toolCalls()) {
                 JsonObject encodedCall = new JsonObject();
@@ -376,6 +378,8 @@ public final class SessionStore {
     private static AgentMessage.Assistant decodeAssistant(JsonObject object) throws IOException {
         Optional<String> text = object.has("text") && !object.get("text").isJsonNull() //$NON-NLS-1$ //$NON-NLS-2$
                 ? Optional.of(string(object, "text")) : Optional.empty(); //$NON-NLS-1$
+        Optional<String> reasoning = object.has("reasoning") && !object.get("reasoning").isJsonNull() //$NON-NLS-1$ //$NON-NLS-2$
+                ? Optional.of(string(object, "reasoning")) : Optional.empty(); //$NON-NLS-1$
         JsonArray array = array(object, "toolCalls"); //$NON-NLS-1$
         List<ToolCall> calls = new ArrayList<>();
         for (JsonElement element : array) {
@@ -384,7 +388,7 @@ public final class SessionStore {
             calls.add(new ToolCall(string(call, "id"), string(call, "name"), //$NON-NLS-1$ //$NON-NLS-2$
                     string(call, "argumentsJson"))); //$NON-NLS-1$
         }
-        return new AgentMessage.Assistant(text, calls);
+        return new AgentMessage.Assistant(text, reasoning, calls);
     }
 
     private static AgentMessage.Tool decodeTool(JsonObject object) throws IOException {

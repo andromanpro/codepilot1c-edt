@@ -130,6 +130,8 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
             value.addProperty("role", "assistant"); //$NON-NLS-1$ //$NON-NLS-2$
             if (assistant.text().isPresent()) value.addProperty("content", assistant.text().get()); //$NON-NLS-1$
             else value.add("content", JsonNull.INSTANCE); //$NON-NLS-1$
+            assistant.reasoning().ifPresent(reasoning ->
+                    value.addProperty("reasoning_content", reasoning)); //$NON-NLS-1$
             if (!assistant.toolCalls().isEmpty()) {
                 JsonArray calls = new JsonArray();
                 for (ToolCall call : assistant.toolCalls()) calls.add(serializeCall(call));
@@ -165,8 +167,9 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
             JsonObject message = object(choices.get(0).getAsJsonObject(), "message"); //$NON-NLS-1$
             if (!"assistant".equals(requiredString(message, "role"))) throw malformed(); //$NON-NLS-1$ //$NON-NLS-2$
             Optional<String> text = optionalString(message, "content"); //$NON-NLS-1$
+            Optional<String> reasoning = optionalReasoning(message);
             List<ToolCall> calls = parseCalls(message);
-            return new AgentMessage.Assistant(text, calls);
+            return new AgentMessage.Assistant(text, reasoning, calls);
         } catch (AgentModelException failure) {
             throw failure;
         } catch (JsonParseException | IllegalArgumentException
@@ -211,6 +214,20 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
         if (value == null || value.isJsonNull()) return Optional.empty();
         if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) throw malformed();
         return Optional.of(value.getAsString()).filter(text -> !text.isEmpty());
+    }
+
+    private Optional<String> optionalReasoning(JsonObject object) {
+        if (object.has("reasoning_content")) { //$NON-NLS-1$
+            return optionalStringPreservingEmpty(object, "reasoning_content"); //$NON-NLS-1$
+        }
+        return optionalStringPreservingEmpty(object, "reasoning"); //$NON-NLS-1$
+    }
+
+    private Optional<String> optionalStringPreservingEmpty(JsonObject object, String field) {
+        JsonElement value = object.get(field);
+        if (value == null || value.isJsonNull()) return Optional.empty();
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) throw malformed();
+        return Optional.of(value.getAsString());
     }
 
     private String requiredString(JsonObject object, String field) {
@@ -266,6 +283,8 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
     private final class StreamCompletion {
         private final StreamObserver observer;
         private final StringBuilder text = new StringBuilder();
+        private final StringBuilder reasoning = new StringBuilder();
+        private boolean reasoningPresent;
         private final List<ToolCall> toolCalls = new ArrayList<>();
         private boolean done;
         private boolean open = true;
@@ -280,6 +299,8 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
                 text.append(delta.text());
                 observer.onTextDelta(delta.text());
             } else if (event instanceof ProviderStreamEvent.ReasoningDelta delta) {
+                reasoningPresent = true;
+                reasoning.append(delta.text());
                 observer.onReasoningDelta(delta.text());
             } else if (event instanceof ProviderStreamEvent.ToolCall call) {
                 toolCalls.add(new ToolCall(call.id(), call.name(), call.argumentsJson()));
@@ -302,7 +323,10 @@ public final class OpenAiCompatibleAgentModel implements StreamingAgentModel {
                 Optional<String> content = text.length() == 0
                         ? Optional.empty()
                         : Optional.of(text.toString());
-                return new AgentMessage.Assistant(content, toolCalls);
+                Optional<String> retainedReasoning = reasoningPresent
+                        ? Optional.of(reasoning.toString())
+                        : Optional.empty();
+                return new AgentMessage.Assistant(content, retainedReasoning, toolCalls);
             } catch (IllegalArgumentException failure) {
                 throw malformed(failure);
             }

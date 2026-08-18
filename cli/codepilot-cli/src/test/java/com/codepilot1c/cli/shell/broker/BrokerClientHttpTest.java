@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Test;
@@ -110,6 +111,7 @@ public class BrokerClientHttpTest {
 
             assertEquals(List.of("text:Hel", "reasoning:think", "text:lo"), observed);
             assertEquals(Optional.of("Hello"), assistant.text());
+            assertEquals(Optional.of("think"), assistant.reasoning());
             assertEquals(1, assistant.toolCalls().size());
             assertEquals("call-1", assistant.toolCalls().get(0).id());
             assertEquals("lookup", assistant.toolCalls().get(0).name());
@@ -125,11 +127,46 @@ public class BrokerClientHttpTest {
             assertEquals("call-old", wire.getAsJsonArray("messages").get(2)
                     .getAsJsonObject().getAsJsonArray("toolCalls").get(0)
                     .getAsJsonObject().get("id").getAsString());
+            assertEquals("prior reasoning", wire.getAsJsonArray("messages").get(2)
+                    .getAsJsonObject().get("reasoning").getAsString());
             assertEquals("call-old", wire.getAsJsonArray("messages").get(3)
                     .getAsJsonObject().get("toolCallId").getAsString());
             assertEquals("object", wire.getAsJsonArray("tools").get(0)
                     .getAsJsonObject().getAsJsonObject("inputSchema")
                     .get("type").getAsString());
+        }
+    }
+
+    @Test
+    public void reasoningAndToolCallAreReplayedTogetherOnBrokerFollowUp() throws Exception {
+        AtomicInteger completions = new AtomicInteger();
+        AtomicReference<JsonObject> followUp = new AtomicReference<>();
+        try (Fixture fixture = new Fixture(exchange -> json(exchange, 200, CAPABILITIES), exchange -> {
+            JsonObject request = JsonParser.parseString(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
+            if (completions.incrementAndGet() == 1) {
+                fragmentedSse(exchange,
+                        event("reasoning", "{\"schemaVersion\":1,\"text\":\"broker thought\"}")
+                        + event("tool_calls", "{\"schemaVersion\":1,\"toolCalls\":["
+                                + "{\"id\":\"call-1\",\"name\":\"lookup\",\"arguments\":{}}]}")
+                        + event("done", "{\"schemaVersion\":1,\"finishReason\":\"tool_calls\"}"), 4);
+            } else {
+                followUp.set(request);
+                fragmentedSse(exchange,
+                        event("delta", "{\"schemaVersion\":1,\"text\":\"done\"}")
+                        + event("done", "{\"schemaVersion\":1,\"finishReason\":\"stop\"}"), 4);
+            }
+        }); BrokerClient client = fixture.client(TOKEN);
+             AgentRuntime runtime = runtimeWithLookup(new BrokeredAgentModel(client))) {
+            AgentResult result = runtime.run(new AgentRequest("broker-reasoning", List.of(
+                    new AgentMessage.Text(AgentMessage.Role.USER, "inspect"))))
+                    .get(3, TimeUnit.SECONDS);
+
+            assertEquals(AgentResult.Status.COMPLETED, result.status());
+            JsonObject assistant = followUp.get().getAsJsonArray("messages").get(1).getAsJsonObject();
+            assertEquals("broker thought", assistant.get("reasoning").getAsString());
+            assertEquals("call-1", assistant.getAsJsonArray("toolCalls").get(0)
+                    .getAsJsonObject().get("id").getAsString());
         }
     }
 
@@ -272,7 +309,8 @@ public class BrokerClientHttpTest {
 
     private static AgentModel.Request fullRequest() {
         JsonObject schema = JsonParser.parseString("{\"type\":\"object\"}").getAsJsonObject();
-        AgentMessage.Assistant prior = new AgentMessage.Assistant(Optional.of("checking"), List.of(
+        AgentMessage.Assistant prior = new AgentMessage.Assistant(Optional.of("checking"),
+                Optional.of("prior reasoning"), List.of(
                 new com.codepilot1c.runtime.agent.ToolCall("call-old", "lookup", "{\"old\":true}")));
         AgentMessage.Tool result = new AgentMessage.Tool("call-old", "lookup",
                 ToolExecutionResult.success(JsonParser.parseString("{\"found\":true}")));
@@ -291,6 +329,23 @@ public class BrokerClientHttpTest {
             }
         };
         return new AgentRuntime(model, tools, new AgentRunConfig(1, Duration.ofSeconds(2)),
+                AgentEventListener.NOOP, ToolApprover.ALLOW_ALL,
+                AgentCompletionMode.STREAMING);
+    }
+
+    private static AgentRuntime runtimeWithLookup(StreamingAgentModel model) {
+        JsonObject schema = new JsonObject();
+        schema.addProperty("type", "object");
+        ToolRuntime tools = new ToolRuntime() {
+            @Override public List<ToolDefinition> tools() {
+                return List.of(new ToolDefinition("lookup", "Lookup", schema));
+            }
+            @Override public java.util.concurrent.CompletionStage<ToolExecutionResult> execute(
+                    String name, JsonObject arguments, CancellationToken cancellation) {
+                return CompletableFuture.completedFuture(ToolExecutionResult.success(new JsonObject()));
+            }
+        };
+        return new AgentRuntime(model, tools, new AgentRunConfig(3, Duration.ofSeconds(3)),
                 AgentEventListener.NOOP, ToolApprover.ALLOW_ALL,
                 AgentCompletionMode.STREAMING);
     }

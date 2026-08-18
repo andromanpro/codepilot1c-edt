@@ -47,7 +47,8 @@ public class OpenAiAgentStreamingHttpTest {
             requests.add(request);
             if (!request.has("stream")) { //$NON-NLS-1$
                 respond(exchange, 200, """
-                        {"choices":[{"message":{"role":"assistant","content":"Hello world","tool_calls":[
+                        {"choices":[{"message":{"role":"assistant","content":"Hello world",
+                          "reasoning_content":"carefully","tool_calls":[
                           {"id":"call-1","type":"function","function":{"name":"echo","arguments":"{\\"value\\":7}"}}
                         ]}}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
                         """);
@@ -93,12 +94,54 @@ public class OpenAiAgentStreamingHttpTest {
             assertTrue(model instanceof StreamingAgentModel);
             assertEquals(buffered, streaming);
             assertEquals(AgentMessage.Assistant.class, streaming.getClass());
+            assertEquals(java.util.Optional.of("carefully"), streaming.reasoning()); //$NON-NLS-1$
             assertEquals(List.of("text:Hello ", "reasoning:carefully", "text:world"), deltas); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             assertEquals(2, requests.size());
             assertFalse(requests.get(0).has("stream")); //$NON-NLS-1$
             assertTrue(requests.get(1).get("stream").getAsBoolean()); //$NON-NLS-1$
             assertTrue(requests.get(1).getAsJsonObject("stream_options") //$NON-NLS-1$
                     .get("include_usage").getAsBoolean()); //$NON-NLS-1$
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void reasoningFromToolCallResponseIsSerializedIntoFollowUpRequest() throws Exception {
+        List<JsonObject> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            JsonObject request = JsonParser.parseString(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
+            requests.add(request);
+            startStream(exchange);
+            try (OutputStream output = exchange.getResponseBody()) {
+                if (requests.size() == 1) {
+                    writeEvent(output, chunk("{\"reasoning_content\":\"inspect first\"}", null)); //$NON-NLS-1$
+                    writeEvent(output, chunk("""
+                            {"tool_calls":[{"index":0,"id":"call-1","type":"function",
+                              "function":{"name":"echo","arguments":"{\\"value\\":7}"}}]}
+                            """, "tool_calls")); //$NON-NLS-1$
+                } else {
+                    writeEvent(output, chunk("{\"content\":\"done\"}", "stop")); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                output.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8)); //$NON-NLS-1$
+            } finally {
+                exchange.close();
+            }
+        });
+        try (AgentRuntime runtime = new AgentRuntime(model(server, null), echoTools(),
+                new AgentRunConfig(3, Duration.ofSeconds(2)), AgentEventListener.NOOP,
+                ToolApprover.ALLOW_ALL, AgentCompletionMode.STREAMING)) {
+            AgentResult result = runtime.run(new AgentRequest("reasoning-replay", List.of( //$NON-NLS-1$
+                    new AgentMessage.Text(AgentMessage.Role.USER, "run")))) //$NON-NLS-1$
+                    .get(2, TimeUnit.SECONDS);
+
+            assertEquals(AgentResult.Status.COMPLETED, result.status());
+            assertEquals(2, requests.size());
+            JsonObject assistant = requests.get(1).getAsJsonArray("messages").get(1).getAsJsonObject(); //$NON-NLS-1$
+            assertEquals("assistant", assistant.get("role").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals("inspect first", assistant.get("reasoning_content").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+            assertTrue(assistant.has("tool_calls")); //$NON-NLS-1$
         } finally {
             server.stop(0);
         }
@@ -248,6 +291,21 @@ public class OpenAiAgentStreamingHttpTest {
             @Override public java.util.concurrent.CompletionStage<ToolExecutionResult> execute(
                     String name, JsonObject arguments, CancellationToken cancellation) {
                 throw new AssertionError("No tool should execute"); //$NON-NLS-1$
+            }
+        };
+    }
+
+    private static ToolRuntime echoTools() {
+        JsonObject schema = new JsonObject();
+        schema.addProperty("type", "object"); //$NON-NLS-1$ //$NON-NLS-2$
+        return new ToolRuntime() {
+            @Override public List<ToolDefinition> tools() {
+                return List.of(new ToolDefinition("echo", "Echo", schema)); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            @Override public java.util.concurrent.CompletionStage<ToolExecutionResult> execute(
+                    String name, JsonObject arguments, CancellationToken cancellation) {
+                return CompletableFuture.completedFuture(
+                        ToolExecutionResult.success(arguments.deepCopy()));
             }
         };
     }

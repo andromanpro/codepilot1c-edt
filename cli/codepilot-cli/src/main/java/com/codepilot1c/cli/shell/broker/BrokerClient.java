@@ -200,6 +200,7 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
             value.addProperty("role", "assistant");
             if (assistant.text().isPresent()) value.addProperty("content", assistant.text().get());
             else value.add("content", JsonNull.INSTANCE);
+            assistant.reasoning().ifPresent(reasoning -> value.addProperty("reasoning", reasoning));
             if (!assistant.toolCalls().isEmpty()) {
                 JsonArray calls = new JsonArray();
                 for (ToolCall call : assistant.toolCalls()) {
@@ -412,6 +413,8 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
     private static final class Accumulator {
         private final StreamObserver observer;
         private final StringBuilder text = new StringBuilder();
+        private final StringBuilder reasoning = new StringBuilder();
+        private boolean reasoningPresent;
         private final List<ToolCall> calls = new ArrayList<>();
         private final Set<String> callIds = new HashSet<>();
         private boolean done;
@@ -445,7 +448,11 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
             ensureOpen();
             String fragment = requiredString(payload, "text");
             try {
-                if (reasoning) observer.onReasoningDelta(fragment);
+                if (reasoning) {
+                    reasoningPresent = true;
+                    this.reasoning.append(fragment);
+                    observer.onReasoningDelta(fragment);
+                }
                 else {
                     text.append(fragment);
                     observer.onAssistantDelta(fragment);
@@ -499,8 +506,10 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
 
         AgentMessage.Assistant assistant() {
             Optional<String> visible = text.length() == 0 ? Optional.empty() : Optional.of(text.toString());
+            Optional<String> retainedReasoning = reasoningPresent
+                    ? Optional.of(reasoning.toString()) : Optional.empty();
             try {
-                return new AgentMessage.Assistant(visible, List.copyOf(calls));
+                return new AgentMessage.Assistant(visible, retainedReasoning, List.copyOf(calls));
             } catch (IllegalArgumentException failure) {
                 throw malformed("EDT broker completed without assistant content");
             }

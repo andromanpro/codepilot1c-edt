@@ -53,7 +53,8 @@ public class SessionStoreTest {
         List<AgentMessage> expected = List.of(
                 new AgentMessage.Text(AgentMessage.Role.SYSTEM, "system context"), //$NON-NLS-1$
                 new AgentMessage.Text(AgentMessage.Role.USER, "Please inspect the module"), //$NON-NLS-1$
-                new AgentMessage.Assistant(Optional.of("I will inspect it"), List.of( //$NON-NLS-1$
+                new AgentMessage.Assistant(Optional.of("I will inspect it"), //$NON-NLS-1$
+                        Optional.of("Need the file contents first"), List.of( //$NON-NLS-1$
                         new ToolCall("call-1", "read_file", "{\"path\":\"src/main.bsl\"}"))), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 new AgentMessage.Tool("call-1", "read_file", //$NON-NLS-1$ //$NON-NLS-2$
                         new ToolExecutionResult(false, "OK", "read complete", data)), //$NON-NLS-1$ //$NON-NLS-2$
@@ -74,7 +75,23 @@ public class SessionStoreTest {
         Path transcript = root.resolve(created.id() + ".jsonl"); //$NON-NLS-1$
         assertEquals(expected.size(), Files.readAllLines(transcript, StandardCharsets.UTF_8).size());
         assertTrue(Files.readString(transcript).contains("\"type\":\"assistant\"")); //$NON-NLS-1$
+        assertTrue(Files.readString(transcript).contains("\"reasoning\":\"Need the file contents first\"")); //$NON-NLS-1$
         assertTrue(Files.readString(transcript).contains("\"type\":\"tool\"")); //$NON-NLS-1$
+    }
+
+    @Test public void resumesLegacyAssistantWithoutReasoningField() throws Exception {
+        Path root = temporary.newFolder("legacy-reasoning").toPath(); //$NON-NLS-1$
+        SessionStore store = store(root, Clock.fixed(START, ZoneOffset.UTC), warning -> { });
+        SessionMetadata metadata = store.create("build", "p", "m", "http://localhost", INSTANCE); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        Path transcript = root.resolve(metadata.id() + ".jsonl"); //$NON-NLS-1$
+        Files.writeString(transcript, "{\"schemaVersion\":1,\"recordedAt\":\"" + START
+                + "\",\"type\":\"assistant\",\"text\":\"old answer\",\"toolCalls\":[]}\n", //$NON-NLS-1$
+                StandardCharsets.UTF_8);
+
+        AgentMessage.Assistant restored = (AgentMessage.Assistant) store.resume(metadata.id())
+                .messages().get(0);
+        assertEquals(Optional.of("old answer"), restored.text()); //$NON-NLS-1$
+        assertTrue(restored.reasoning().isEmpty());
     }
 
     @Test public void titleUsesFirstUserTextAndTruncatesAtSixtyUnicodeCodePoints() throws Exception {
