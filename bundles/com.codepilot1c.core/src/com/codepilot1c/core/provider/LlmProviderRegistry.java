@@ -376,25 +376,33 @@ public final class LlmProviderRegistry {
         }
 
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
-        String previousLegacyProviderId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, ""); //$NON-NLS-1$
+        String previousLegacyProviderId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, null);
+        boolean previousLegacyProviderIdPresent = previousLegacyProviderId != null;
         prefs.put(VibePreferenceConstants.PREF_PROVIDER_ID, id);
         try {
             prefs.flush();
         } catch (BackingStoreException e) {
             VibeCorePlugin.logWarn("Failed to persist provider preference", e); //$NON-NLS-1$
-            restoreLegacyProviderPreference(prefs, previousLegacyProviderId);
+            restoreLegacyProviderPreference(
+                    prefs, previousLegacyProviderIdPresent, previousLegacyProviderId);
             return false;
         }
         if (!configStore.setActiveProviderId(id)) {
-            restoreLegacyProviderPreference(prefs, previousLegacyProviderId);
+            restoreLegacyProviderPreference(
+                    prefs, previousLegacyProviderIdPresent, previousLegacyProviderId);
             return false;
         }
         updateConfigurationState();
         return true;
     }
 
-    private void restoreLegacyProviderPreference(IEclipsePreferences preferences, String providerId) {
-        preferences.put(VibePreferenceConstants.PREF_PROVIDER_ID, providerId);
+    private void restoreLegacyProviderPreference(
+            IEclipsePreferences preferences, boolean providerIdPresent, String providerId) {
+        if (providerIdPresent) {
+            preferences.put(VibePreferenceConstants.PREF_PROVIDER_ID, providerId);
+        } else {
+            preferences.remove(VibePreferenceConstants.PREF_PROVIDER_ID);
+        }
         try {
             preferences.flush();
         } catch (BackingStoreException e) {

@@ -25,9 +25,24 @@ public class LlmProviderRegistryPersistenceContractTest {
         String setActive = extractMethod(source, "public boolean setActiveProvider(String id)"); //$NON-NLS-1$
 
         assertEquals(3, countOccurrences(setActive, "if (!configStore.setActiveProviderId(id))")); //$NON-NLS-1$
-        assertTrue(setActive.contains("restoreLegacyProviderPreference(prefs, previousLegacyProviderId);")); //$NON-NLS-1$
+        assertEquals(2, countOccurrences(setActive, "restoreLegacyProviderPreference(")); //$NON-NLS-1$
         assertTrue(setActive.contains("return false;")); //$NON-NLS-1$
         assertTrue(setActive.contains("return true;")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void legacyRollbackPreservesAbsentEmptyAndValuedPreferenceStates() throws Exception {
+        String source = readRepoFile(
+                "bundles/com.codepilot1c.core/src/com/codepilot1c/core/provider/LlmProviderRegistry.java"); //$NON-NLS-1$
+        String setActive = extractMethod(source, "public boolean setActiveProvider(String id)"); //$NON-NLS-1$
+        String restore = extractMethod(source, "private void restoreLegacyProviderPreference("); //$NON-NLS-1$
+
+        assertTrue(setActive.contains("prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, null)")); //$NON-NLS-1$
+        assertTrue(setActive.contains("previousLegacyProviderIdPresent = previousLegacyProviderId != null")); //$NON-NLS-1$
+        assertTrue(restore.contains("if (providerIdPresent)")); //$NON-NLS-1$
+        assertTrue(restore.contains("preferences.put(VibePreferenceConstants.PREF_PROVIDER_ID, providerId);")); //$NON-NLS-1$
+        assertTrue(restore.contains("preferences.remove(VibePreferenceConstants.PREF_PROVIDER_ID);")); //$NON-NLS-1$
+        assertTrue(restore.contains("preferences.flush();")); //$NON-NLS-1$
     }
 
     @Test
