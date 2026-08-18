@@ -163,21 +163,25 @@ final class StrictPropertiesFile {
         int lineStart = 0;
         for (int index = 0; index <= characters.length; index++) {
             if (index != characters.length && characters[index] != '\n') continue;
-            parseLine(characters, lineStart, index, values);
+            int lineEnd = index;
+            if (index < characters.length && lineEnd > lineStart && characters[lineEnd - 1] == '\r') lineEnd--;
+            parseLine(characters, lineStart, lineEnd, values);
             lineStart = index + 1;
         }
         return Map.copyOf(values);
     }
 
     private static void parseLine(char[] input, int start, int end, Map<String, String> values) {
+        for (int index = start; index < end; index++) {
+            if (input[index] == '\r' || input[index] == '\0') {
+                throw error(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", "invalid character"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
         int first = start;
         while (first < end && Character.isWhitespace(input[first])) first++;
         if (first == end || input[first] == '#') return;
         int equals = -1;
         for (int index = start; index < end; index++) {
-            if (input[index] == '\r' || input[index] == '\0') {
-                throw error(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", "invalid character"); //$NON-NLS-1$ //$NON-NLS-2$
-            }
             if (input[index] == '=' && equals < 0) equals = index;
         }
         if (equals <= start) throw error(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", "expected a key=value pair"); //$NON-NLS-1$ //$NON-NLS-2$

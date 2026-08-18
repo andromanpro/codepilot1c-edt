@@ -106,6 +106,25 @@ public class RuntimeConfigurationLoaderTest {
     }
 
     @Test
+    public void acceptsLfAndCrLfButRejectsBareOrEmbeddedCrAndNulAnywhere() throws Exception {
+        try (RuntimeConfiguration lf = RuntimeConfigurationLoader.builder().configFile(config("provider.model=lf-model\n")).load(); //$NON-NLS-1$
+                RuntimeConfiguration crlf = RuntimeConfigurationLoader.builder().configFile(config("provider.model=crlf-model\r\n")).load()) { //$NON-NLS-1$
+            assertEquals("lf-model", lf.providerModel().value()); //$NON-NLS-1$
+            assertEquals("crlf-model", crlf.providerModel().value()); //$NON-NLS-1$
+        }
+        for (String hostile : new String[] {
+                "provider.model=bare-cr\r", //$NON-NLS-1$
+                "provider.model=embedded\r-cr\n", //$NON-NLS-1$
+                "# comment\0\n", //$NON-NLS-1$
+                "  \0\n", //$NON-NLS-1$
+                "provider.model=value\0\n" //$NON-NLS-1$
+        }) {
+            expect(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", //$NON-NLS-1$
+                    () -> RuntimeConfigurationLoader.builder().configFile(config(hostile)).load());
+        }
+    }
+
+    @Test
     public void rejectsOversizedSecretBeforeReadingIt() throws Exception {
         Path secret = Files.createTempFile("runtime-secret-", ".txt"); //$NON-NLS-1$ //$NON-NLS-2$
         Files.writeString(secret, "x".repeat(8 * 1024 + 1), StandardCharsets.UTF_8); //$NON-NLS-1$
