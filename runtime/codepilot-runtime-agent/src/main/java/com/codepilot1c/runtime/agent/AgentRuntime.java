@@ -473,7 +473,9 @@ public final class AgentRuntime implements AutoCloseable {
                         case CANCELLED -> "Provider request was cancelled"; //$NON-NLS-1$
                         default -> "Provider request failed"; //$NON-NLS-1$
                     };
-                    finish(AgentResult.Status.FAILED, null, new AgentError(code, message));
+                    AgentResult.Status status = code == AgentError.Code.CANCELLED
+                            ? AgentResult.Status.CANCELLED : AgentResult.Status.FAILED;
+                    finish(status, null, new AgentError(code, message));
                     return;
                 }
                 switch (modelFailure.kind()) {

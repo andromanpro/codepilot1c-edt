@@ -238,11 +238,12 @@ public class BrokerClientHttpTest {
     }
 
     @Test
-    public void mapsFrozenTypedStreamErrorsWithoutCollapsingThemToTransport() throws Exception {
+    public void mapsFrozenTypedStreamErrorsThroughClientAndRuntimeWithSafeMessages() throws Exception {
         assertTypedStreamError("PROVIDER_AUTH", 401, AgentError.Code.PROVIDER_AUTH); //$NON-NLS-1$
         assertTypedStreamError("PROVIDER_HTTP", 429, AgentError.Code.PROVIDER_HTTP); //$NON-NLS-1$
         assertTypedStreamError("PROVIDER_RESPONSE", -1, AgentError.Code.PROVIDER_RESPONSE); //$NON-NLS-1$
         assertTypedStreamError("PROVIDER_TRANSPORT", -1, AgentError.Code.PROVIDER_TRANSPORT); //$NON-NLS-1$
+        assertTypedStreamError("CANCELLED", -1, AgentError.Code.CANCELLED); //$NON-NLS-1$
     }
 
     @Test
@@ -376,7 +377,8 @@ public class BrokerClientHttpTest {
             AgentResult result = runtime.run(new AgentRequest("typed-error", List.of( //$NON-NLS-1$
                     new AgentMessage.Text(AgentMessage.Role.USER, "hello")))) //$NON-NLS-1$
                     .get(2, TimeUnit.SECONDS);
-            assertEquals(AgentResult.Status.FAILED, result.status());
+            assertEquals(expected == AgentError.Code.CANCELLED
+                    ? AgentResult.Status.CANCELLED : AgentResult.Status.FAILED, result.status());
             assertEquals(expected, result.error().orElseThrow().code());
             assertFalse(result.error().orElseThrow().message().contains("arbitrary-provider-body")); //$NON-NLS-1$
         }

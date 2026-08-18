@@ -187,6 +187,23 @@ public class AgentRuntimeSpiTest {
     }
 
     @Test
+    public void typedProviderCancellationFinishesCancelledWithSafeRuntimeMessage() throws Exception {
+        String providerMessage = "provider-private-cancellation-detail"; //$NON-NLS-1$
+        AgentModel model = (modelRequest, cancellation) -> CompletableFuture.failedFuture(
+                new AgentModelException(AgentError.Code.CANCELLED, providerMessage, -1));
+
+        try (AgentRuntime runtime = runtime(model, emptyTools(),
+                AgentEventListener.NOOP, ToolApprover.ALLOW_ALL)) {
+            AgentResult result = runtime.run(request()).get(2, TimeUnit.SECONDS);
+
+            assertEquals(AgentResult.Status.CANCELLED, result.status());
+            assertEquals(AgentError.Code.CANCELLED, result.error().orElseThrow().code());
+            assertEquals("Provider request was cancelled", result.error().orElseThrow().message()); //$NON-NLS-1$
+            assertFalse(result.error().orElseThrow().message().contains(providerMessage));
+        }
+    }
+
+    @Test
     public void synchronousApprovalExceptionIsTypedAndNeverEscapesRun() throws Exception {
         AtomicInteger executions = new AtomicInteger();
         ToolRuntime tools = tools((name, arguments, cancellation) -> {
