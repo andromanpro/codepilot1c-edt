@@ -140,7 +140,7 @@ public class McpHostServer implements IMcpHostServer {
             boolean written = publisher.publish(boundPort,
                     McpHostInstanceEndpoint.localBaseUrl(config.getBindAddress(), boundPort),
                     metadata.workspace(), edtHome(), metadata.mode(), metadata.pluginVersion(),
-                    config.getAuthMode().name());
+                    config.getAuthMode().name(), config.isLlmEnabled());
             if (written) {
                 instanceRegistryPublisher = publisher;
                 LOG.info("[opId=%s] MCP host instance registry published", opId); //$NON-NLS-1$

@@ -34,6 +34,7 @@ import com.sun.net.httpserver.HttpExchange;
  */
 public final class McpHostLlmBroker {
 
+    public static final String CAPABILITY_ID = "llm.v1"; //$NON-NLS-1$
     public static final int SCHEMA_VERSION = 1;
     public static final Duration KEEPALIVE_INTERVAL = Duration.ofSeconds(15);
 

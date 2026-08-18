@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -18,6 +19,7 @@ import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
 import com.codepilot1c.core.mcp.host.McpReadiness;
 import com.codepilot1c.core.mcp.host.McpToolExposurePolicy;
+import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
 import com.codepilot1c.core.mcp.model.McpPrompt;
 import com.codepilot1c.core.mcp.model.McpPromptResult;
@@ -50,7 +52,11 @@ public class McpHostHttpTransportHealthContractTest {
 
             HttpResponse<String> ready = client.send(get(port, "/health/ready"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
             assertEquals(200, ready.statusCode());
-            assertEquals(Map.of("status", "ready", "ready", Boolean.TRUE), json(ready.body())); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(Map.of(
+                    "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
+                    "capabilities", List.of("llm.v1")), json(ready.body())); //$NON-NLS-1$ //$NON-NLS-2$
 
             readiness.set(McpReadiness.notReady("EDT runtime services are not ready")); //$NON-NLS-1$
             HttpResponse<String> notReady = client.send(get(port, "/health/ready"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
@@ -58,11 +64,42 @@ public class McpHostHttpTransportHealthContractTest {
             assertEquals(Map.of(
                     "status", "not_ready", //$NON-NLS-1$
                     "ready", Boolean.FALSE, //$NON-NLS-1$
-                    "reason", "EDT runtime services are not ready"), json(notReady.body())); //$NON-NLS-1$
+                    "reason", "EDT runtime services are not ready", //$NON-NLS-1$
+                    "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
+                    "capabilities", List.of("llm.v1")), json(notReady.body())); //$NON-NLS-1$ //$NON-NLS-2$
 
             HttpRequest post = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/health/ready")) //$NON-NLS-1$
                     .POST(HttpRequest.BodyPublishers.noBody()).build();
             assertEquals(405, client.send(post, HttpResponse.BodyHandlers.ofString()).statusCode());
+        } finally {
+            transport.stop();
+        }
+    }
+
+    @Test
+    public void omitsLlmCapabilityWhenBrokerPreferenceIsDisabled() throws Exception {
+        McpContractMetadataService metadataService = new McpContractMetadataService(() ->
+            new McpContractMetadata(1, "plugin", "2025.2", "headless", "/workspace", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    McpReadiness.available()));
+        McpHostRequestRouter router = new McpHostRequestRouter(
+                new AllowAllExposurePolicy(), List.of(), new EmptyPromptProvider(),
+                McpHostConfig.MutationPolicy.ALLOW, metadataService);
+        McpHostHttpTransport transport = new McpHostHttpTransport(
+                "127.0.0.1", 0, //$NON-NLS-1$
+                new McpHostOAuthService("127.0.0.1", 0, ""), //$NON-NLS-1$ //$NON-NLS-2$
+                router, McpHostConfig.AuthMode.NONE, Duration.ofMinutes(30),
+                new McpHostLlmBroker(false, () -> null));
+        try {
+            transport.start();
+            HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    get(transport.getBoundPort(), "/health/ready"), //$NON-NLS-1$
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, response.statusCode());
+            assertEquals(Map.of(
+                    "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "llmBrokerStatus", "disabled"), json(response.body())); //$NON-NLS-1$ //$NON-NLS-2$
         } finally {
             transport.stop();
         }

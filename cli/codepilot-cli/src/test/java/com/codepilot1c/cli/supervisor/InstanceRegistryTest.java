@@ -59,6 +59,25 @@ public class InstanceRegistryTest {
         assertEquals(List.of(record), registry.list());
     }
 
+    @Test public void acceptsAdditiveCapabilityArrayAndOlderRecords() throws Exception {
+        MemoryFiles files = new MemoryFiles();
+        InstanceRegistry registry = new InstanceRegistry(files, Path.of("/registry"));
+        String base = """
+                {"schemaVersion":1,"instanceId":"11111111-2222-3333-4444-555555555555",\
+                "pid":42,"port":8765,"baseUrl":"http://127.0.0.1:8765",\
+                "workspace":"/work","edtHome":"/edt","mode":"headless","owner":"cli",\
+                "startedAt":"2026-08-18T07:00:00Z"%s}
+                """;
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"capabilities\":[\"llm.v1\"]"));
+        InstanceRecord capable = registry.find(ID).orElseThrow();
+        assertEquals(1, capable.schemaVersion());
+        assertEquals("cli", capable.owner());
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(""));
+        assertEquals(capable, registry.find(ID).orElseThrow());
+    }
+
     @Test public void rejectsRecordIdentityMismatchAndNonLoopbackEndpoint() throws Exception {
         MemoryFiles files = new MemoryFiles();
         InstanceRegistry registry = new InstanceRegistry(files, Path.of("/registry"));

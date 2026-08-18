@@ -195,7 +195,13 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                 return;
             }
             McpReadiness readiness = router.readiness();
-            writeJson(exchange, readiness.ready() ? 200 : 503, readiness.asHealthResponse());
+            Map<String, Object> response = new LinkedHashMap<>(readiness.asHealthResponse());
+            boolean llmAvailable = llmBroker.isEnabled();
+            response.put("llmBrokerStatus", llmAvailable ? "available" : "disabled"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (llmAvailable) {
+                response.put("capabilities", List.of(McpHostLlmBroker.CAPABILITY_ID)); //$NON-NLS-1$
+            }
+            writeJson(exchange, readiness.ready() ? 200 : 503, response);
         }
     }
 
