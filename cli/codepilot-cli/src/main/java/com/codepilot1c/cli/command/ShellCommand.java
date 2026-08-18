@@ -40,6 +40,7 @@ import com.codepilot1c.runtime.agent.OpenAiCompatibleAgentModel;
 import com.codepilot1c.runtime.mcp.McpClient;
 import com.codepilot1c.runtime.mcp.McpClientConfig;
 import com.codepilot1c.runtime.provider.ProviderConfiguration;
+import com.codepilot1c.runtime.provider.OpenAiCompatibleProvider;
 import com.codepilot1c.runtime.provider.RuntimeProviderFactory;
 
 import picocli.CommandLine.Command;
@@ -108,7 +109,8 @@ public final class ShellCommand implements Callable<Integer> {
                     warning -> terminal.println(redactor.apply(warning)));
             ModeResolver resolver = resolver(redactor);
             try (ShellController controller = new ShellController(terminal, options,
-                    resolver::resolve, store, this::readSystemPrompt, redactor);
+                    resolver::resolve, store, this::readSystemPrompt, redactor,
+                    root.services().host().environment("NO_COLOR") != null);
                     ProcessInterruptRegistration interrupts =
                             ProcessInterruptRegistration.install(controller::interrupt)) {
                 return controller.run();
@@ -208,6 +210,7 @@ public final class ShellCommand implements Callable<Integer> {
             ShellEnvironment environment = new ShellEnvironment("connected",
                     first(info.provider().name(), info.provider().id(), "edt-provider"),
                     first(info.provider().model(), "edt-selected"), endpoint.toASCIIString(),
+                    endpoint.resolve("/llm/v1").toASCIIString(),
                     candidate.instanceId(), new BrokeredAgentModel(broker), tools, () -> {
                         try { ownedBroker.close(); }
                         finally { mcp.close(); }
@@ -238,9 +241,11 @@ public final class ShellCommand implements Callable<Integer> {
         if (mcpToken != null) redactor.add(mcpToken);
         McpFactory mcp = new McpFactory(mcpEndpoint, mcpToken, options.allowInsecureHttp());
         McpShellToolSession tools = null;
+        ProviderConfiguration configuration = null;
+        OpenAiCompatibleProvider providerClient = null;
         boolean success = false;
         try {
-            ProviderConfiguration configuration = ProviderConfiguration.builder()
+            configuration = ProviderConfiguration.builder()
                     .id("cli-openai-compatible")
                     .displayName("CLI OpenAI-compatible provider")
                     .baseUri(providerUri)
@@ -249,11 +254,16 @@ public final class ShellCommand implements Callable<Integer> {
                     .requestTimeout(Duration.ofSeconds(options.turnTimeoutSeconds()))
                     .apiKey(apiKey)
                     .build();
+            providerClient = new RuntimeProviderFactory().create(configuration);
             tools = McpShellToolSession.connect(mcp).toCompletableFuture().get();
+            OpenAiCompatibleProvider ownedProvider = providerClient;
             ShellEnvironment environment = new ShellEnvironment("standalone",
-                    values.provider(), values.model(), providerUri.toASCIIString(),
-                    candidate.instanceId(), new OpenAiCompatibleAgentModel(
-                            new RuntimeProviderFactory().create(configuration)), tools, mcp);
+                    values.provider(), values.model(), mcpEndpoint.toASCIIString(),
+                    providerUri.toASCIIString(),
+                    candidate.instanceId(), new OpenAiCompatibleAgentModel(providerClient), tools, () -> {
+                        try { ownedProvider.close(); }
+                        finally { mcp.close(); }
+                    });
             success = true;
             return environment;
         } finally {
@@ -261,6 +271,8 @@ public final class ShellCommand implements Callable<Integer> {
             if (mcpToken != null) Arrays.fill(mcpToken, '\0');
             if (!success) {
                 if (tools != null) tools.close();
+                if (providerClient != null) providerClient.close();
+                else if (configuration != null) configuration.close();
                 mcp.close();
             }
         }

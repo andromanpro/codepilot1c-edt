@@ -114,7 +114,8 @@ public final class SessionStore {
         Instant now = clock.instant();
         SessionMetadata metadata = new SessionMetadata(SCHEMA_VERSION, id, "", now, now, //$NON-NLS-1$
                 safeContext.mode(), safeContext.provider(), safeContext.model(),
-                safeContext.endpointFingerprint(), 0, 0);
+                safeContext.endpointFingerprint(), safeContext.mcpEndpointFingerprint(),
+                safeContext.providerEndpointFingerprint(), 0, 0);
         files.writeAtomically(metaName(id), encodeMetadata(metadata));
         return metadata;
     }
@@ -198,15 +199,27 @@ public final class SessionStore {
     public static String endpointFingerprint(String endpoint, String instanceId) {
         String normalizedEndpoint = normalizeEndpoint(endpoint);
         String normalizedInstance = normalizeInstanceId(instanceId);
+        return sha256(normalizedEndpoint + '\n' + normalizedInstance);
+    }
+
+    /** SHA-256 of a normalized provider endpoint, independent of MCP instance identity. */
+    public static String providerEndpointFingerprint(String endpoint) {
+        return sha256(normalizeEndpoint(endpoint));
+    }
+
+    private static String sha256(String input) {
+        byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256"); //$NON-NLS-1$
-            byte[] hash = digest.digest((normalizedEndpoint + '\n' + normalizedInstance)
-                    .getBytes(StandardCharsets.UTF_8));
+            byte[] hash = digest.digest(bytes);
             StringBuilder value = new StringBuilder(hash.length * 2);
             for (byte item : hash) value.append(String.format(Locale.ROOT, "%02x", item & 0xff)); //$NON-NLS-1$
+            java.util.Arrays.fill(hash, (byte) 0);
             return value.toString();
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is unavailable", impossible); //$NON-NLS-1$
+        } finally {
+            java.util.Arrays.fill(bytes, (byte) 0);
         }
     }
 
@@ -233,6 +246,8 @@ public final class SessionStore {
                     string(object, "provider"), //$NON-NLS-1$
                     string(object, "model"), //$NON-NLS-1$
                     string(object, "endpointFingerprint"), //$NON-NLS-1$
+                    optionalString(object, "mcpEndpointFingerprint"), //$NON-NLS-1$
+                    optionalString(object, "providerEndpointFingerprint"), //$NON-NLS-1$
                     longInteger(object, "turns"), //$NON-NLS-1$
                     longInteger(object, "messageCount")); //$NON-NLS-1$
         } catch (DateTimeParseException | IllegalArgumentException failure) {
@@ -277,6 +292,7 @@ public final class SessionStore {
         String title = firstUserText == null ? metadata.title() : title(firstUserText);
         return new SessionMetadata(SCHEMA_VERSION, metadata.id(), title, metadata.createdAt(), updatedAt,
                 metadata.mode(), metadata.provider(), metadata.model(), metadata.endpointFingerprint(),
+                metadata.mcpEndpointFingerprint(), metadata.providerEndpointFingerprint(),
                 turns, messages.size());
     }
 
@@ -291,6 +307,12 @@ public final class SessionStore {
         object.addProperty("provider", redact(metadata.provider())); //$NON-NLS-1$
         object.addProperty("model", redact(metadata.model())); //$NON-NLS-1$
         object.addProperty("endpointFingerprint", metadata.endpointFingerprint()); //$NON-NLS-1$
+        if (!metadata.mcpEndpointFingerprint().isEmpty()) {
+            object.addProperty("mcpEndpointFingerprint", metadata.mcpEndpointFingerprint()); //$NON-NLS-1$
+        }
+        if (!metadata.providerEndpointFingerprint().isEmpty()) {
+            object.addProperty("providerEndpointFingerprint", metadata.providerEndpointFingerprint()); //$NON-NLS-1$
+        }
         object.addProperty("turns", metadata.turns()); //$NON-NLS-1$
         object.addProperty("messageCount", metadata.messageCount()); //$NON-NLS-1$
         return object + System.lineSeparator();
@@ -393,7 +415,7 @@ public final class SessionStore {
 
     private SessionContext redact(SessionContext context) {
         return new SessionContext(redact(context.mode()), redact(context.provider()), redact(context.model()),
-                context.endpointFingerprint());
+                context.mcpEndpointFingerprint(), context.providerEndpointFingerprint());
     }
 
     private String redact(String value) {
@@ -470,6 +492,10 @@ public final class SessionStore {
             throw new IOException("invalid session string: " + key); //$NON-NLS-1$
         }
         return value.getAsString();
+    }
+
+    private static String optionalString(JsonObject object, String key) throws IOException {
+        return object.has(key) ? string(object, key) : ""; //$NON-NLS-1$
     }
 
     private static boolean bool(JsonObject object, String key) throws IOException {

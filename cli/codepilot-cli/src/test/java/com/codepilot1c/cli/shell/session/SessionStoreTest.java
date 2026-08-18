@@ -195,14 +195,71 @@ public class SessionStoreTest {
         SessionStore store = store(root, Clock.fixed(START, ZoneOffset.UTC), warning -> { });
         SessionMetadata metadata = store.create("build", "provider-a", "model-a", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 "http://localhost:8080", INSTANCE); //$NON-NLS-1$
-        SessionContext current = SessionContext.fromEndpoint("plan", "provider-b", "model-a", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                "http://localhost:9090", INSTANCE); //$NON-NLS-1$
+        SessionContext current = SessionContext.fromEndpoints("plan", "provider-b", "model-a", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:9090", INSTANCE, "https://provider.example/v2"); //$NON-NLS-1$
 
         SessionMismatch mismatch = store.resume(metadata.id(), current).mismatch();
         assertTrue(mismatch.present());
         assertEquals(List.of(SessionMismatch.Field.MODE, SessionMismatch.Field.PROVIDER,
-                SessionMismatch.Field.ENDPOINT), mismatch.fields());
+                SessionMismatch.Field.MCP_ENDPOINT), mismatch.fields());
         assertFalse(mismatch.toString().contains("localhost")); //$NON-NLS-1$
+    }
+
+    @Test public void providerEndpointChangeDoesNotMasqueradeAsMcpMismatch() throws Exception {
+        Path root = temporary.newFolder("split-provenance").toPath(); //$NON-NLS-1$
+        SessionStore store = store(root, Clock.fixed(START, ZoneOffset.UTC), warning -> { });
+        SessionContext original = SessionContext.fromEndpoints("standalone", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:8765/mcp", INSTANCE, "https://provider.example/v1"); //$NON-NLS-1$ //$NON-NLS-2$
+        SessionMetadata metadata = store.create(original);
+
+        SessionContext providerOnly = SessionContext.fromEndpoints("standalone", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:8765/mcp", INSTANCE, "https://provider.example/v2"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(store.resume(metadata.id(), providerOnly).mismatch().present());
+
+        SessionContext changedMcp = SessionContext.fromEndpoints("standalone", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:9876/mcp", INSTANCE, "https://provider.example/v1"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(List.of(SessionMismatch.Field.MCP_ENDPOINT),
+                store.resume(metadata.id(), changedMcp).mismatch().fields());
+
+        JsonObject persisted = JsonParser.parseString(
+                Files.readString(root.resolve(metadata.id() + ".meta.json"))).getAsJsonObject(); //$NON-NLS-1$
+        assertTrue(persisted.has("mcpEndpointFingerprint")); //$NON-NLS-1$
+        assertTrue(persisted.has("providerEndpointFingerprint")); //$NON-NLS-1$
+        assertFalse(persisted.toString().contains("provider.example")); //$NON-NLS-1$
+        assertFalse(persisted.toString().contains("localhost")); //$NON-NLS-1$
+    }
+
+    @Test public void legacySchemaV1WithoutSplitFieldsResumesWithoutFalseMcpWarning() throws Exception {
+        Path root = temporary.newFolder("legacy-provenance").toPath(); //$NON-NLS-1$
+        SessionStore store = store(root, Clock.fixed(START, ZoneOffset.UTC), warning -> { });
+        SessionMetadata metadata = store.create("standalone", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "https://provider.old/v1", INSTANCE); //$NON-NLS-1$
+        Path meta = root.resolve(metadata.id() + ".meta.json"); //$NON-NLS-1$
+        JsonObject legacy = JsonParser.parseString(Files.readString(meta)).getAsJsonObject();
+        legacy.remove("mcpEndpointFingerprint"); //$NON-NLS-1$
+        legacy.remove("providerEndpointFingerprint"); //$NON-NLS-1$
+        Files.writeString(meta, legacy.toString(), StandardCharsets.UTF_8);
+
+        SessionContext current = SessionContext.fromEndpoints("standalone", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:8765/mcp", INSTANCE, "https://provider.new/v1"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(store.resume(metadata.id(), current).mismatch().present());
+    }
+
+    @Test public void legacyConnectedSchemaRetainsKnownMcpMismatchDetection() throws Exception {
+        Path root = temporary.newFolder("legacy-connected-provenance").toPath(); //$NON-NLS-1$
+        SessionStore store = store(root, Clock.fixed(START, ZoneOffset.UTC), warning -> { });
+        SessionMetadata metadata = store.create("connected", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:8765/mcp", INSTANCE); //$NON-NLS-1$
+        Path meta = root.resolve(metadata.id() + ".meta.json"); //$NON-NLS-1$
+        JsonObject legacy = JsonParser.parseString(Files.readString(meta)).getAsJsonObject();
+        legacy.remove("mcpEndpointFingerprint"); //$NON-NLS-1$
+        legacy.remove("providerEndpointFingerprint"); //$NON-NLS-1$
+        Files.writeString(meta, legacy.toString(), StandardCharsets.UTF_8);
+
+        SessionContext current = SessionContext.fromEndpoints("connected", "provider", "model", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "http://localhost:9876/mcp", INSTANCE, "http://localhost:9876/llm/v1"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(List.of(SessionMismatch.Field.MCP_ENDPOINT),
+                store.resume(metadata.id(), current).mismatch().fields());
     }
 
     @Test public void recoversCountWhenMetadataReplacementFailsAfterAppend() throws Exception {

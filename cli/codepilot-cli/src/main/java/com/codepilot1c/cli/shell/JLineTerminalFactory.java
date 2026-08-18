@@ -6,14 +6,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.terminal.impl.DumbTerminal;
+import org.jline.utils.InfoCmp;
 
 /** Production JLine terminal factory with a JNI-to-plain fallback. */
 public final class JLineTerminalFactory implements TerminalFactory {
@@ -66,6 +69,8 @@ public final class JLineTerminalFactory implements TerminalFactory {
     private static final class JLineShellTerminal implements ShellTerminal {
         private final Terminal terminal;
         private final LineReader reader;
+        private final AtomicBoolean abortRequested = new AtomicBoolean();
+        private volatile boolean readActive;
 
         private JLineShellTerminal(Terminal terminal, LineReader reader) {
             this.terminal = terminal;
@@ -73,11 +78,36 @@ public final class JLineTerminalFactory implements TerminalFactory {
         }
 
         @Override public String readLine(String prompt) {
+            readActive = true;
             try {
+                if (abortRequested.getAndSet(false)) {
+                    throw new TerminalInterruptedException("");
+                }
                 return reader.readLine(prompt);
             } catch (EndOfFileException eof) {
                 return null;
+            } catch (UserInterruptException interrupt) {
+                throw new TerminalInterruptedException(interrupt.getPartialLine());
+            } finally {
+                abortRequested.set(false);
+                readActive = false;
             }
+        }
+
+        @Override public void abortRead() {
+            abortRequested.set(true);
+            while (readActive && !reader.isReading()) Thread.onSpinWait();
+            if (reader.isReading()) terminal.raise(Terminal.Signal.INT);
+        }
+
+        @Override public boolean ansiCapable() {
+            return !dumb() && (terminal.getStringCapability(InfoCmp.Capability.set_a_foreground) != null
+                    || terminal.getStringCapability(InfoCmp.Capability.set_foreground) != null);
+        }
+
+        @Override public boolean dumb() {
+            return terminal instanceof DumbTerminal
+                    || Terminal.TYPE_DUMB.equalsIgnoreCase(terminal.getType());
         }
 
         @Override public void println(String text) {

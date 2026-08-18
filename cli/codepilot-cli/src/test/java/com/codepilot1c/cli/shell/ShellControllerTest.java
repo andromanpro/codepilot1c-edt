@@ -62,6 +62,8 @@ public class ShellControllerTest {
         String output = terminal.output();
         assertTrue(output.contains("/resume <id>"));
         assertTrue(output.contains("mode=connected provider=EDT model=model-a"));
+        assertTrue(output.contains("mcpEndpoint=" + ENDPOINT));
+        assertTrue(output.contains("providerEndpoint=" + ENDPOINT));
         assertTrue(output.contains("1 tool(s):"));
         assertTrue(output.contains("read_file"));
         assertTrue(output.contains("EDT/model-a (read-only; restart shell to change)"));
@@ -147,13 +149,76 @@ public class ShellControllerTest {
         assertEquals(1, occurrences(onceTerminal.output(), "Allow? [y]es/[n]o/[a]ll session:"));
     }
 
-    @Test public void unknownRiskRequiresConfirmationWhileReadOnlyAnnotationDoesNot() throws Exception {
-        assertTrue(DangerousToolFallback.requiresConfirmation(
-                new ToolDefinition("legacy", "", schema())));
+    @Test public void legacyFallbackUsesOnlyFrozenDangerousNamePatterns() throws Exception {
+        for (String ordinary : List.of("legacy", "read_file", "list_projects", "search_symbols",
+                "get_status", "mutation_summary")) {
+            assertFalse(ordinary, DangerousToolFallback.requiresConfirmation(
+                    new ToolDefinition(ordinary, "", schema())));
+        }
+        for (String dangerous : List.of("delete_project", "branch_mutate", "git_mutate",
+                "write_file", "edit_file", "update_project")) {
+            assertTrue(dangerous, DangerousToolFallback.requiresConfirmation(
+                    new ToolDefinition(dangerous, "", schema())));
+        }
         assertFalse(DangerousToolFallback.requiresConfirmation(new ToolDefinition(
                 "read", "", schema(), new ToolAnnotations("Read", false, true, false))));
         assertTrue(DangerousToolFallback.requiresConfirmation(new ToolDefinition(
                 "mutate", "", schema(), new ToolAnnotations("Mutate", false, false, false))));
+    }
+
+    @Test public void approvalBannerRedactsHostileToolNameAndTitle() throws Exception {
+        String secret = "bearer-super-secret";
+        UnaryOperator<String> redactor = value -> value.replace(secret, "<redacted>");
+        ToolDefinition hostile = new ToolDefinition("delete_" + secret, "", schema(),
+                new ToolAnnotations("API key " + secret, true, false, true));
+        ScriptedTerminal terminal = new ScriptedTerminal("inspect", "n", "/exit");
+        ScriptedModel model = new ScriptedModel(
+                new Calls(new ToolCall("call", hostile.name(), "{}")), new Streamed("safe"));
+
+        try (ShellController controller = controller(terminal,
+                store("approval-redaction", redactor), model,
+                new FakeToolSession(hostile), redactor)) {
+            controller.run();
+        }
+
+        assertFalse(terminal.output().contains(secret));
+        assertTrue(terminal.output().contains("Approval required: API key <redacted>"));
+        assertTrue(terminal.output().contains("delete_<redacted>"));
+    }
+
+    @Test public void controllerUsesAnsiOnlyForCapableTtyWithoutNoColor() throws Exception {
+        ScriptedTerminal ansiTerminal = new ScriptedTerminal("hello", "/exit").ansi();
+        ShellEnvironment ansiEnvironment = environment(
+                new ScriptedModel(new Calls(new ToolCall("a", "read_file", "{}")),
+                        new Streamed("answer")), new FakeToolSession(readTool()), "EDT", "model-a");
+        try (ShellController controller = controller(ansiTerminal,
+                store("ansi-controller", UnaryOperator.identity()), ansiEnvironment,
+                UnaryOperator.identity(), false)) {
+            controller.run();
+        }
+        assertTrue(ansiTerminal.output().contains("\u001b["));
+
+        ScriptedTerminal noColorTerminal = new ScriptedTerminal("hello", "/exit").ansi();
+        ShellEnvironment noColorEnvironment = environment(
+                new ScriptedModel(new Calls(new ToolCall("b", "read_file", "{}")),
+                        new Streamed("answer")), new FakeToolSession(readTool()), "EDT", "model-a");
+        try (ShellController controller = controller(noColorTerminal,
+                store("no-color-controller", UnaryOperator.identity()), noColorEnvironment,
+                UnaryOperator.identity(), true)) {
+            controller.run();
+        }
+        assertFalse(noColorTerminal.output().contains("\u001b["));
+
+        ScriptedTerminal redirected = new ScriptedTerminal("hello", "/exit");
+        ShellEnvironment redirectedEnvironment = environment(
+                new ScriptedModel(new Calls(new ToolCall("c", "read_file", "{}")),
+                        new Streamed("answer")), new FakeToolSession(readTool()), "EDT", "model-a");
+        try (ShellController controller = controller(redirected,
+                store("redirected-controller", UnaryOperator.identity()), redirectedEnvironment,
+                UnaryOperator.identity(), false)) {
+            controller.run();
+        }
+        assertFalse(redirected.output().contains("\u001b["));
     }
 
     @Test public void resumeReportsOnlyFingerprintFieldNamesAndStatusRedactsSecrets() throws Exception {
@@ -161,8 +226,9 @@ public class ShellControllerTest {
         char[] secret = "top-secret".toCharArray();
         redactor.add(secret);
         SessionStore store = store("redacted", redactor);
-        SessionMetadata saved = store.create(SessionContext.fromEndpoint(
-                "standalone", "other", "old", "http://localhost:9999/mcp", INSTANCE));
+        SessionMetadata saved = store.create(SessionContext.fromEndpoints(
+                "standalone", "other", "old", "http://localhost:9999/mcp", INSTANCE,
+                "https://provider.old/v1"));
         ScriptedTerminal terminal = new ScriptedTerminal("/resume " + saved.id(), "/status", "/exit");
         ShellEnvironment environment = environment(new ScriptedModel(), new FakeToolSession(),
                 "provider-top-secret", "model-top-secret");
@@ -172,7 +238,8 @@ public class ShellControllerTest {
         }
         assertFalse(terminal.output().contains("top-secret"));
         assertTrue(terminal.output().contains("<redacted>"));
-        assertTrue(terminal.output().contains("fingerprint mismatch: mode, provider, model, endpoint"));
+        assertTrue(terminal.output().contains(
+                "fingerprint mismatch: mode, provider, model, mcp_endpoint"));
         assertFalse(terminal.output().contains("localhost:9999"));
     }
 
@@ -183,8 +250,14 @@ public class ShellControllerTest {
 
     private ShellController controller(ScriptedTerminal terminal, SessionStore store,
             ShellEnvironment environment, UnaryOperator<String> redactor) {
+        return controller(terminal, store, environment, redactor, false);
+    }
+
+    private ShellController controller(ScriptedTerminal terminal, SessionStore store,
+            ShellEnvironment environment, UnaryOperator<String> redactor, boolean noColor) {
         return new ShellController(terminal, options(), ignored -> environment, store, "", redactor,
-                ping -> new IdleKeepalive(Duration.ofDays(1), ping, new PassiveScheduler()));
+                ping -> new IdleKeepalive(Duration.ofDays(1), ping, new PassiveScheduler()),
+                noColor, System::nanoTime);
     }
 
     private ShellEnvironment environment(ScriptedModel model, FakeToolSession tools,
@@ -280,7 +353,9 @@ public class ShellControllerTest {
     private static final class ScriptedTerminal implements ShellTerminal {
         private final Deque<String> input = new ArrayDeque<>();
         private final StringBuilder output = new StringBuilder();
+        private boolean ansi;
         ScriptedTerminal(String... lines) { input.addAll(List.of(lines)); }
+        ScriptedTerminal ansi() { ansi = true; return this; }
         @Override public synchronized String readLine(String prompt) {
             output.append(prompt);
             if (input.isEmpty()) return null;
@@ -288,6 +363,8 @@ public class ShellControllerTest {
         }
         @Override public synchronized void println(String text) { output.append(text).append('\n'); }
         @Override public void flush() { }
+        @Override public boolean ansiCapable() { return ansi; }
+        @Override public boolean dumb() { return !ansi; }
         @Override public void close() { }
         synchronized String output() { return output.toString(); }
     }

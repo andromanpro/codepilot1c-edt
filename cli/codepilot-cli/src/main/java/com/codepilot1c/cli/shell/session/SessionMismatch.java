@@ -6,7 +6,7 @@ import java.util.Objects;
 
 /** Safe resume comparison data: endpoints are represented only by one-way fingerprints. */
 public record SessionMismatch(SessionContext persisted, SessionContext current, List<Field> fields) {
-    public enum Field { MODE, PROVIDER, MODEL, ENDPOINT }
+    public enum Field { MODE, PROVIDER, MODEL, MCP_ENDPOINT }
 
     public SessionMismatch {
         Objects.requireNonNull(persisted, "persisted"); //$NON-NLS-1$
@@ -23,7 +23,11 @@ public record SessionMismatch(SessionContext persisted, SessionContext current, 
         if (!persisted.mode().equals(current.mode())) fields.add(Field.MODE);
         if (!persisted.provider().equals(current.provider())) fields.add(Field.PROVIDER);
         if (!persisted.model().equals(current.model())) fields.add(Field.MODEL);
-        if (!persisted.endpointFingerprint().equals(current.endpointFingerprint())) fields.add(Field.ENDPOINT);
+        if (!persisted.mcpEndpointFingerprint().isEmpty()
+                && !current.mcpEndpointFingerprint().isEmpty()
+                && !persisted.mcpEndpointFingerprint().equals(current.mcpEndpointFingerprint())) {
+            fields.add(Field.MCP_ENDPOINT);
+        }
         return new SessionMismatch(persisted, current, fields);
     }
 }

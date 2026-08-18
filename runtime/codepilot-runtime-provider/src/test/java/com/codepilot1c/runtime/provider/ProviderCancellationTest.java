@@ -62,6 +62,28 @@ public class ProviderCancellationTest {
     }
 
     @Test
+    public void closingProviderCancelsBufferedRequestAndWipesConfiguration() {
+        TrackingHttpClient http = new TrackingHttpClient();
+        char[] secret = "owned-secret".toCharArray(); //$NON-NLS-1$
+        ProviderConfiguration configuration = ProviderConfiguration.builder()
+                .id("test") //$NON-NLS-1$
+                .displayName("Test") //$NON-NLS-1$
+                .baseUri(URI.create("https://provider.example/v1")) //$NON-NLS-1$
+                .defaultModel("model") //$NON-NLS-1$
+                .apiKey(secret)
+                .build();
+        OpenAiCompatibleProvider provider = new RuntimeProviderFactory(http).create(configuration);
+        provider.completeRaw(new JsonObject());
+
+        provider.close();
+        provider.close();
+
+        assertTrue(http.root.isCancelled());
+        assertTrue(!configuration.hasApiKey());
+        java.util.Arrays.fill(secret, '\0');
+    }
+
+    @Test
     public void cancellingStreamBeforeHeadersCancelsRootHttpRequest() {
         StreamingHttpClient http = new StreamingHttpClient();
         OpenAiCompatibleProvider provider = new RuntimeProviderFactory(http).create(configuration());

@@ -12,7 +12,8 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
 
 import com.codepilot1c.cli.ExitCodes;
@@ -37,6 +38,7 @@ import com.codepilot1c.runtime.agent.ToolExecutionResult;
 
 /** Interactive, multi-turn shell state machine. */
 public final class ShellController implements AutoCloseable, SlashCommandDispatcher.Commands {
+    private static final long SECOND_INTERRUPT_WINDOW_NANOS = Duration.ofSeconds(2).toNanos();
     private static final String HELP = "Commands: /help, /exit, /new, /status, /tools, /model, "
             + "/sessions, /resume <id>";
     private static final DateTimeFormatter SESSION_TIME = DateTimeFormatter
@@ -44,6 +46,7 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
             .withZone(ZoneId.systemDefault());
 
     private final ShellTerminal terminal;
+    private final TerminalReader terminalReader;
     private final ShellOptions options;
     private final EnvironmentProvider environments;
     private final SessionStore sessions;
@@ -52,12 +55,13 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
     private final SlashCommandDispatcher slash = new SlashCommandDispatcher();
     private final ConfirmationPrompter prompter;
     private final KeepaliveFactory keepaliveFactory;
+    private final boolean noColor;
+    private final LongSupplier nanoTime;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean exit = new AtomicBoolean();
-    private final AtomicInteger interrupts = new AtomicInteger();
+    private final AtomicLong lastInterruptNanos = new AtomicLong();
     private final List<AgentMessage> history = new ArrayList<>();
     private volatile CancellationSource activeCancellation;
-    private volatile Thread loopThread;
     private ShellEnvironment environment;
     private TurnRunner turns;
     private IdleKeepalive keepalive;
@@ -67,73 +71,95 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
             EnvironmentProvider environments, SessionStore sessions,
             String systemPrompt, UnaryOperator<String> redactor) {
         this(terminal, options, environments, sessions, systemPrompt, redactor,
-                IdleKeepalive::new);
+                IdleKeepalive::new, false, System::nanoTime);
     }
 
     public ShellController(ShellTerminal terminal, ShellOptions options,
             EnvironmentProvider environments, SessionStore sessions, String systemPrompt,
             UnaryOperator<String> redactor, KeepaliveFactory keepaliveFactory) {
-        this.terminal = java.util.Objects.requireNonNull(terminal, "terminal");
-        this.options = java.util.Objects.requireNonNull(options, "options");
-        this.environments = java.util.Objects.requireNonNull(environments, "environments");
-        this.sessions = java.util.Objects.requireNonNull(sessions, "sessions");
-        this.systemPrompt = () -> systemPrompt == null ? "" : systemPrompt;
-        this.redactor = java.util.Objects.requireNonNull(redactor, "redactor");
-        this.keepaliveFactory = java.util.Objects.requireNonNull(keepaliveFactory, "keepaliveFactory");
-        this.prompter = new ConfirmationPrompter(terminal);
+        this(terminal, options, environments, sessions,
+                () -> systemPrompt == null ? "" : systemPrompt, redactor,
+                keepaliveFactory, false, System::nanoTime);
+    }
+
+    ShellController(ShellTerminal terminal, ShellOptions options,
+            EnvironmentProvider environments, SessionStore sessions, String systemPrompt,
+            UnaryOperator<String> redactor, KeepaliveFactory keepaliveFactory,
+            boolean noColor, LongSupplier nanoTime) {
+        this(terminal, options, environments, sessions,
+                () -> systemPrompt == null ? "" : systemPrompt, redactor,
+                keepaliveFactory, noColor, nanoTime);
     }
 
     public ShellController(ShellTerminal terminal, ShellOptions options,
             EnvironmentProvider environments, SessionStore sessions,
-            SystemPromptProvider systemPrompt, UnaryOperator<String> redactor) {
+            SystemPromptProvider systemPrompt, UnaryOperator<String> redactor,
+            boolean noColor) {
+        this(terminal, options, environments, sessions, systemPrompt, redactor,
+                IdleKeepalive::new, noColor, System::nanoTime);
+    }
+
+    private ShellController(ShellTerminal terminal, ShellOptions options,
+            EnvironmentProvider environments, SessionStore sessions,
+            SystemPromptProvider systemPrompt, UnaryOperator<String> redactor,
+            KeepaliveFactory keepaliveFactory, boolean noColor, LongSupplier nanoTime) {
         this.terminal = java.util.Objects.requireNonNull(terminal, "terminal");
+        this.terminalReader = new TerminalReader(terminal);
         this.options = java.util.Objects.requireNonNull(options, "options");
         this.environments = java.util.Objects.requireNonNull(environments, "environments");
         this.sessions = java.util.Objects.requireNonNull(sessions, "sessions");
         this.systemPrompt = java.util.Objects.requireNonNull(systemPrompt, "systemPrompt");
         this.redactor = java.util.Objects.requireNonNull(redactor, "redactor");
-        this.keepaliveFactory = IdleKeepalive::new;
-        this.prompter = new ConfirmationPrompter(terminal);
+        this.keepaliveFactory = java.util.Objects.requireNonNull(keepaliveFactory, "keepaliveFactory");
+        this.noColor = noColor;
+        this.nanoTime = java.util.Objects.requireNonNull(nanoTime, "nanoTime");
+        this.prompter = new ConfirmationPrompter(terminal, terminalReader, redactor);
+    }
+
+    public ShellController(ShellTerminal terminal, ShellOptions options,
+            EnvironmentProvider environments, SessionStore sessions,
+            SystemPromptProvider systemPrompt, UnaryOperator<String> redactor) {
+        this(terminal, options, environments, sessions, systemPrompt, redactor,
+                IdleKeepalive::new, false, System::nanoTime);
     }
 
     public int run() {
-        loopThread = Thread.currentThread();
         terminal.println("CodePilot shell (foundation)");
         terminal.println("Type /help for commands or /exit to leave.");
         terminal.flush();
-        try {
-            while (!exit.get()) {
-                String input;
-                try { input = terminal.readLine("codepilot> "); }
-                catch (RuntimeException failure) {
-                    if (exit.get()) break;
-                    throw failure;
-                }
-                if (input == null) break;
-                interrupts.set(0);
-                if (input.isBlank()) continue;
-                try {
-                    if (!slash.dispatch(input, this)) runTurn(input);
-                } catch (SlashCommandDispatcher.CommandUsageException failure) {
-                    error(failure.getMessage());
-                } catch (ModeResolutionException failure) {
-                    error(failure.getMessage());
-                } catch (IllegalArgumentException failure) {
-                    error("Invalid command argument.");
-                } catch (IOException failure) {
-                    error("Session storage is unavailable.");
-                } catch (CancellationException failure) {
-                    terminal.println("Turn cancelled.");
-                } catch (Exception failure) {
-                    error("Shell operation failed; use /status and retry.");
-                }
-                terminal.flush();
-                if (keepalive != null) keepalive.activity();
+        while (!exit.get()) {
+            String input;
+            try { input = terminalReader.readLine("codepilot> "); }
+            catch (TerminalInterruptedException interrupt) {
+                if (handlePromptInterrupt(interrupt.partialLine())) break;
+                continue;
             }
-            return ExitCodes.OK;
-        } finally {
-            loopThread = null;
+            catch (RuntimeException failure) {
+                if (exit.get()) break;
+                throw failure;
+            }
+            if (input == null) break;
+            lastInterruptNanos.set(0);
+            if (input.isBlank()) continue;
+            try {
+                if (!slash.dispatch(input, this)) runTurn(input);
+            } catch (SlashCommandDispatcher.CommandUsageException failure) {
+                error(failure.getMessage());
+            } catch (ModeResolutionException failure) {
+                error(failure.getMessage());
+            } catch (IllegalArgumentException failure) {
+                error("Invalid command argument.");
+            } catch (IOException failure) {
+                error("Session storage is unavailable.");
+            } catch (CancellationException failure) {
+                terminal.println("Turn cancelled.");
+            } catch (Exception failure) {
+                error("Shell operation failed; use /status and retry.");
+            }
+            terminal.flush();
+            if (keepalive != null) keepalive.activity();
         }
+        return ExitCodes.OK;
     }
 
     private void runTurn(String input) throws Exception {
@@ -160,25 +186,26 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
             if (result.status() != AgentResult.Status.COMPLETED) presentFailure(result);
         } finally {
             renderer.finish();
+            terminalReader.awaitIdle();
             activeCancellation = null;
             if (keepalive != null) keepalive.busy(false);
         }
     }
 
-    /** First interrupt cancels work; a consecutive second interrupt exits and unblocks input. */
+    /** Cancels active work; a consecutive second interrupt exits within two seconds. */
     public void interrupt() {
-        int count = interrupts.incrementAndGet();
         CancellationSource cancellation = activeCancellation;
-        if (count == 1 && cancellation != null) {
+        if (cancellation != null) {
+            long now = nanoTime.getAsLong();
+            boolean second = consecutiveInterrupt(now);
+            lastInterruptNanos.set(now);
+            if (second) exit.set(true);
             cancellation.cancel();
             if (turns != null) turns.cancelActive();
+            terminalReader.abortAndAwait();
             return;
         }
-        exit.set(true);
-        if (cancellation != null) cancellation.cancel();
-        if (turns != null) turns.cancelActive();
-        Thread thread = loopThread;
-        if (thread != null) thread.interrupt();
+        terminalReader.abortAndAwait();
     }
 
     @Override public void help() { terminal.println(HELP); }
@@ -195,7 +222,8 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
         terminal.println(safe("mode=" + environment.mode()
                 + " provider=" + environment.provider()
                 + " model=" + environment.model()
-                + " endpoint=" + environment.endpoint()
+                + " mcpEndpoint=" + environment.mcpEndpoint()
+                + " providerEndpoint=" + environment.providerEndpoint()
                 + " session=" + session.id()
                 + " turns=" + session.turns()));
     }
@@ -255,6 +283,7 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
         CancellationSource cancellation = activeCancellation;
         if (cancellation != null) cancellation.cancel();
         if (keepalive != null) keepalive.close();
+        terminalReader.abortAndAwait();
         if (turns != null) turns.close();
         else if (environment != null) environment.close();
     }
@@ -279,8 +308,9 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
     }
 
     private SessionContext context() {
-        return SessionContext.fromEndpoint(environment.mode(), environment.provider(),
-                environment.model(), environment.endpoint(), environment.instanceId());
+        return SessionContext.fromEndpoints(environment.mode(), environment.provider(),
+                environment.model(), environment.mcpEndpoint(), environment.instanceId(),
+                environment.providerEndpoint());
     }
 
     private void ensureEnvironment() throws Exception {
@@ -292,7 +322,27 @@ public final class ShellController implements AutoCloseable, SlashCommandDispatc
     }
 
     private TerminalRenderer renderer() {
-        return new TerminalRenderer(new TerminalAppendable(terminal), RenderConfig.plain(redactor));
+        return new TerminalRenderer(new TerminalAppendable(terminal), RenderConfig.forCapabilities(
+                terminal.ansiCapable(), noColor, terminal.dumb(), redactor));
+    }
+
+    private boolean handlePromptInterrupt(String partialLine) {
+        long now = nanoTime.getAsLong();
+        boolean second = consecutiveInterrupt(now);
+        lastInterruptNanos.set(now);
+        if (second || partialLine == null || partialLine.isEmpty()) {
+            exit.set(true);
+            return true;
+        }
+        terminal.println("^C");
+        terminal.flush();
+        return false;
+    }
+
+    private boolean consecutiveInterrupt(long now) {
+        long previous = lastInterruptNanos.get();
+        return previous != 0 && now >= previous
+                && now - previous <= SECOND_INTERRUPT_WINDOW_NANOS;
     }
 
     private void presentFailure(AgentResult result) {

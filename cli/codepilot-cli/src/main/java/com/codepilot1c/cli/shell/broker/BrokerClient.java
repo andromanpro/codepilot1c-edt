@@ -387,6 +387,7 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
             } catch (RuntimeException failure) {
                 fail(malformed("EDT broker stream does not match schema v1"));
             } finally {
+                Arrays.fill(buffer, '\0');
                 responseBody.compareAndSet(body, null);
                 close(body);
             }

@@ -17,7 +17,10 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.gson.JsonElement;
@@ -30,10 +33,12 @@ import com.google.gson.JsonObject;
  * bearer credentials, custom headers, or request content. Network failures
  * are propagated through the returned future.</p>
  */
-public final class OpenAiCompatibleProvider {
+public final class OpenAiCompatibleProvider implements AutoCloseable {
 
     private final ProviderConfiguration configuration;
     private final HttpClient httpClient;
+    private final Set<CompletableFuture<?>> operations = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     OpenAiCompatibleProvider(ProviderConfiguration configuration, HttpClient httpClient) {
         this.configuration = Objects.requireNonNull(configuration, "configuration"); //$NON-NLS-1$
@@ -96,6 +101,7 @@ public final class OpenAiCompatibleProvider {
     public CompletableFuture<Void> stream(JsonObject requestBody, ProviderStreamListener listener) {
         Objects.requireNonNull(requestBody, "requestBody"); //$NON-NLS-1$
         Objects.requireNonNull(listener, "listener"); //$NON-NLS-1$
+        ensureOpen();
         JsonObject streamingRequest = requestBody.deepCopy();
         streamingRequest.addProperty("stream", true); //$NON-NLS-1$
         JsonElement configuredOptions = streamingRequest.get("stream_options"); //$NON-NLS-1$
@@ -106,6 +112,7 @@ public final class OpenAiCompatibleProvider {
         streamingRequest.add("stream_options", streamOptions); //$NON-NLS-1$
 
         StreamOperation operation = new StreamOperation(listener);
+        track(operation.result());
         operation.start(streamingRequest.toString());
         return operation.result();
     }
@@ -123,6 +130,7 @@ public final class OpenAiCompatibleProvider {
     }
 
     private CompletableFuture<ChatCompletionResponse> send(String requestBody) {
+        ensureOpen();
         CompletableFuture<HttpResponse<String>> request = httpClient.sendAsync(
                 request(requestBody, false), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         CompletableFuture<ChatCompletionResponse> response = new CompletableFuture<>();
@@ -133,10 +141,12 @@ public final class OpenAiCompatibleProvider {
         response.whenComplete((ignored, failure) -> {
             if (response.isCancelled()) request.cancel(true);
         });
+        track(response);
         return response;
     }
 
     private HttpRequest request(String requestBody, boolean streaming) {
+        ensureOpen();
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(configuration.chatCompletionsEndpoint())
                 .timeout(configuration.requestTimeout())
@@ -161,6 +171,25 @@ public final class OpenAiCompatibleProvider {
         } finally {
             java.util.Arrays.fill(apiKey, '\0');
         }
+    }
+
+    /** Cancels active operations and erases the owned configuration key. */
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        operations.forEach(operation -> operation.cancel(true));
+        operations.clear();
+        configuration.close();
+    }
+
+    private void track(CompletableFuture<?> operation) {
+        operations.add(operation);
+        operation.whenComplete((value, failure) -> operations.remove(operation));
+        if (closed.get() && operations.remove(operation)) operation.cancel(true);
+    }
+
+    private void ensureOpen() {
+        if (closed.get()) throw new IllegalStateException("provider is closed"); //$NON-NLS-1$
     }
 
     private String serialize(ChatCompletionRequest request) {
@@ -317,6 +346,7 @@ public final class OpenAiCompatibleProvider {
                 fail(new ProviderStreamException(ProviderStreamException.Kind.LISTENER,
                         "Provider stream listener failed")); //$NON-NLS-1$
             } finally {
+                java.util.Arrays.fill(buffer, '\0');
                 responseBody.compareAndSet(body, null);
                 close(body);
             }

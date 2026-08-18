@@ -6,6 +6,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.time.Duration;
+import java.net.URI;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -30,6 +31,8 @@ import com.codepilot1c.runtime.agent.ToolApprover;
 import com.codepilot1c.runtime.agent.ToolDefinition;
 import com.codepilot1c.runtime.agent.ToolExecutionResult;
 import com.codepilot1c.runtime.agent.ToolRuntime;
+import com.codepilot1c.runtime.provider.ProviderConfiguration;
+import com.codepilot1c.runtime.provider.RuntimeProviderFactory;
 import com.google.gson.JsonObject;
 
 public class TurnRunnerLifecycleTest {
@@ -134,6 +137,24 @@ public class TurnRunnerLifecycleTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test public void shellEnvironmentClosesStandaloneProviderAndWipesItsConfiguration() {
+        char[] key = "shell-owned-key".toCharArray();
+        ProviderConfiguration configuration = ProviderConfiguration.builder()
+                .id("standalone").displayName("Standalone")
+                .baseUri(URI.create("https://provider.example/v1")).defaultModel("model")
+                .apiKey(key).build();
+        var provider = new RuntimeProviderFactory().create(configuration);
+        ShellEnvironment environment = new ShellEnvironment("standalone", "provider", "model",
+                "http://localhost/mcp", "https://provider.example/v1", "instance",
+                new ImmediateModel(), new FakeSession(false, null), provider);
+
+        environment.close();
+        environment.close();
+
+        assertFalse(configuration.hasApiKey());
+        java.util.Arrays.fill(key, '\0');
     }
 
     private static AgentMessage.Text user() {

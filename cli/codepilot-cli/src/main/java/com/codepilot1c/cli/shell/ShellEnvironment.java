@@ -11,7 +11,8 @@ public final class ShellEnvironment implements AutoCloseable {
     private final String mode;
     private final String provider;
     private final String model;
-    private final String endpoint;
+    private final String mcpEndpoint;
+    private final String providerEndpoint;
     private final String instanceId;
     private final AgentModel agentModel;
     private final ShellToolSession tools;
@@ -21,10 +22,17 @@ public final class ShellEnvironment implements AutoCloseable {
     public ShellEnvironment(String mode, String provider, String model, String endpoint,
             String instanceId, AgentModel agentModel, ShellToolSession tools,
             AutoCloseable modelResource) {
+        this(mode, provider, model, endpoint, endpoint, instanceId, agentModel, tools, modelResource);
+    }
+
+    public ShellEnvironment(String mode, String provider, String model, String mcpEndpoint,
+            String providerEndpoint, String instanceId, AgentModel agentModel,
+            ShellToolSession tools, AutoCloseable modelResource) {
         this.mode = require(mode, "mode");
         this.provider = require(provider, "provider");
         this.model = require(model, "model");
-        this.endpoint = require(endpoint, "endpoint");
+        this.mcpEndpoint = require(mcpEndpoint, "mcpEndpoint");
+        this.providerEndpoint = require(providerEndpoint, "providerEndpoint");
         this.instanceId = instanceId == null || instanceId.isBlank() ? "unregistered" : instanceId;
         this.agentModel = Objects.requireNonNull(agentModel, "agentModel");
         this.tools = Objects.requireNonNull(tools, "tools");
@@ -34,7 +42,10 @@ public final class ShellEnvironment implements AutoCloseable {
     public String mode() { return mode; }
     public String provider() { return provider; }
     public String model() { return model; }
-    public String endpoint() { return endpoint; }
+    /** Compatibility alias: the shell endpoint is always the MCP endpoint. */
+    public String endpoint() { return mcpEndpoint; }
+    public String mcpEndpoint() { return mcpEndpoint; }
+    public String providerEndpoint() { return providerEndpoint; }
     public String instanceId() { return instanceId; }
     public AgentModel agentModel() { return agentModel; }
     public ShellToolSession tools() { return tools; }
