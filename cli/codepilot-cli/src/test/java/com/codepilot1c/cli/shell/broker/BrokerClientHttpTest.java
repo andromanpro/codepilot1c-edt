@@ -81,6 +81,23 @@ public class BrokerClientHttpTest {
     }
 
     @Test
+    public void capabilityProbePreservesCompatibility404WithoutLeakingBody() throws Exception {
+        String bodySecret = "old-plugin-response-secret";
+        try (Fixture fixture = new Fixture(exchange -> json(exchange, 404, bodySecret),
+                exchange -> json(exchange, 500, "{}"));
+             BrokerClient client = fixture.client(TOKEN)) {
+            Throwable failure = failure(client.probe().toCompletableFuture());
+
+            assertTrue(failure instanceof AgentModelException);
+            AgentModelException typed = (AgentModelException) failure;
+            assertEquals(AgentModelException.Kind.HTTP, typed.kind());
+            assertEquals(404, typed.httpStatus());
+            assertFalse(deepMessage(typed).contains(bodySecret));
+            assertFalse(deepMessage(typed).contains(TOKEN));
+        }
+    }
+
+    @Test
     public void convertsEveryEventAndFragmentedFramesIntoObserverAndAssistant() throws Exception {
         AtomicReference<JsonObject> requestJson = new AtomicReference<>();
         String stream = ": keepalive\r\n\r\n"

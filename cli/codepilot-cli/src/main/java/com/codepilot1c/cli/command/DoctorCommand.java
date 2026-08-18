@@ -21,6 +21,7 @@ import com.codepilot1c.cli.shell.broker.BrokerInfo;
 import com.codepilot1c.cli.supervisor.DefaultSupervisorFileSystem;
 import com.codepilot1c.cli.supervisor.InstanceRecord;
 import com.codepilot1c.cli.supervisor.InstanceRegistry;
+import com.codepilot1c.cli.supervisor.InstanceRegistry.BrokerAdvertisement;
 import com.codepilot1c.runtime.agent.AgentModelException;
 
 import picocli.CommandLine.Command;
@@ -89,15 +90,16 @@ final class DoctorCommand implements Callable<Integer> {
             return new Check("broker", false, "broker_invalid_endpoint",
                     "Cannot probe the EDT LLM broker until the MCP endpoint is valid");
         }
-        if (!advertisesBroker(endpoint)) {
+        if (brokerAdvertisement(endpoint) == BrokerAdvertisement.NOT_ADVERTISED) {
             return new Check("broker", true, "broker_not_advertised",
-                    "llm.v1 is not advertised; older and broker-disabled plugins remain supported");
+                    "The matching EDT record explicitly reports no llm.v1 broker; this remains supported");
         }
 
         char[] token = brokerToken();
         try (BrokerClient broker = new BrokerClient(
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build(),
-                endpoint, token, false, Duration.ofSeconds(2))) {
+                endpoint, token, false, BrokerClient.DEFAULT_PROBE_TIMEOUT,
+                BrokerClient.DEFAULT_REQUEST_TIMEOUT)) {
             BrokerInfo info = broker.probe().toCompletableFuture().get();
             if (!info.chat() || !info.streaming() || !info.provider().streamingEnabled()) {
                 return new Check("broker", false, "broker_not_ready",
@@ -117,14 +119,24 @@ final class DoctorCommand implements Callable<Integer> {
         }
     }
 
-    private boolean advertisesBroker(URI endpoint) {
+    private BrokerAdvertisement brokerAdvertisement(URI endpoint) {
         Path directory = Path.of(root.services().host().userHome(), ".codepilot1c", "instances");
         InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(), directory);
         try {
-            return registry.list().stream().anyMatch(record -> sameOrigin(endpoint, record)
-                    && record.capabilities().contains("llm.v1"));
+            List<InstanceRegistry.Entry> matching = registry.listEntries().stream()
+                    .filter(entry -> sameOrigin(endpoint, entry.record()))
+                    .toList();
+            if (matching.stream().anyMatch(entry ->
+                    entry.brokerAdvertisement() == BrokerAdvertisement.ADVERTISED)) {
+                return BrokerAdvertisement.ADVERTISED;
+            }
+            if (!matching.isEmpty() && matching.stream().allMatch(entry ->
+                    entry.brokerAdvertisement() == BrokerAdvertisement.NOT_ADVERTISED)) {
+                return BrokerAdvertisement.NOT_ADVERTISED;
+            }
+            return BrokerAdvertisement.UNSPECIFIED;
         } catch (Exception ignored) {
-            return false;
+            return BrokerAdvertisement.UNSPECIFIED;
         }
     }
 
@@ -171,6 +183,10 @@ final class DoctorCommand implements Callable<Integer> {
                 return switch (modelFailure.httpStatus()) {
                     case 401, 403 -> new Check("broker", false, "broker_authentication_failed",
                             "EDT LLM broker rejected authentication; verify the MCP bearer token");
+                    case 404 -> new Check("broker", true, "broker_not_advertised",
+                            "The configured endpoint does not expose llm.v1; older plugins remain supported");
+                    case 409 -> new Check("broker", false, "broker_busy",
+                            "EDT LLM broker is busy with another request; retry when it is idle");
                     case 503 -> new Check("broker", false, "provider_unavailable",
                             "No active LLM provider is available; configure and select a provider in EDT");
                     default -> new Check("broker", false, "broker_http_error",
@@ -183,7 +199,7 @@ final class DoctorCommand implements Callable<Integer> {
             }
         }
         return new Check("broker", false, "broker_unreachable",
-                "EDT advertises llm.v1 but its broker is unreachable; verify EDT and MCP connectivity");
+                "The configured EDT LLM broker is unreachable; verify EDT and MCP connectivity");
     }
 
     private static String safeProbeDetail(ProbeResult probe) {

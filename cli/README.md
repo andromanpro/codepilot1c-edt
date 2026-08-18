@@ -57,13 +57,14 @@ paths. `edt start --edt-home` validates exactly the supplied Eclipse home;
 otherwise the first deterministically sorted discovered installation is used.
 
 `doctor` reports independent `java`, `edt`, `config`, `endpoint`, and `broker`
-checks in text or deterministic JSON. The broker check is additive: when the
-matching schema-v1 instance record does not advertise `llm.v1`, the check
-passes as `broker_not_advertised` for compatibility with old or broker-disabled
-plugins. When advertised, the CLI makes a bounded authenticated capability
-probe and reports unreachable, authentication, protocol, streaming-readiness,
-and no-active-provider failures without printing response bodies or provider
-configuration.
+checks in text or deterministic JSON. The broker check is additive and makes a
+bounded authenticated capability probe when `llm.v1` is advertised, when a
+legacy record has no broker metadata, and when no matching readable record is
+available. Only explicit negative broker metadata suppresses the probe. A 404
+probe response passes as `broker_not_advertised` for compatibility with old or
+broker-disabled plugins. Other results report unreachable, authentication,
+busy, protocol, streaming-readiness, and no-active-provider failures without
+printing endpoints, response bodies, tokens, or provider configuration.
 
 ## Interactive shell
 

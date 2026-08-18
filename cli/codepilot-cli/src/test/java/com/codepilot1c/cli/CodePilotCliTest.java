@@ -29,6 +29,12 @@ import com.codepilot1c.cli.supervisor.InstanceRecord;
 import com.codepilot1c.cli.supervisor.InstanceRegistry;
 
 public class CodePilotCliTest {
+    private static final String BROKER_CAPABILITIES = """
+            {"schemaVersion":1,"maxSchemaVersion":1,"chat":true,"streaming":true,
+             "provider":{"id":"active","name":"Active Provider","type":"openai_compatible",
+                         "model":"safe-model","streamingEnabled":true}}
+            """;
+
     @Test public void exitCodeContractIsStable() {
         assertEquals(0, ExitCodes.OK);
         assertEquals(1, ExitCodes.FAILURE);
@@ -68,21 +74,27 @@ public class CodePilotCliTest {
         assertTrue(fixture.out().contains("installations"));
     }
 
-    @Test public void doctorEmitsAdditiveIndependentChecks() {
-        Fixture fixture = new Fixture();
-        fixture.host.properties.put("edt.home", "/opt/edt");
-        fixture.host.directory("/opt/edt");
-        fixture.host.file("/opt/edt/1cedt");
-        fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+    @Test public void doctorWithoutRegistryRecordProbesAndKeepsAdditiveJsonContract() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 404, "old-plugin-body-secret");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
 
-        assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
-        assertTrue(fixture.out().contains("\"status\":\"ok\""));
-        assertTrue(fixture.out().contains("\"name\":\"java\""));
-        assertTrue(fixture.out().contains("\"name\":\"edt\""));
-        assertTrue(fixture.out().contains("\"name\":\"config\""));
-        assertTrue(fixture.out().contains("\"name\":\"endpoint\""));
-        assertTrue(fixture.out().contains("\"name\":\"broker\""));
-        assertTrue(fixture.out().contains("\"code\":\"broker_not_advertised\""));
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
+            assertTrue(fixture.out().contains("\"status\":\"ok\""));
+            assertTrue(fixture.out().contains("\"name\":\"java\""));
+            assertTrue(fixture.out().contains("\"name\":\"edt\""));
+            assertTrue(fixture.out().contains("\"name\":\"config\""));
+            assertTrue(fixture.out().contains("\"name\":\"endpoint\""));
+            assertTrue(fixture.out().contains("\"name\":\"broker\""));
+            assertTrue(fixture.out().contains("\"code\":\"broker_not_advertised\""));
+            assertTrue(!fixture.out().contains("old-plugin-body-secret"));
+            assertEquals(1, requests.get());
+        }
     }
 
     @Test public void doctorReturnsUnavailableWhenPrerequisitesFail() {
@@ -119,19 +131,85 @@ public class CodePilotCliTest {
         assertTrue(!fixture.out().contains("secret-value"));
     }
 
-    @Test public void doctorSupportsOldRegistryRecordsWithoutProbingBroker() throws Exception {
+    @Test public void doctorProbesOldRecordAndReportsReachableBrokerInTextAndJson() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         try (LocalServer server = new LocalServer(exchange -> {
             requests.incrementAndGet();
-            send(exchange, 500, "should-not-be-called");
+            send(exchange, 200, BROKER_CAPABILITIES);
         }); Fixture fixture = new Fixture()) {
             fixture.healthyEdt();
             fixture.register(server.port(), List.of());
             fixture.host.properties.put("codepilot.endpoint", server.endpoint());
             fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
 
-            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
-            assertTrue(fixture.out().contains("\"code\":\"broker_not_advertised\""));
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_ready");
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorTreatsOldRecord404AsSupportedInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        String bodySecret = "disabled-broker-body-secret";
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 404, bodySecret);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of());
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_not_advertised");
+            assertTrue(!fixture.out().contains(bodySecret));
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorProbesMissingBrokerMetadataAndReportsUnreachableInTextAndJson()
+            throws Exception {
+        int port;
+        try (LocalServer server = new LocalServer(exchange -> send(exchange, 200, BROKER_CAPABILITIES))) {
+            port = server.port();
+        }
+        try (Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(port, List.of());
+            fixture.host.properties.put("codepilot.endpoint", "http://127.0.0.1:" + port);
+            fixture.probe = endpoint -> new ProbeResult(false, 0, "ConnectException");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.EDT_UNAVAILABLE, "fail", "broker_unreachable");
+            assertTrue(!fixture.out().contains(Integer.toString(port)));
+        }
+    }
+
+    @Test public void doctorProbesAdvertisedScalarAndReportsSuccessInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_ready");
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test public void doctorSkipsProbeForExplicitDisabledScalarInTextAndJson() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 500, "must-not-be-read");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.registerBrokerVersion(server.port(), 0);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertDoctorTextAndJson(fixture, ExitCodes.OK, "pass", "broker_not_advertised");
             assertEquals(0, requests.get());
         }
     }
@@ -162,23 +240,6 @@ public class CodePilotCliTest {
         }
     }
 
-    @Test public void doctorReportsAdvertisedButUnreachableBrokerActionably() throws Exception {
-        int port;
-        try (LocalServer server = new LocalServer(exchange -> send(exchange, 200, "{}"))) {
-            port = server.port();
-        }
-        try (Fixture fixture = new Fixture()) {
-            fixture.healthyEdt();
-            fixture.register(port, List.of("llm.v1"));
-            fixture.host.properties.put("codepilot.endpoint", "http://127.0.0.1:" + port);
-            fixture.probe = endpoint -> new ProbeResult(false, 0, "ConnectException");
-
-            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("doctor"));
-            assertTrue(fixture.out().contains("broker FAIL broker_unreachable"));
-            assertTrue(fixture.out().contains("verify EDT and MCP connectivity"));
-        }
-    }
-
     @Test public void statusDisplaysLlmCapabilityOnlyWhenAdvertised() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.register(8765, List.of("llm.v1"));
@@ -201,6 +262,18 @@ public class CodePilotCliTest {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(status, bytes.length);
         try (var output = exchange.getResponseBody()) { output.write(bytes); }
+    }
+
+    private static void assertDoctorTextAndJson(Fixture fixture, int exitCode,
+            String jsonStatus, String code) {
+        assertEquals(exitCode, fixture.execute("doctor"));
+        assertTrue(fixture.out().contains("broker " + ("pass".equals(jsonStatus) ? "PASS" : "FAIL")
+                + " " + code));
+
+        fixture.reset();
+        assertEquals(exitCode, fixture.execute("--output", "json", "doctor"));
+        assertTrue(fixture.out().contains("\"name\":\"broker\",\"status\":\"" + jsonStatus
+                + "\",\"code\":\"" + code + "\""));
     }
 
     @FunctionalInterface private interface Handler { void handle(HttpExchange exchange) throws IOException; }
@@ -253,6 +326,15 @@ public class CodePilotCliTest {
                     Math.max(1, ProcessHandle.current().pid()), port, "http://127.0.0.1:" + port,
                     "/workspace", "/edt", "gui", "external", Instant.now(), "9.8.7", "bearer",
                     null, capabilities));
+        }
+
+        void registerBrokerVersion(int port, int version) throws IOException {
+            register(port, List.of());
+            Path record = temporaryHome.resolve(".codepilot1c").resolve("instances")
+                    .resolve(registeredId + ".json");
+            String json = Files.readString(record, StandardCharsets.UTF_8).stripTrailing();
+            Files.writeString(record, json.substring(0, json.length() - 1)
+                    + ",\"llmBrokerVersion\":" + version + "}\n", StandardCharsets.UTF_8);
         }
 
         @Override public void close() throws IOException {

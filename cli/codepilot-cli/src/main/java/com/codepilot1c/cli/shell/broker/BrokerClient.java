@@ -263,6 +263,13 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
         throw http(status, "EDT broker returned an HTTP error");
     }
 
+    private void requireSuccessfulProbe(int status) {
+        if (status == 404) {
+            throw http(status, "EDT broker capability endpoint is not available");
+        }
+        requireSuccessful(status);
+    }
+
     private static void validateMcpEndpoint(URI endpoint, boolean allowInsecureHttp) {
         try (McpClientConfig ignored = McpClientConfig.builder(endpoint)
                 .allowInsecureHttp(allowInsecureHttp).build()) {
@@ -346,7 +353,7 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
                     return;
                 }
                 try {
-                    requireSuccessful(response.statusCode());
+                    requireSuccessfulProbe(response.statusCode());
                     result.complete(parseInfo(response.body()));
                 } catch (RuntimeException protocolFailure) {
                     result.completeExceptionally(protocolFailure);
