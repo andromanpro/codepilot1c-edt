@@ -22,6 +22,7 @@ import com.sun.net.httpserver.HttpServer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.IMcpHostTransport;
 import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
+import com.codepilot1c.core.mcp.host.McpReadiness;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
 import com.codepilot1c.core.mcp.model.McpError;
 import com.codepilot1c.core.mcp.model.McpMessage;
@@ -66,6 +67,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
             server.createContext("/mcp", new McpHandler()); //$NON-NLS-1$
             server.createContext("/health", exchange -> writeText(exchange, 200, "ok")); //$NON-NLS-1$ //$NON-NLS-2$
+            server.createContext("/health/ready", new ReadinessHandler()); //$NON-NLS-1$
             server.createContext("/.well-known/oauth-authorization-server", new AuthorizationMetadataHandler()); //$NON-NLS-1$
             server.createContext("/.well-known/openid-configuration", new AuthorizationMetadataHandler()); //$NON-NLS-1$
             server.createContext("/.well-known/oauth-protected-resource", new ProtectedResourceMetadataHandler()); //$NON-NLS-1$
@@ -118,6 +120,26 @@ public class McpHostHttpTransport implements IMcpHostTransport {
 
     public List<McpHostSession> getSessionsSnapshot() {
         return new ArrayList<>(sessions.values());
+    }
+
+    /**
+     * Returns the actual bound port, including when the transport was started
+     * with port zero by an embedding test or launcher.
+     */
+    public synchronized int getBoundPort() {
+        return server != null ? server.getAddress().getPort() : -1;
+    }
+
+    private final class ReadinessHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) { //$NON-NLS-1$
+                writeJson(exchange, 405, Map.of("error", "method_not_allowed")); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
+            McpReadiness readiness = router.readiness();
+            writeJson(exchange, readiness.ready() ? 200 : 503, readiness.asHealthResponse());
+        }
     }
 
     private final class McpHandler implements HttpHandler {
