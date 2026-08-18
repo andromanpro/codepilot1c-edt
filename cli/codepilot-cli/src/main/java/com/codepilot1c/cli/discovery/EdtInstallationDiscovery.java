@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import com.codepilot1c.cli.platform.HostSystem;
 import com.codepilot1c.cli.platform.OperatingSystem;
@@ -32,6 +33,16 @@ public final class EdtInstallationDiscovery {
         return found.values().stream()
                 .sorted(Comparator.comparing(EdtInstallation::home, String.CASE_INSENSITIVE_ORDER))
                 .toList();
+    }
+
+    /** Validates one explicit Eclipse home without mutating process properties. */
+    public Optional<EdtInstallation> validateHome(String home) {
+        if (home == null || home.isBlank()) return Optional.empty();
+        OperatingSystem os = OperatingSystem.from(host.osName());
+        Map<String, EdtInstallation> found = new LinkedHashMap<>();
+        detectHome(home.trim(), "command-line", os, found);
+        detectApp(home.trim(), "command-line", os, found);
+        return found.values().stream().findFirst();
     }
 
     private void addStandardRoots(List<Candidate> candidates, OperatingSystem os) {

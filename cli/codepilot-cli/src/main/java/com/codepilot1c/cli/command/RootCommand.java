@@ -44,8 +44,8 @@ public final class RootCommand implements Callable<Integer> {
         CommandLine edtLine = new CommandLine(edt);
         edtLine.addSubcommand("status", new EdtStatusCommand(root));
         edtLine.addSubcommand("installations", new EdtInstallationsCommand(root));
-        edtLine.addSubcommand("start", new EdtLifecycleCommand(root, "start"));
-        edtLine.addSubcommand("stop", new EdtLifecycleCommand(root, "stop"));
+        edtLine.addSubcommand("start", new EdtStartCommand(root));
+        edtLine.addSubcommand("stop", new EdtStopCommand(root));
         commandLine.addSubcommand("edt", edtLine);
         return commandLine;
     }

@@ -30,16 +30,18 @@ public class CodePilotCliTest {
         assertEquals("{\"command\":\"version\",\"version\":\"9.8.7\"}\n", fixture.out());
     }
 
-    @Test public void returnsStableUsageAndLifecycleExitCodes() {
+    @Test public void returnsStableUsageAndRequiredLifecycleArguments() {
         Fixture fixture = new Fixture();
         assertEquals(ExitCodes.USAGE, fixture.execute("unknown"));
         assertTrue(fixture.err().startsWith("error[usage]:"));
 
         fixture.reset();
-        assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "edt", "start"));
-        assertEquals("{\"command\":\"edt start\",\"status\":\"not_implemented\","
-                + "\"error\":\"supervisor_unavailable\","
-                + "\"message\":\"EDT process supervision is not implemented in this build.\"}\n", fixture.out());
+        assertEquals(ExitCodes.USAGE, fixture.execute("--output", "json", "edt", "start"));
+        assertTrue(fixture.err().contains("--workspace"));
+
+        fixture.reset();
+        assertEquals(ExitCodes.USAGE, fixture.execute("edt", "stop"));
+        assertTrue(fixture.err().contains("--id=<id> | --all"));
     }
 
     @Test public void groupHelpIsAvailable() {
@@ -79,7 +81,7 @@ public class CodePilotCliTest {
         Fixture fixture = new Fixture();
         fixture.probe = endpoint -> new ProbeResult(false, 503, "HTTP 503");
         assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("edt", "status"));
-        assertTrue(fixture.out().startsWith("unavailable:"));
+        assertTrue(fixture.out().startsWith("degraded:"));
     }
 
     @Test public void invalidEndpointIsUsageErrorWithoutProbe() {
