@@ -57,8 +57,12 @@ The module contains two boundary adapters:
 
 - `OpenAiCompatibleAgentModel` maps neutral messages and JSON schemas to the
   existing configured `/chat/completions` transport and parses assistant tool
-  calls. It validates assistant roles and function call types, and it never
-  selects an endpoint or authorization policy itself.
+  calls. Its original two-argument completion remains buffered; its streaming
+  overload forwards text/reasoning deltas and assembles the same final
+  assistant content and calls from provider SSE events. Provider usage events
+  are validated and consumed but are not exposed because the agent SPI has no
+  token-accounting field. It validates assistant roles and function call
+  types, and it never selects an endpoint or authorization policy itself.
 - `McpToolRuntime.connect(...)` initializes an existing `McpClient`, snapshots
   `tools/list`, and maps `tools/call` results into stable tool envelopes. MCP
   annotations and the `codepilot1c/requiresConfirmation` extension are mapped
