@@ -228,3 +228,21 @@ Exit codes:
 | 2 | Invalid arguments or configuration |
 | 3 | Provider or MCP authentication failure |
 | 4 | EDT/MCP unavailable, not ready, malformed, or unable to perform the operation |
+
+## Controlled packaged-CLI E2E check
+
+The opt-in harness at `tools/run-cli-e2e.sh` runs outside unit tests and is
+not attached to the Maven reactor. Its default mode uses a local fake
+headless launcher/server, isolates Java `user.home`, registry, and workspace
+under a temporary directory, chooses a loopback ephemeral port, and verifies
+the full start/readiness/status/MCP/stop/cleanup path:
+
+```sh
+mvn -pl cli/codepilot-cli -am -DskipTests package
+tools/run-cli-e2e.sh --jar cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar
+```
+
+Real EDT smoke is never implicit; pass `--mode real --edt-home` only for a
+known installed EDT. See [`tools/cli-e2e/README.md`](../tools/cli-e2e/README.md)
+for isolation guarantees, cleanup identity checks, and the PowerShell
+counterpart pattern.
