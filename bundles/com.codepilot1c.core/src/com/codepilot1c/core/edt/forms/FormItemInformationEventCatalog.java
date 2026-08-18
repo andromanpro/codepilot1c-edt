@@ -4,23 +4,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-import org.eclipse.emf.ecore.resource.Resource;
+import org.eclipse.emf.ecore.EStructuralFeature;
 
-import com._1c.g5.v8.bm.core.IBmObject;
+import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
+import com._1c.g5.v8.dt.form.model.ExtInfo;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
 import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.mcore.Event;
 
-import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
- * Default {@link EventHandlerCatalog} implementation delegating to the platform
- * {@link FormItemInformationService}.
- *
- * <p>The platform service is supplied by the EDT gateway, so consumers stay
- * isolated behind the {@link EventHandlerCatalog} seam.</p>
+ * EDT-backed event catalog that preserves the UI's real handler-owner split.
  */
 public class FormItemInformationEventCatalog implements EventHandlerCatalog {
 
@@ -38,6 +34,15 @@ public class FormItemInformationEventCatalog implements EventHandlerCatalog {
 
     @Override
     public List<Event> allowedEvents(FormVisualEntity item) {
+        List<Event> result = new ArrayList<>();
+        for (EventSurface surface : eventSurfaces(item)) {
+            result.addAll(surface.events());
+        }
+        return result;
+    }
+
+    @Override
+    public List<EventSurface> eventSurfaces(FormVisualEntity item) {
         Objects.requireNonNull(item, "item"); //$NON-NLS-1$
         FormItemInformationService service = serviceProvider.get();
         if (service == null) {
@@ -46,18 +51,16 @@ public class FormItemInformationEventCatalog implements EventHandlerCatalog {
                     "FormItemInformationService provider returned null", false); //$NON-NLS-1$
         }
 
-        Resource resource = item.eResource();
-        if (resource == null) {
-            IBmObject top = BmObjectHelper.safeTopObject(item);
-            resource = top != null ? top.eResource() : null;
+        List<EventSurface> result = new ArrayList<>();
+        List<Event> directEvents = service.getAllowedEvents(item, (EStructuralFeature) null);
+        if (item instanceof EventHandlerContainer directOwner) {
+            result.add(new EventSurface(directOwner, directEvents));
         }
-        if (resource == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "Form item is not attached to a BM resource; event catalog cannot be resolved for " //$NON-NLS-1$
-                            + item.eClass().getName(),
-                    false);
+
+        ExtInfo extInfo = service.getExtensionInfo(item);
+        if (extInfo instanceof EventHandlerContainer extensionOwner) {
+            result.add(new EventSurface(extensionOwner, service.getAllowedEvents(extInfo)));
         }
-        return service.getAllowedEvents(item, resource);
+        return result;
     }
 }

@@ -2,19 +2,20 @@ package com.codepilot1c.core.edt.forms;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.eclipse.emf.ecore.resource.Resource;
-import org.eclipse.emf.ecore.resource.impl.ResourceImpl;
+import org.eclipse.emf.ecore.EStructuralFeature;
+import org.eclipse.emf.ecore.EObject;
 import org.junit.Test;
 
-import com._1c.g5.v8.dt.form.model.Form;
+import com._1c.g5.v8.dt.form.model.ExtInfo;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
@@ -25,34 +26,47 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 public class FormItemInformationEventCatalogTest {
 
     @Test
-    public void delegatesToProvidedServiceWithAttachedResource() {
-        Event expected = McoreFactory.eINSTANCE.createEvent();
-        StubFormItemInformationService service = new StubFormItemInformationService(List.of(expected));
-        FormItemInformationEventCatalog catalog = new FormItemInformationEventCatalog(() -> service);
-        Form form = attachedForm();
+    public void usesInjectedEdtServiceForDirectAndExtensionSurfaces() {
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        field.setExtInfo(extInfo);
+        Event direct = event("OnChange"); //$NON-NLS-1$
+        Event extension = event("StartChoice"); //$NON-NLS-1$
+        FormItemInformationService edtService = new FormItemInformationService() {
+            @Override
+            public List<Event> getAllowedEvents(FormVisualEntity item, EStructuralFeature feature) {
+                assertSame(field, item);
+                return List.of(direct);
+            }
 
-        List<Event> actual = catalog.allowedEvents(form);
+            @Override
+            public ExtInfo getExtensionInfo(EObject item) {
+                assertSame(field, item);
+                return extInfo;
+            }
 
-        assertEquals(List.of(expected), actual);
-        assertSame(form.eResource(), service.resource);
-        assertEquals(1, service.calls);
-    }
-
-    @Test
-    public void resolvesServiceOnEachCall() {
-        StubFormItemInformationService service = new StubFormItemInformationService(List.of());
+            @Override
+            public List<Event> getAllowedEvents(ExtInfo item) {
+                assertSame(extInfo, item);
+                return List.of(extension);
+            }
+        };
         AtomicInteger providerCalls = new AtomicInteger();
         FormItemInformationEventCatalog catalog = new FormItemInformationEventCatalog(() -> {
             providerCalls.incrementAndGet();
-            return service;
+            return edtService;
         });
-        Form form = attachedForm();
 
-        catalog.allowedEvents(form);
-        catalog.allowedEvents(form);
+        List<EventHandlerCatalog.EventSurface> surfaces = catalog.eventSurfaces(field);
+        List<Event> allEvents = catalog.allowedEvents(field);
 
         assertEquals(2, providerCalls.get());
-        assertEquals(2, service.calls);
+        assertEquals(2, surfaces.size());
+        assertSame(field, surfaces.get(0).owner());
+        assertEquals(List.of(direct), surfaces.get(0).events());
+        assertSame(extInfo, surfaces.get(1).owner());
+        assertEquals(List.of(extension), surfaces.get(1).events());
+        assertEquals(List.of(direct, extension), allEvents);
     }
 
     @Test
@@ -69,22 +83,18 @@ public class FormItemInformationEventCatalogTest {
             fail("expected MetadataOperationException"); //$NON-NLS-1$
         } catch (MetadataOperationException e) {
             assertSame(expected, e);
-            assertEquals(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE, e.getCode());
         }
     }
 
     @Test
-    public void detachedItemFailsWithExplicitServiceUnavailable() {
-        StubFormItemInformationService service = new StubFormItemInformationService(List.of());
-        FormItemInformationEventCatalog catalog = new FormItemInformationEventCatalog(() -> service);
+    public void rejectsNullServiceWithExplicitCode() {
+        FormItemInformationEventCatalog catalog = new FormItemInformationEventCatalog(() -> null);
 
         try {
             catalog.allowedEvents(FormFactory.eINSTANCE.createForm());
             fail("expected MetadataOperationException"); //$NON-NLS-1$
         } catch (MetadataOperationException e) {
             assertEquals(MetadataOperationCode.EDT_SERVICE_UNAVAILABLE, e.getCode());
-            assertTrue(e.getMessage().contains("not attached to a BM resource")); //$NON-NLS-1$
-            assertEquals(0, service.calls);
         }
     }
 
@@ -93,27 +103,9 @@ public class FormItemInformationEventCatalogTest {
         new FormItemInformationEventCatalog(null);
     }
 
-    private static Form attachedForm() {
-        Form form = FormFactory.eINSTANCE.createForm();
-        Resource resource = new ResourceImpl();
-        resource.getContents().add(form);
-        return form;
-    }
-
-    private static final class StubFormItemInformationService extends FormItemInformationService {
-        private final List<Event> events;
-        private Resource resource;
-        private int calls;
-
-        private StubFormItemInformationService(List<Event> events) {
-            this.events = events;
-        }
-
-        @Override
-        public List<Event> getAllowedEvents(FormVisualEntity item, Resource resource) {
-            this.resource = resource;
-            calls++;
-            return events;
-        }
+    private static Event event(String name) {
+        Event event = McoreFactory.eINSTANCE.createEvent();
+        event.setName(name);
+        return event;
     }
 }
