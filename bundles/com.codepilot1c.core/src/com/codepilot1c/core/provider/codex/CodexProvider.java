@@ -150,7 +150,8 @@ public class CodexProvider extends AbstractLlmProvider {
     }
 
     private void executeStream(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
-        String body = requestBuilder.build(request, config.getModel(), config.getMaxTokens(), true);
+        String body = requestBuilder.build(request, config.getModel(), config.getMaxTokens(), true,
+            config.getReasoningEffort());
         HttpRequest httpRequest = buildHttpRequest(body);
         CodexResponsesStreamParser parser = new CodexResponsesStreamParser(consumer);
         final LlmProviderException[] error = { null };
