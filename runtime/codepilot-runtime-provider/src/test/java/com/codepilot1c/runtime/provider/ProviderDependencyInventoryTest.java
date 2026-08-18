@@ -25,12 +25,13 @@ import org.w3c.dom.NodeList;
 public class ProviderDependencyInventoryTest {
 
     @Test
-    public void dependencyAllowlistContainsOnlyKernelAtCompileScope() throws Exception {
+    public void dependencyAllowlistContainsOnlyKernelAndJsonAtCompileScope() throws Exception {
         Path pom = Path.of(System.getProperty("runtime.module.basedir"), "pom.xml"); //$NON-NLS-1$ //$NON-NLS-2$
         List<String> dependencies = dependencies(Files.readString(pom));
 
         assertEquals(List.of(
                 "com.codepilot1c:codepilot-runtime-kernel:compile", //$NON-NLS-1$
+                "com.google.code.gson:gson:compile", //$NON-NLS-1$
                 "junit:junit:test"), dependencies); //$NON-NLS-1$
     }
 

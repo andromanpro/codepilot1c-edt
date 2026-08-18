@@ -18,16 +18,25 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>codepilot-runtime-provider</artifactId>
+    <artifactId>codepilot-runtime-agent</artifactId>
     <packaging>jar</packaging>
-
-    <name>CodePilot Runtime Provider</name>
-    <description>Platform-neutral OpenAI-compatible provider transport for standalone hosts</description>
+    <name>CodePilot Runtime Agent</name>
+    <description>Provider-neutral bounded agent and tool loop for standalone hosts</description>
 
     <dependencies>
         <dependency>
             <groupId>com.codepilot1c</groupId>
             <artifactId>codepilot-runtime-kernel</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.codepilot1c</groupId>
+            <artifactId>codepilot-runtime-provider</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.codepilot1c</groupId>
+            <artifactId>codepilot-runtime-mcp-client</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

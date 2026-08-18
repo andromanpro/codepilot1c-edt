@@ -16,6 +16,11 @@ The public boundary consists of:
 - `ChatCompletionRequest` and `ChatCompletionResponse` — minimal request and
   raw response contract, without freezing the existing agent/tool model.
 
+The provider also accepts a Gson `JsonObject` through `completeRaw(...)` for
+the standalone agent wire adapter. This remains a body-only boundary: endpoint,
+timeout, configured headers, and authorization are applied by the same
+transport path, and the JSON payload is never logged.
+
 This is intentionally a prerequisite, not a second implementation of
 `DynamicLlmProvider`. The existing core implementation is coupled to Eclipse
 preferences, core model classes, provider-specific compatibility policies,

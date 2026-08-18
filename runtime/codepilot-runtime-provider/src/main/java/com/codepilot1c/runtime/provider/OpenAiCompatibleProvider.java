@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
+import com.google.gson.JsonObject;
+
 /**
  * Plain-Java transport for the OpenAI-compatible Chat Completions API.
  *
@@ -54,7 +56,25 @@ public final class OpenAiCompatibleProvider {
      */
     public CompletableFuture<ChatCompletionResponse> complete(ChatCompletionRequest request) {
         Objects.requireNonNull(request, "request"); //$NON-NLS-1$
-        String requestBody = serialize(request);
+        return send(serialize(request));
+    }
+
+    /**
+     * Executes a caller-serialized OpenAI-compatible chat completion request.
+     *
+     * <p>This narrow transport entry point allows a provider-neutral agent
+     * adapter to serialize tool calls without moving an agent model into the
+     * transport module. The payload is never logged or included in errors.</p>
+     *
+     * @param requestBody complete JSON-object request body
+     * @return future with the raw HTTP response
+     */
+    public CompletableFuture<ChatCompletionResponse> completeRaw(JsonObject requestBody) {
+        Objects.requireNonNull(requestBody, "requestBody"); //$NON-NLS-1$
+        return send(requestBody.deepCopy().toString());
+    }
+
+    private CompletableFuture<ChatCompletionResponse> send(String requestBody) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(configuration.chatCompletionsEndpoint())
                 .timeout(configuration.requestTimeout())
