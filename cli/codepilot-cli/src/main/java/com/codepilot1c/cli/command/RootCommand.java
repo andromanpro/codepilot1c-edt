@@ -56,6 +56,10 @@ public final class RootCommand implements Callable<Integer> {
         mcpLine.addSubcommand("ping", new McpPingCommand(root, mcp));
         mcpLine.addSubcommand("close", new McpCloseCommand(root, mcp));
         commandLine.addSubcommand("mcp", mcpLine);
+        AgentCommand agent = new AgentCommand(root);
+        CommandLine agentLine = new CommandLine(agent);
+        agentLine.addSubcommand("run", new AgentRunCommand(root));
+        commandLine.addSubcommand("agent", agentLine);
         return commandLine;
     }
 }

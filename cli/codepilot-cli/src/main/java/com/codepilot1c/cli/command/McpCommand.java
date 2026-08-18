@@ -14,7 +14,7 @@ import picocli.CommandLine.Model.CommandSpec;
 /** Standalone client commands for a running EDT MCP host. */
 @Command(name = "mcp", mixinStandardHelpOptions = true,
         description = "Call the MCP endpoint exposed by a running EDT host.")
-final class McpCommand implements Callable<Integer> {
+final class McpCommand implements Callable<Integer>, McpConnectionOptions {
     private final RootCommand root;
     @Option(names = "--endpoint", scope = ScopeType.INHERIT,
             description = "MCP endpoint or host base URL; mutually exclusive with --instance-id.")
@@ -32,10 +32,10 @@ final class McpCommand implements Callable<Integer> {
 
     McpCommand(RootCommand root) { this.root = root; }
     RootCommand root() { return root; }
-    String endpoint() { return endpoint; }
-    String instanceId() { return instanceId; }
-    boolean allowInsecureHttp() { return allowInsecureHttp; }
-    String bearerTokenFile() { return bearerTokenFile; }
+    @Override public String endpoint() { return endpoint; }
+    @Override public String instanceId() { return instanceId; }
+    @Override public boolean allowInsecureHttp() { return allowInsecureHttp; }
+    @Override public String bearerTokenFile() { return bearerTokenFile; }
 
     @Override public Integer call() {
         spec.commandLine().usage(root.services().out());

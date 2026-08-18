@@ -5,7 +5,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -176,7 +178,7 @@ final class McpCommandSupport {
         }
     }
 
-    private static Connection connect(RootCommand root, McpCommand options) {
+    static Connection connect(RootCommand root, McpConnectionOptions options) {
         URI endpoint = resolveEndpoint(root, options);
         char[] token = readBearerToken(root, options);
         try {
@@ -194,7 +196,7 @@ final class McpCommandSupport {
         }
     }
 
-    private static URI resolveEndpoint(RootCommand root, McpCommand options) {
+    static URI resolveEndpoint(RootCommand root, McpConnectionOptions options) {
         try {
             if (options.endpoint() != null && options.instanceId() != null) {
                 throw new McpUsageException("endpoint_selection_conflict");
@@ -239,18 +241,16 @@ final class McpCommandSupport {
         }
     }
 
-    private static char[] readBearerToken(RootCommand root, McpCommand options) {
+    private static char[] readBearerToken(RootCommand root, McpConnectionOptions options) {
         String token;
         if (options.bearerTokenFile() != null) {
             try {
                 Path path = Path.of(options.bearerTokenFile());
-                if (!Files.isRegularFile(path) || Files.size(path) > MAX_BEARER_FILE_BYTES) {
-                    throw new McpUsageException("bearer_token_file_unreadable");
-                }
-                token = Files.readString(path, StandardCharsets.UTF_8).trim();
+                token = readPrivateUtf8Secret(path, MAX_BEARER_FILE_BYTES,
+                        "bearer_token_file_unreadable");
             } catch (McpUsageException exception) {
                 throw exception;
-            } catch (IOException | RuntimeException exception) {
+            } catch (RuntimeException exception) {
                 throw new McpUsageException("bearer_token_file_unreadable");
             }
         } else {
@@ -259,6 +259,34 @@ final class McpCommandSupport {
         }
         if (token == null || token.isBlank()) return null;
         return token.toCharArray();
+    }
+
+    static String readPrivateUtf8Secret(Path path, long maximumBytes, String errorCode) {
+        try {
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(path) > maximumBytes || isBroadlyReadable(path)) {
+                throw new McpUsageException(errorCode);
+            }
+            String value = Files.readString(path, StandardCharsets.UTF_8).trim();
+            if (value.isEmpty()) throw new McpUsageException(errorCode);
+            return value;
+        } catch (McpUsageException failure) {
+            throw failure;
+        } catch (IOException | RuntimeException failure) {
+            throw new McpUsageException(errorCode);
+        }
+    }
+
+    private static boolean isBroadlyReadable(Path path) throws IOException {
+        try {
+            var permissions = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS);
+            return permissions.contains(PosixFilePermission.GROUP_READ)
+                    || permissions.contains(PosixFilePermission.GROUP_WRITE)
+                    || permissions.contains(PosixFilePermission.OTHERS_READ)
+                    || permissions.contains(PosixFilePermission.OTHERS_WRITE);
+        } catch (UnsupportedOperationException ignored) {
+            return false;
+        }
     }
 
     private static String first(String property, String environment) {
@@ -317,7 +345,7 @@ final class McpCommandSupport {
         };
     }
 
-    private static String endpointForError(RootCommand root, McpCommand options) {
+    private static String endpointForError(RootCommand root, McpConnectionOptions options) {
         try { return resolveEndpoint(root, options).toASCIIString(); }
         catch (RuntimeException ignored) { return null; }
     }
@@ -374,7 +402,7 @@ final class McpCommandSupport {
         return BEARER_AUTHORIZATION_VALUE.matcher(value).matches() ? "<redacted>" : value;
     }
 
-    private record Connection(URI endpoint, McpClient client) implements AutoCloseable {
+    record Connection(URI endpoint, McpClient client) implements AutoCloseable {
         @Override public void close() { client.close(); }
     }
 
