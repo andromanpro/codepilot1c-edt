@@ -12,7 +12,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletionException;
+import java.util.regex.Pattern;
 
 import com.codepilot1c.cli.ExitCodes;
 import com.codepilot1c.cli.supervisor.DefaultSupervisorFileSystem;
@@ -31,6 +33,15 @@ import com.google.gson.JsonPrimitive;
 final class McpCommandSupport {
     private static final long MAX_BEARER_FILE_BYTES = 64 * 1024;
     private static final long MAX_ARGUMENT_BYTES = 1024 * 1024;
+    private static final Pattern KEY_SEPARATORS = Pattern.compile("[\\s._-]");
+    /** Audited canonical names for values that are credentials rather than ordinary tool data. */
+    private static final Set<String> SENSITIVE_CREDENTIAL_KEYS = Set.of(
+            "authorization", "credential", "credentials", "bearer", "bearertoken",
+            "consumersecret", "clientsecret", "apisecret", "secretkey", "privatekey", "apikey",
+            "password", "passphrase", "token", "authtoken", "accesstoken", "refreshtoken", "idtoken");
+    /** Complete header value only; prose mentioning Bearer must remain observable tool output. */
+    private static final Pattern BEARER_AUTHORIZATION_VALUE = Pattern.compile(
+            "(?i)^\\s*(?:authorization\\s*:\\s*)?bearer\\s+[A-Za-z0-9._~+/=-]{8,}\\s*$");
 
     private McpCommandSupport() { }
 
@@ -337,7 +348,7 @@ final class McpCommandSupport {
         if (value.isJsonObject()) {
             Map<String, Object> output = new LinkedHashMap<>();
             for (Map.Entry<String, JsonElement> entry : value.getAsJsonObject().entrySet()) {
-                if (!sensitiveKey(entry.getKey())) output.put(entry.getKey(), jsonValue(entry.getValue()));
+                if (!isSensitiveCredentialKey(entry.getKey())) output.put(entry.getKey(), jsonValue(entry.getValue()));
             }
             return output;
         }
@@ -352,21 +363,15 @@ final class McpCommandSupport {
         return safeText(primitive.getAsString());
     }
 
-    private static boolean sensitiveKey(String key) {
+    static boolean isSensitiveCredentialKey(String key) {
         if (key == null || key.isBlank()) return false;
-        String normalized = key.toLowerCase(Locale.ROOT).replaceAll("[\\s._-]", "");
-        return normalized.equals("authorization") || normalized.endsWith("authorization")
-                || normalized.equals("bearer") || normalized.endsWith("password")
-                || normalized.endsWith("passphrase") || normalized.endsWith("privatekey")
-                || normalized.endsWith("clientsecret") || normalized.endsWith("apikey")
-                || normalized.equals("token") || normalized.endsWith("token")
-                || normalized.endsWith("credential") || normalized.endsWith("credentials");
+        String normalized = KEY_SEPARATORS.matcher(key.toLowerCase(Locale.ROOT)).replaceAll("");
+        return SENSITIVE_CREDENTIAL_KEYS.contains(normalized);
     }
 
-    private static String safeText(String value) {
+    static String safeText(String value) {
         if (value == null) return null;
-        return value.matches("(?is).*(\\bbearer\\s+\\S+|\\bauthorization\\s*:).*")
-                ? "<redacted>" : value;
+        return BEARER_AUTHORIZATION_VALUE.matcher(value).matches() ? "<redacted>" : value;
     }
 
     private record Connection(URI endpoint, McpClient client) implements AutoCloseable {
