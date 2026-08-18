@@ -3,8 +3,10 @@ package com.codepilot1c.core.mcp.host;
 import java.util.Optional;
 
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IProduct;
+import org.eclipse.core.runtime.Platform;
+import org.osgi.framework.Bundle;
 
-import com._1c.g5.v8.dt.platform.version.Version;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 
 /**
@@ -16,26 +18,60 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
     private static final String DEGRADED_REASON = "EDT runtime services failed readiness probe"; //$NON-NLS-1$
 
     private final EdtMetadataGateway edtGateway;
+    private final McpEdtVersionSupplier edtVersionSupplier;
 
     public DefaultMcpRuntimeInfoGateway() {
-        this(new EdtMetadataGateway());
+        this(new EdtMetadataGateway(), DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
     }
 
     public DefaultMcpRuntimeInfoGateway(EdtMetadataGateway edtGateway) {
+        this(edtGateway, DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
+    }
+
+    public DefaultMcpRuntimeInfoGateway(McpEdtVersionSupplier edtVersionSupplier) {
+        this(new EdtMetadataGateway(), edtVersionSupplier);
+    }
+
+    public DefaultMcpRuntimeInfoGateway(
+            EdtMetadataGateway edtGateway,
+            McpEdtVersionSupplier edtVersionSupplier) {
         this.edtGateway = edtGateway != null ? edtGateway : new EdtMetadataGateway();
+        this.edtVersionSupplier = edtVersionSupplier != null
+                ? edtVersionSupplier
+                : DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion;
     }
 
     @Override
     public Optional<String> edtVersion() {
         try {
-            if (!edtGateway.isEdtAvailable()) {
-                return Optional.empty();
-            }
-            Version version = edtGateway.resolvePlatformVersion(null);
-            return version != null ? Optional.of(version.toString()) : Optional.empty();
+            return edtVersionSupplier.get();
         } catch (RuntimeException e) {
             return Optional.empty();
         }
+    }
+
+    private static Optional<String> resolveEdtProductVersion() {
+        try {
+            IProduct product = Platform.getProduct();
+            if (product != null) {
+                Bundle definingBundle = product.getDefiningBundle();
+                Optional<String> definingVersion = bundleVersion(definingBundle);
+                if (definingVersion.isPresent()) {
+                    return definingVersion;
+                }
+            }
+            return Optional.empty();
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+    }
+
+    private static Optional<String> bundleVersion(Bundle bundle) {
+        if (bundle == null || bundle.getVersion() == null) {
+            return Optional.empty();
+        }
+        String version = bundle.getVersion().toString();
+        return version.isBlank() ? Optional.empty() : Optional.of(version);
     }
 
     @Override

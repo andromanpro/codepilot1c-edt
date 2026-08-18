@@ -113,6 +113,21 @@ public class McpContractMetadataServiceTest {
     }
 
     @Test
+    public void edtVersionUsesInjectedEdtProductBuildSupplier() {
+        DefaultMcpRuntimeInfoGateway gateway = new DefaultMcpRuntimeInfoGateway(
+                () -> Optional.of("2025.2.3+30")); //$NON-NLS-1$
+
+        assertEquals(Optional.of("2025.2.3+30"), gateway.edtVersion()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void missingEdtProductVersionDoesNotFallBackToProjectPlatformVersion() {
+        DefaultMcpRuntimeInfoGateway gateway = new DefaultMcpRuntimeInfoGateway(Optional::empty);
+
+        assertEquals(Optional.empty(), gateway.edtVersion());
+    }
+
+    @Test
     public void normalizesOnlyApprovedModeValues() {
         assertEquals("gui", new McpContractMetadata(1, "plugin", "unknown", "workbench", "unknown", //$NON-NLS-1$ //$NON-NLS-2$
                 McpReadiness.available()).mode());
