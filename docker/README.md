@@ -11,12 +11,14 @@
 | Файл | Откуда взять |
 |---|---|
 | `edt.tar` | Офлайн-дистрибутив 1C:EDT для Linux x86_64 с [releases.1c.ru](https://releases.1c.ru) |
-| `plugin.zip` | Артефакт сборки: `mvn package` → `releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip` |
+| `plugin.zip` | Артефакт сборки: `mvn package` → `repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip` |
 | `Dockerfile` | `docker/Dockerfile` в этом репозитории |
 | `docker-entrypoint.sh` | `docker/docker-entrypoint.sh` в этом репозитории |
 
 Дистрибутив EDT: файл вида `1c_edt_distr_offline_<version>_linux_x86_64.tar`.
 Проверенная версия: `2025.2.3+30`.
+
+Сборка образа выполняется локально. GitHub-hosted runner не поддерживается, поскольку target platform требует локальную установку 1C:EDT.
 
 ---
 
@@ -27,7 +29,7 @@
 mvn package -Dmaven.test.skip=true
 
 # Артефакт будет здесь:
-ls releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip
+ls repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip
 ```
 
 ---
@@ -47,7 +49,7 @@ docker/
 ```bash
 # Копируем дистрибутив и плагин
 cp /path/to/1c_edt_distr_offline_2025.2.3_30_linux_x86_64.tar docker/edt.tar
-cp releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
+cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
 
 # Собираем образ (~10–15 минут первый раз, ~1 минута при повторной сборке с кешем)
 docker build -t codepilot1c-edt:latest docker/

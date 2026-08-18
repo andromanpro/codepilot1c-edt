@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
+import com.codepilot1c.core.provider.codex.CodexOAuthConstants;
+
 /**
  * Configuration for a single LLM provider.
  *
@@ -27,6 +29,7 @@ public class LlmProviderConfig {
     private String apiKey;
     private String model;
     private int maxTokens;
+    private String reasoningEffort;
     private Map<String, String> customHeaders;
     private boolean streamingEnabled;
 
@@ -37,6 +40,7 @@ public class LlmProviderConfig {
         this.id = UUID.randomUUID().toString();
         this.type = ProviderType.OPENAI_COMPATIBLE;
         this.maxTokens = 4096;
+        this.reasoningEffort = CodexOAuthConstants.DEFAULT_REASONING_EFFORT;
         this.customHeaders = new HashMap<>();
         this.streamingEnabled = true;
     }
@@ -53,6 +57,7 @@ public class LlmProviderConfig {
         this.apiKey = apiKey;
         this.model = model;
         this.maxTokens = maxTokens > 0 ? maxTokens : 4096;
+        this.reasoningEffort = CodexOAuthConstants.DEFAULT_REASONING_EFFORT;
         this.customHeaders = new HashMap<>();
         this.streamingEnabled = true;
     }
@@ -135,6 +140,18 @@ public class LlmProviderConfig {
 
     public void setMaxTokens(int maxTokens) {
         this.maxTokens = maxTokens;
+    }
+
+    /**
+     * Returns the Responses API reasoning effort. Missing or invalid persisted values fall back
+     * to {@code medium}, keeping configurations created by older plugin versions compatible.
+     */
+    public String getReasoningEffort() {
+        return normalizeReasoningEffort(reasoningEffort);
+    }
+
+    public void setReasoningEffort(String reasoningEffort) {
+        this.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
     }
 
     /**
@@ -230,9 +247,22 @@ public class LlmProviderConfig {
         copy.apiKey = this.apiKey;
         copy.model = this.model;
         copy.maxTokens = this.maxTokens;
+        copy.reasoningEffort = this.reasoningEffort;
         copy.customHeaders = new HashMap<>(this.customHeaders);
         copy.streamingEnabled = this.streamingEnabled;
         return copy;
+    }
+
+    private static String normalizeReasoningEffort(String value) {
+        if (value != null) {
+            String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+            for (String supported : CodexOAuthConstants.REASONING_EFFORTS) {
+                if (supported.equals(normalized)) {
+                    return supported;
+                }
+            }
+        }
+        return CodexOAuthConstants.DEFAULT_REASONING_EFFORT;
     }
 
     /**

@@ -2,7 +2,7 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: %Bundle-Name
 Bundle-SymbolicName: com.codepilot1c.core;singleton:=true
-Bundle-Version: 1.0.0.qualifier
+Bundle-Version: 1.3.3.qualifier
 Bundle-Vendor: %Bundle-Vendor
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-Activator: com.codepilot1c.core.internal.VibeCorePlugin
@@ -116,6 +116,7 @@ Export-Package: com.codepilot1c.core.agent,
  com.codepilot1c.core.util,
  com.codepilot1c.core.feedback,
  com.codepilot1c.core.state,
+ com.codepilot1c.core.gsd,
  com.codepilot1c.core.http,
  com.codepilot1c.core.diff,
  com.codepilot1c.core.diagnostics,

@@ -51,6 +51,7 @@ public class McpHostConfig {
     private String bearerToken;
     private AuthMode authMode;
     private MutationPolicy mutationPolicy;
+    private String sessionProfileId;
     private String exposedToolsFilter;
 
     public static McpHostConfig defaults() {
@@ -62,6 +63,7 @@ public class McpHostConfig {
         cfg.bearerToken = generateToken();
         cfg.authMode = AuthMode.OAUTH_OR_BEARER;
         cfg.mutationPolicy = MutationPolicy.ALLOW;
+        cfg.sessionProfileId = ""; //$NON-NLS-1$
         cfg.exposedToolsFilter = "*"; //$NON-NLS-1$
         return cfg;
     }
@@ -174,6 +176,20 @@ public class McpHostConfig {
 
     public void setMutationPolicy(MutationPolicy mutationPolicy) {
         this.mutationPolicy = mutationPolicy;
+    }
+
+    /**
+     * Returns the MCP session profile. An empty value selects exact legacy mode
+     * with the profile gate disabled; a non-empty unknown value fails closed.
+     *
+     * @return configured profile identifier, or an empty string for legacy mode
+     */
+    public String getSessionProfileId() {
+        return sessionProfileId;
+    }
+
+    public void setSessionProfileId(String sessionProfileId) {
+        this.sessionProfileId = sessionProfileId;
     }
 
     public String getExposedToolsFilter() {

@@ -5,11 +5,14 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.junit.Test;
 
@@ -163,7 +166,7 @@ public class OpenAiStreamingSessionTest {
     private List<LlmStreamChunk> replayFixture(String fixtureName, OpenAiStreamingSession session) throws IOException {
         List<LlmStreamChunk> chunks = new ArrayList<>();
         String finishReason = null;
-        for (String line : Files.readAllLines(fixturePath(fixtureName))) {
+        for (String line : readFixtureLines(fixtureName)) {
             String currentFinishReason = session.processLine(line, chunks::add);
             if (currentFinishReason != null) {
                 finishReason = currentFinishReason;
@@ -175,9 +178,14 @@ public class OpenAiStreamingSessionTest {
         return chunks;
     }
 
-    private Path fixturePath(String fixtureName) {
-        return Path.of("/Users/alexorlik/repo/codepilot1c-oss/bundles/com.codepilot1c.core.tests/src/com/codepilot1c/core/provider/config/fixtures", //$NON-NLS-1$
-                fixtureName);
+    private List<String> readFixtureLines(String fixtureName) throws IOException {
+        try (InputStream in = OpenAiStreamingSessionTest.class
+                .getResourceAsStream("fixtures/" + fixtureName)) { //$NON-NLS-1$
+            assertNotNull("fixture not found on test classpath: fixtures/" + fixtureName, in); //$NON-NLS-1$
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                return reader.lines().collect(Collectors.toList());
+            }
+        }
     }
 
     private LlmStreamChunk findToolChunk(List<LlmStreamChunk> chunks) {

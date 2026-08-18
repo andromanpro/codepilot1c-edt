@@ -50,6 +50,20 @@ public interface ITool {
     CompletableFuture<ToolResult> execute(Map<String, Object> parameters);
 
     /**
+     * Executes the tool with immutable caller context. The default preserves
+     * compatibility with dynamic and third-party tools implementing only the
+     * legacy overload.
+     *
+     * @param parameters parameters parsed from the tool call
+     * @param context immutable caller context
+     * @return a future containing the tool result
+     */
+    default CompletableFuture<ToolResult> execute(
+            Map<String, Object> parameters, ToolExecutionContext context) {
+        return execute(parameters);
+    }
+
+    /**
      * Returns whether this tool requires user confirmation before execution.
      *
      * @return true if confirmation is required

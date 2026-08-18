@@ -43,6 +43,7 @@ public class AgentConfig {
     private final boolean streamingEnabled;
     private final String systemPromptAddition;
     private final String profileName;
+    private final int delegationDepth;
     private final Set<String> requestedSkills;
     private final boolean toolGraphEnabled;
     private final com.codepilot1c.core.agent.graph.ToolGraphPolicy toolGraphPolicy;
@@ -56,6 +57,7 @@ public class AgentConfig {
         this.streamingEnabled = builder.streamingEnabled;
         this.systemPromptAddition = builder.systemPromptAddition;
         this.profileName = builder.profileName;
+        this.delegationDepth = builder.delegationDepth;
         this.requestedSkills = Collections.unmodifiableSet(new HashSet<>(builder.requestedSkills));
         this.toolGraphEnabled = builder.toolGraphEnabled;
         this.toolGraphPolicy = builder.toolGraphPolicy;
@@ -155,6 +157,15 @@ public class AgentConfig {
     }
 
     /**
+     * Current nested sub-agent depth.
+     *
+     * @return non-negative delegation depth
+     */
+    public int getDelegationDepth() {
+        return delegationDepth;
+    }
+
+    /**
      * Skill names that should be loaded into assembled system prompt context.
      *
      * @return requested skill names
@@ -204,6 +215,7 @@ public class AgentConfig {
                 ", timeoutMs=" + timeoutMs +
                 ", streaming=" + streamingEnabled +
                 ", profile=" + profileName +
+                ", delegationDepth=" + delegationDepth +
                 ", requestedSkills=" + requestedSkills +
                 ", toolGraph=" + toolGraphEnabled +
                 ", toolGraphPolicy=" + toolGraphPolicy +
@@ -222,6 +234,7 @@ public class AgentConfig {
         private boolean streamingEnabled = true;
         private String systemPromptAddition;
         private String profileName;
+        private int delegationDepth;
         private Set<String> requestedSkills = new HashSet<>();
         private boolean toolGraphEnabled = true;
         private com.codepilot1c.core.agent.graph.ToolGraphPolicy toolGraphPolicy =
@@ -246,6 +259,7 @@ public class AgentConfig {
                 this.streamingEnabled = config.streamingEnabled;
                 this.systemPromptAddition = config.systemPromptAddition;
                 this.profileName = config.profileName;
+                this.delegationDepth = config.delegationDepth;
                 this.requestedSkills = new HashSet<>(config.requestedSkills);
                 this.toolGraphEnabled = config.toolGraphEnabled;
                 this.toolGraphPolicy = config.toolGraphPolicy;
@@ -404,6 +418,20 @@ public class AgentConfig {
          */
         public Builder profileName(String profileName) {
             this.profileName = profileName;
+            return this;
+        }
+
+        /**
+         * Sets the current nested sub-agent depth.
+         *
+         * @param delegationDepth non-negative delegation depth
+         * @return this builder
+         */
+        public Builder delegationDepth(int delegationDepth) {
+            if (delegationDepth < 0) {
+                throw new IllegalArgumentException("delegationDepth must not be negative"); //$NON-NLS-1$
+            }
+            this.delegationDepth = delegationDepth;
             return this;
         }
 

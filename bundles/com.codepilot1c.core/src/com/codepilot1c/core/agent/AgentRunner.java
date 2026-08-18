@@ -56,17 +56,23 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
+import com.codepilot1c.core.permissions.PermissionDenialPayload;
+import com.codepilot1c.core.permissions.PermissionManager;
+import com.codepilot1c.core.permissions.PermissionRule;
+import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolContextGate;
 import com.codepilot1c.core.tools.ToolLogger;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
 import com.codepilot1c.core.tools.surface.BuiltinToolTaxonomy;
 import com.codepilot1c.core.tools.surface.DeferredToolSession;
 import com.codepilot1c.core.tools.surface.ToolCategory;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
+import com.google.gson.JsonObject;
 
 /**
  * Реализация agentic loop для автоматического выполнения задач.
@@ -106,6 +112,7 @@ public class AgentRunner implements IAgentRunner {
     private final List<IAgentEventListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicReference<AgentState> state = new AtomicReference<>(AgentState.IDLE);
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
+    private final AtomicBoolean globalPermissionWarningLogged = new AtomicBoolean(false);
     private final AtomicInteger currentStep = new AtomicInteger(0);
     private final AtomicLong startTimeMs = new AtomicLong(0);
     private final AtomicInteger toolCallsCount = new AtomicInteger(0);
@@ -514,29 +521,107 @@ public class AgentRunner implements IAgentRunner {
             return CompletableFuture.completedFuture(null);
         }
 
+        AgentProfile profile = resolveProfile(config);
+        ToolExecutionContext executionContext =
+                ToolExecutionContext.of(profile, config.getDelegationDepth());
+        Set<String> profileAllowed = profile.getAllowedTools();
+        boolean deferredDiscovery = deferredToolSession.isDeferredLoadingActive()
+                && "discover_tools".equals(toolName); //$NON-NLS-1$
+        if (profileAllowed != null && !profileAllowed.isEmpty()
+                && !profileAllowed.contains(toolName) && !deferredDiscovery) {
+            ToolResult deniedResult = permissionDenied(
+                    toolName, profile.getId(), null, "tool_not_in_profile", //$NON-NLS-1$
+                    "profile", null); //$NON-NLS-1$
+            addToolResult(call.getId(), deniedResult);
+            emit(new ToolResultEvent(step, toolName, call.getId(), deniedResult, 0));
+            return CompletableFuture.completedFuture(null);
+        }
+
         // Parse arguments
         Map<String, Object> args = parseArguments(call.getArguments());
 
+        ProfilePermissionGate.GateResult gate = ProfilePermissionGate.evaluate(
+                profile.getDefaultPermissions(), globalRulesSafe(), toolName, args);
+        if (gate.isDenied()) {
+            String resource = gate.resource();
+            String reasonCode = "denied_by_" + gate.layer() + "_rule"; //$NON-NLS-1$ //$NON-NLS-2$
+            String ruleDescription = gate.rule() != null
+                    ? gate.rule().getDescription()
+                    : null;
+            ToolResult deniedResult = permissionDenied(
+                    toolName, profile.getId(), resource, reasonCode,
+                    gate.layer(), ruleDescription);
+            addToolResult(call.getId(), deniedResult);
+            emit(new ToolResultEvent(step, toolName, call.getId(), deniedResult, 0));
+            log(new Status(IStatus.WARNING, PLUGIN_ID, String.format(
+                    "permission_denied tool=%s profile=%s layer=%s resource=%s", //$NON-NLS-1$
+                    toolName, profile.getId(), gate.layer(), resource)));
+            return CompletableFuture.completedFuture(null);
+        }
+
+        boolean gateAsk = gate.decision() == ProfilePermissionGate.GateDecision.ASK;
+        boolean effectiveConfirmation = gateAsk || tool.requiresConfirmation();
+
         // Emit tool call event
-        emit(new ToolCallEvent(step, call, args, tool.requiresConfirmation()));
+        emit(new ToolCallEvent(step, call, args, effectiveConfirmation));
 
         // Check if confirmation is required
-        if (tool.requiresConfirmation()) {
-            return requestConfirmation(call, tool, args, config);
+        if (effectiveConfirmation) {
+            return requestConfirmation(
+                    call, tool, args, profile.getId(), executionContext, gate, gateAsk);
         }
 
         // Execute directly
-        return executeToolAndAddResult(call, args);
+        return executeToolAndAddResult(call, args, executionContext);
+    }
+
+    private List<PermissionRule> globalRulesSafe() {
+        try {
+            return PermissionManager.getInstance().getAllRules();
+        } catch (Throwable e) {
+            if (globalPermissionWarningLogged.compareAndSet(false, true)) {
+                log(new Status(IStatus.WARNING, PLUGIN_ID,
+                        "Global permission rules are unavailable; using profile rules only", e)); //$NON-NLS-1$
+            }
+            return List.of();
+        }
+    }
+
+    private ToolResult permissionDenied(
+            String toolName, String profileId, String resource, String reasonCode,
+            String layer, String ruleDescription) {
+        return PermissionDenialPayload.denied(
+                toolName, profileId, resource, reasonCode, layer, ruleDescription);
     }
 
     /**
      * Запрашивает подтверждение у пользователя.
      */
     private CompletableFuture<Void> requestConfirmation(
-            ToolCall call, ITool tool, Map<String, Object> args, AgentConfig config) {
+            ToolCall call, ITool tool, Map<String, Object> args, String profileId,
+            ToolExecutionContext executionContext,
+            ProfilePermissionGate.GateResult gate, boolean gateAsk) {
+
+        int step = currentStep.get();
+        if (!hasConfirmationSink()) {
+            String layer = gateAsk ? gate.layer() : "tool"; //$NON-NLS-1$
+            ToolResult denied = permissionDenied(
+                    call.getName(), profileId,
+                    gateAsk ? gate.resource() : null,
+                    gateAsk
+                            ? "confirmation_unavailable" //$NON-NLS-1$
+                            : "confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                    layer,
+                    gateAsk && gate.rule() != null ? gate.rule().getDescription() : null);
+            addToolResult(call.getId(), denied);
+            emit(new ToolResultEvent(step, call.getName(), call.getId(), denied, 0));
+            log(new Status(IStatus.WARNING, PLUGIN_ID, String.format(
+                    "confirmation_unavailable tool=%s profile=%s layer=%s", //$NON-NLS-1$
+                    call.getName(), profileId, layer)));
+            return CompletableFuture.completedFuture(null);
+        }
 
         state.set(AgentState.WAITING_CONFIRMATION);
-        int step = currentStep.get();
 
         ConfirmationRequiredEvent event = new ConfirmationRequiredEvent(
                 step,
@@ -555,7 +640,7 @@ public class AgentRunner implements IAgentRunner {
             ToolResult toolResult;
             switch (result) {
                 case CONFIRMED:
-                    return executeToolAndAddResult(call, args);
+                    return executeToolAndAddResult(call, args, executionContext);
                 case SKIPPED:
                     toolResult = ToolResult.success("Операция пропущена пользователем",
                             ToolResult.ToolResultType.CONFIRMATION);
@@ -564,7 +649,16 @@ public class AgentRunner implements IAgentRunner {
                     return CompletableFuture.completedFuture(null);
                 case DENIED:
                 default:
-                    toolResult = ToolResult.failure("Операция отклонена пользователем");
+                    JsonObject data = new JsonObject();
+                    data.addProperty("error", "confirmation_denied"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("tool", call.getName()); //$NON-NLS-1$
+                    data.addProperty("profile", profileId); //$NON-NLS-1$
+                    data.addProperty("reason", "denied_by_user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("reason_code", "denied_by_user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("layer", "user"); //$NON-NLS-1$ //$NON-NLS-2$
+                    data.addProperty("rule_description", ""); //$NON-NLS-1$ //$NON-NLS-2$
+                    toolResult = ToolResult.failure(
+                            "Операция отклонена пользователем", data); //$NON-NLS-1$
                     addToolResult(call.getId(), toolResult);
                     emit(new ToolResultEvent(step, call.getName(), call.getId(), toolResult, 0));
                     return CompletableFuture.completedFuture(null);
@@ -582,15 +676,25 @@ public class AgentRunner implements IAgentRunner {
         });
     }
 
+    private boolean hasConfirmationSink() {
+        for (IAgentEventListener listener : listeners) {
+            if (listener.handlesConfirmations()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Выполняет инструмент и добавляет результат в историю.
      */
-    private CompletableFuture<Void> executeToolAndAddResult(ToolCall call, Map<String, Object> args) {
+    private CompletableFuture<Void> executeToolAndAddResult(
+            ToolCall call, Map<String, Object> args, ToolExecutionContext executionContext) {
         long toolStartTime = System.currentTimeMillis();
         int step = currentStep.get();
         String parentTraceEventId = toolTraceEventIds.get(call.getId());
 
-        return toolRegistry.execute(call, traceSession, parentTraceEventId)
+        return toolRegistry.execute(call, args, traceSession, parentTraceEventId, executionContext)
                 .handle((result, error) -> {
                     long executionTime = System.currentTimeMillis() - toolStartTime;
                     toolCallsCount.incrementAndGet();
@@ -784,20 +888,12 @@ public class AgentRunner implements IAgentRunner {
     /**
      * Парсит JSON аргументы в Map.
      */
-    @SuppressWarnings("unchecked")
     private Map<String, Object> parseArguments(String json) {
-        if (json == null || json.isEmpty() || "{}".equals(json)) {
-            return new HashMap<>();
-        }
         try {
-            com.google.gson.Gson gson = new com.google.gson.Gson();
-            java.lang.reflect.Type mapType =
-                    new com.google.gson.reflect.TypeToken<Map<String, Object>>(){}.getType();
-            Map<String, Object> result = gson.fromJson(json, mapType);
-            return result != null ? result : new HashMap<>();
-        } catch (Exception e) {
+            return toolRegistry.getExecutionService().parseArguments(json);
+        } catch (Throwable e) {
             logWarning("Не удалось распарсить аргументы инструмента: " + json, e);
-            return new HashMap<>();
+            return Map.of();
         }
     }
 
@@ -1099,13 +1195,7 @@ public class AgentRunner implements IAgentRunner {
             }
             case TOOL_RESULT -> {
                 ToolResultEvent toolResultEvent = (ToolResultEvent) event;
-                payload.put("tool_name", toolResultEvent.getToolName()); //$NON-NLS-1$
-                payload.put("call_id", toolResultEvent.getCallId()); //$NON-NLS-1$
-                payload.put("success", Boolean.valueOf(toolResultEvent.isSuccess())); //$NON-NLS-1$
-                payload.put("execution_time_ms", Long.valueOf(toolResultEvent.getExecutionTimeMs())); //$NON-NLS-1$
-                payload.put("result_type", toolResultEvent.getResult().getType().name()); //$NON-NLS-1$
-                payload.put("content", toolResultEvent.getResult().getContent()); //$NON-NLS-1$
-                payload.put("error_message", toolResultEvent.getResult().getErrorMessage()); //$NON-NLS-1$
+                payload.putAll(buildToolResultTracePayload(toolResultEvent));
                 parentEventId = toolTraceEventIds.get(toolResultEvent.getCallId());
                 if (parentEventId == null) {
                     parentEventId = stepTraceEventIds.get(Integer.valueOf(toolResultEvent.getStep()));
@@ -1152,5 +1242,27 @@ public class AgentRunner implements IAgentRunner {
                 return;
             }
         }
+    }
+
+    Map<String, Object> buildToolResultTracePayload(ToolResultEvent event) {
+        Map<String, Object> payload = new HashMap<>();
+        ToolResult result = event.getResult();
+        payload.put("tool_name", event.getToolName()); //$NON-NLS-1$
+        payload.put("call_id", event.getCallId()); //$NON-NLS-1$
+        payload.put("success", Boolean.valueOf(event.isSuccess())); //$NON-NLS-1$
+        payload.put("execution_time_ms", Long.valueOf(event.getExecutionTimeMs())); //$NON-NLS-1$
+        payload.put("result_type", result.getType().name()); //$NON-NLS-1$
+
+        ITool tool = toolRegistry.getTool(event.getToolName());
+        boolean sensitive = tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
+        if (sensitive) {
+            String resultText = result.isSuccess() ? result.getContent() : result.getErrorMessage();
+            payload.put("content_omitted", Boolean.TRUE); //$NON-NLS-1$
+            payload.put("content_length", Integer.valueOf(resultText == null ? 0 : resultText.length())); //$NON-NLS-1$
+        } else {
+            payload.put("content", result.getContent()); //$NON-NLS-1$
+            payload.put("error_message", result.getErrorMessage()); //$NON-NLS-1$
+        }
+        return payload;
     }
 }

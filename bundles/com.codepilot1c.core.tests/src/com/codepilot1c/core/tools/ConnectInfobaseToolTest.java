@@ -623,7 +623,7 @@ public class ConnectInfobaseToolTest {
         public void reload(org.eclipse.core.runtime.IProgressMonitor monitor) { }
     }
 
-    /** Access manager whose {@code storeSettings} always throws the supplied exception. */
+    /** Access manager whose {@code updateSettings} always throws the supplied exception. */
     private static final class ThrowingAccessManager implements IInfobaseAccessManager {
         private final RuntimeException toThrow;
 
@@ -632,46 +632,19 @@ public class ConnectInfobaseToolTest {
         }
 
         @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings getSettings(
+        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings createDefaultSettings(
                 InfobaseReference reference) { return null; }
 
         @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings getSettings(
-                InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.model.InfobaseAccess access) { return null; }
+        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings resolveSettings(
+                InfobaseReference reference) { return null; }
 
         @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(org.eclipse.core.resources.IProject project, InfobaseReference ref) {
-            return null;
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(InfobaseReference reference) { return null; }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(InfobaseReference reference,
-                        com._1c.g5.v8.dt.platform.version.Version version) { return null; }
-
-        @Override
-        public void storeSettings(InfobaseReference reference,
+        public void updateSettings(InfobaseReference reference,
                 com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings settings) {
+            // EDT 2025.2 routes access-settings persistence through updateSettings (formerly
+            // storeSettings); this is the throw path exercised by the GH#31 regression.
             throw toThrow;
-        }
-
-        @Override
-        public void storeSettings(InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.model.InfobaseAccess access, String userName,
-                String password, String additionalProperties) {
-            throw toThrow;
-        }
-
-        @Override
-        public void storeInstallation(org.eclipse.core.resources.IProject project,
-                InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation installation) {
         }
 
         @Override
@@ -685,8 +658,15 @@ public class ConnectInfobaseToolTest {
         }
 
         @Override
-        public void updateSettings(InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings settings) {
+        public java.util.Optional<com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation>
+                loadSelectedInstallation(org.eclipse.core.resources.IProject project, InfobaseReference reference) {
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public void updateSelectedInstallation(org.eclipse.core.resources.IProject project,
+                InfobaseReference reference,
+                com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation installation) {
         }
     }
 

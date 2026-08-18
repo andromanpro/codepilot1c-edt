@@ -10,12 +10,13 @@ import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.ParamSet;
 import com._1c.g5.v8.dt.mcore.Parameter;
+import com._1c.g5.v8.dt.mcore.Type;
 import com._1c.g5.v8.dt.mcore.util.Environments;
 import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 
 /**
  * Covers STUB-02/STUB-03/STUB-04/STUB-05: {@link BslHandlerStubGenerator}'s directive
- * derivation, verbatim widest-{@link ParamSet} signature reproduction, and BSL text
+ * derivation, EDT-compatible first-{@link ParamSet} signature reproduction, and BSL text
  * assembly.
  *
  * <p>Runs entirely against fake {@link Event}/{@link ParamSet}/{@link Parameter}
@@ -103,7 +104,7 @@ public class BslHandlerStubGeneratorTest {
     }
 
     @Test
-    public void widestParamSetByMaxParamsIsSelectedWhenMultipleParamSetsExist() {
+    public void firstParamSetIsSelectedWhenMultipleParamSetsExist() {
         Event event = createEvent("OnChange", "ПриИзменении"); //$NON-NLS-1$ //$NON-NLS-2$
         event.setEnvironments(Environments.ALL_CLIENTS);
         ParamSet narrow = createParamSet(createParameter("A", "А", false)); //$NON-NLS-1$ //$NON-NLS-2$
@@ -116,9 +117,84 @@ public class BslHandlerStubGeneratorTest {
 
         BslHandlerStubGenerator.StubText stub = generator.generate(event, "Handler", ScriptVariant.ENGLISH); //$NON-NLS-1$
 
-        assertTrue(stub.procedureText().contains("A")); //$NON-NLS-1$
-        assertTrue(stub.procedureText().contains("B")); //$NON-NLS-1$
-        assertTrue(stub.procedureText().contains("C")); //$NON-NLS-1$
+        assertEquals("A", stub.signatureText()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void visualItemPrependsImplicitItemParameter() {
+        Event event = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.getParamSet().add(createParamSet(
+                createParameter("ChoiceData", "ДанныеВыбора", false), //$NON-NLS-1$ //$NON-NLS-2$
+                createParameter("StandardProcessing", "СтандартнаяОбработка", true))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        BslHandlerStubGenerator.StubText ru = generator.generate(
+                event, "Handler", ScriptVariant.RUSSIAN, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.VISUAL_ITEM);
+        BslHandlerStubGenerator.StubText en = generator.generate(
+                event, "Handler", ScriptVariant.ENGLISH, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.VISUAL_ITEM);
+
+        assertEquals("Элемент, ДанныеВыбора, СтандартнаяОбработка", ru.signatureText()); //$NON-NLS-1$
+        assertEquals("Item, ChoiceData, StandardProcessing", en.signatureText()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void formEventDoesNotPrependImplicitItemParameter() {
+        Event event = createEvent("OnOpen", "ПриОткрытии"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.getParamSet().add(createParamSet(createParameter(
+                "Cancel", "Отказ", true))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        BslHandlerStubGenerator.StubText stub = generator.generate(
+                event, "Handler", ScriptVariant.RUSSIAN, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.FORM);
+
+        assertEquals("Отказ", stub.signatureText()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void ordinaryItemEventNamedOnGetDataAtServerStillPrependsItemParameter() {
+        Event event = createEvent("OnGetDataAtServer", "ПриПолученииДанныхНаСервере"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.getParamSet().add(createParamSet(createParameter(
+                "Data", "Данные", false))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        BslHandlerStubGenerator.StubText stub = generator.generate(
+                event, "Handler", ScriptVariant.RUSSIAN, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.VISUAL_ITEM);
+
+        assertEquals("Элемент, Данные", stub.signatureText()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void dynamicListTableOnGetDataAtServerDoesNotPrependItemParameter() {
+        Type dynamicListTableExtension = McoreFactory.eINSTANCE.createType();
+        dynamicListTableExtension.setName("FormTableExtensionForDynamicList"); //$NON-NLS-1$
+        Event event = createEvent("OnGetDataAtServer", "ПриПолученииДанныхНаСервере"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.getParamSet().add(createParamSet(createParameter(
+                "Data", "Данные", false))); //$NON-NLS-1$ //$NON-NLS-2$
+        dynamicListTableExtension.getEvents().add(event);
+
+        BslHandlerStubGenerator.StubText stub = generator.generate(
+                event, "Handler", ScriptVariant.RUSSIAN, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.VISUAL_ITEM);
+
+        assertEquals("Данные", stub.signatureText()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void commandContextPrependsImplicitCommandParameter() {
+        Event event = createEvent("Action", "Действие"); //$NON-NLS-1$ //$NON-NLS-2$
+        event.getParamSet().add(createParamSet(createParameter(
+                "Parameter", "Параметр", false))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        BslHandlerStubGenerator.StubText ru = generator.generate(
+                event, "Handler", ScriptVariant.RUSSIAN, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.COMMAND);
+        BslHandlerStubGenerator.StubText en = generator.generate(
+                event, "Handler", ScriptVariant.ENGLISH, //$NON-NLS-1$
+                BslHandlerStubGenerator.TargetContext.COMMAND);
+
+        assertEquals("Команда, Параметр", ru.signatureText()); //$NON-NLS-1$
+        assertEquals("Command, Parameter", en.signatureText()); //$NON-NLS-1$
     }
 
     @Test

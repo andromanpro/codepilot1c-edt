@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.agent.events.ToolResultEvent;
 import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
 import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.model.LlmRequest;
@@ -35,6 +36,40 @@ import com.google.gson.JsonParser;
 import sun.misc.Unsafe;
 
 public class AgentRunnerBuildRequestTest {
+
+    @Test
+    public void sensitiveToolResultTracePayloadContainsOnlyMetadata() throws Exception {
+        String toolName = "sensitive_trace_tool"; //$NON-NLS-1$
+        ToolRegistry registry = isolatedRegistry(Map.of(toolName, tool(toolName, Set.of("sensitive")))); //$NON-NLS-1$
+        AgentRunner runner = new AgentRunner(new NoopProvider(), registry, "system"); //$NON-NLS-1$
+
+        Map<String, Object> success = runner.buildToolResultTracePayload(new ToolResultEvent(
+                1, toolName, "call-success", ToolResult.success("stored-secret"), 17L)); //$NON-NLS-1$ //$NON-NLS-2$
+        Map<String, Object> failure = runner.buildToolResultTracePayload(new ToolResultEvent(
+                1, toolName, "call-failure", ToolResult.failure("sensitive-error"), 19L)); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertSensitiveTraceMetadata(success, 13);
+        assertSensitiveTraceMetadata(failure, 15);
+    }
+
+    @Test
+    public void nonSensitiveToolResultTracePayloadPreservesContentAndError() throws Exception {
+        String toolName = "regular_trace_tool"; //$NON-NLS-1$
+        ToolRegistry registry = isolatedRegistry(Map.of(toolName, tool(toolName)));
+        AgentRunner runner = new AgentRunner(new NoopProvider(), registry, "system"); //$NON-NLS-1$
+
+        Map<String, Object> success = runner.buildToolResultTracePayload(new ToolResultEvent(
+                1, toolName, "call-success", ToolResult.success("ordinary-content"), 17L)); //$NON-NLS-1$ //$NON-NLS-2$
+        Map<String, Object> failure = runner.buildToolResultTracePayload(new ToolResultEvent(
+                1, toolName, "call-failure", ToolResult.failure("ordinary-error"), 19L)); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals("ordinary-content", success.get("content")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(success.containsKey("error_message")); //$NON-NLS-1$
+        assertEquals("ordinary-error", failure.get("error_message")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(failure.containsKey("content")); //$NON-NLS-1$
+        assertFalse(success.containsKey("content_omitted")); //$NON-NLS-1$
+        assertFalse(failure.containsKey("content_omitted")); //$NON-NLS-1$
+    }
 
     @Test
     public void buildRequestAppliesProfileContextAndConfigFiltering() throws Exception {
@@ -195,6 +230,10 @@ public class AgentRunnerBuildRequestTest {
     }
 
     private static ITool tool(String name) {
+        return tool(name, Set.of());
+    }
+
+    private static ITool tool(String name, Set<String> tags) {
         return new ITool() {
             @Override
             public String getName() {
@@ -215,7 +254,20 @@ public class AgentRunnerBuildRequestTest {
             public CompletableFuture<ToolResult> execute(Map<String, Object> parameters) {
                 return CompletableFuture.completedFuture(ToolResult.success("ok")); //$NON-NLS-1$
             }
+
+            @Override
+            public Set<String> getTags() {
+                return tags;
+            }
         };
+    }
+
+    private static void assertSensitiveTraceMetadata(Map<String, Object> payload, int contentLength) {
+        assertEquals(Boolean.TRUE, payload.get("content_omitted")); //$NON-NLS-1$
+        assertEquals(Integer.valueOf(contentLength), payload.get("content_length")); //$NON-NLS-1$
+        assertFalse(payload.containsKey("content")); //$NON-NLS-1$
+        assertFalse(payload.containsKey("error_message")); //$NON-NLS-1$
+        assertFalse(payload.keySet().stream().anyMatch(key -> key.startsWith("exception"))); //$NON-NLS-1$
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {

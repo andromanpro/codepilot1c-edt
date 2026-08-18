@@ -9,7 +9,6 @@ package com.codepilot1c.core.permissions;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -106,25 +105,9 @@ public class PermissionManager implements IPermissionManager {
             return sessionDecision;
         }
 
-        // Find matching rules, sorted by priority (highest first)
-        List<PermissionRule> matchingRules = new ArrayList<>();
-
-        for (PermissionRule rule : rules) {
-            if (rule.matchesTool(toolName) && rule.matches(resource)) {
-                matchingRules.add(rule);
-            }
-        }
-
-        if (matchingRules.isEmpty()) {
-            // No rules match - default to ASK
-            return PermissionDecision.ASK;
-        }
-
-        // Sort by priority (highest first)
-        matchingRules.sort(Comparator.comparingInt(PermissionRule::getPriority).reversed());
-
-        // Return decision of highest priority rule
-        return matchingRules.get(0).getDecision();
+        return PermissionEvaluator.firstMatch(new ArrayList<>(rules), toolName, resource)
+                .map(PermissionRule::getDecision)
+                .orElse(PermissionDecision.ASK);
     }
 
     /**
@@ -178,19 +161,7 @@ public class PermissionManager implements IPermissionManager {
      * Извлекает ресурс из контекста.
      */
     private String extractResource(Map<String, Object> context) {
-        if (context == null) {
-            return "*";
-        }
-
-        // Try common keys
-        for (String key : new String[]{"path", "file", "filePath", "command", "resource"}) {
-            Object value = context.get(key);
-            if (value != null) {
-                return value.toString();
-            }
-        }
-
-        return "*";
+        return PermissionEvaluator.resourceOf(context);
     }
 
     /**

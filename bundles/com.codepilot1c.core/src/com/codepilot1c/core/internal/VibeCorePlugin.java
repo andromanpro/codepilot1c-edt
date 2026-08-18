@@ -84,7 +84,7 @@ public class VibeCorePlugin extends Plugin {
     private ServiceTracker<IInfobaseAccessManager, IInfobaseAccessManager> infobaseAccessManagerTracker;
     private ServiceTracker<IInfobaseManager, IInfobaseManager> infobaseManagerTracker;
     private ServiceTracker<IRuntimeComponentManager, IRuntimeComponentManager> runtimeComponentManagerTracker;
-    private ServiceTracker<IResolvableRuntimeInstallationManager, IResolvableRuntimeInstallationManager> resolvableInstallationManagerTracker;
+    private ServiceTracker<IResolvableRuntimeInstallationManager, IResolvableRuntimeInstallationManager> resolvableRuntimeInstallationManagerTracker;
     private ServiceTracker<IImportConfigurationFilesApi, IImportConfigurationFilesApi> importConfigurationFilesApiTracker;
     private ServiceTracker<IStandaloneServerService, IStandaloneServerService> standaloneServerServiceTracker;
     private ServiceTracker<IRemoteWorkbenchBridge, IRemoteWorkbenchBridge> remoteWorkbenchBridgeTracker;
@@ -189,8 +189,9 @@ public class VibeCorePlugin extends Plugin {
         infobaseManagerTracker.open();
         runtimeComponentManagerTracker = new ServiceTracker<>(context, IRuntimeComponentManager.class, null);
         runtimeComponentManagerTracker.open();
-        resolvableInstallationManagerTracker = new ServiceTracker<>(context, IResolvableRuntimeInstallationManager.class, null);
-        resolvableInstallationManagerTracker.open();
+        resolvableRuntimeInstallationManagerTracker =
+                new ServiceTracker<>(context, IResolvableRuntimeInstallationManager.class, null);
+        resolvableRuntimeInstallationManagerTracker.open();
         importConfigurationFilesApiTracker = new ServiceTracker<>(context, IImportConfigurationFilesApi.class, null);
         importConfigurationFilesApiTracker.open();
         standaloneServerServiceTracker = new ServiceTracker<>(context, IStandaloneServerService.class, null);
@@ -282,8 +283,8 @@ public class VibeCorePlugin extends Plugin {
         infobaseManagerTracker = null;
         closeTracker(runtimeComponentManagerTracker);
         runtimeComponentManagerTracker = null;
-        closeTracker(resolvableInstallationManagerTracker);
-        resolvableInstallationManagerTracker = null;
+        closeTracker(resolvableRuntimeInstallationManagerTracker);
+        resolvableRuntimeInstallationManagerTracker = null;
         closeTracker(importConfigurationFilesApiTracker);
         importConfigurationFilesApiTracker = null;
         closeTracker(standaloneServerServiceTracker);
@@ -396,7 +397,7 @@ public class VibeCorePlugin extends Plugin {
     }
 
     public IResolvableRuntimeInstallationManager getResolvableRuntimeInstallationManager() {
-        return getTrackedService(resolvableInstallationManagerTracker, "IResolvableRuntimeInstallationManager"); //$NON-NLS-1$
+        return getTrackedService(resolvableRuntimeInstallationManagerTracker, "IResolvableRuntimeInstallationManager"); //$NON-NLS-1$
     }
 
     public IImportConfigurationFilesApi getImportConfigurationFilesApi() {

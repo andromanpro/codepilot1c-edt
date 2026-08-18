@@ -11,22 +11,21 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseAccessType;
-import com._1c.g5.v8.dt.platform.services.core.runtimes.RuntimeInstallations;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.MatchingRuntimeNotFound;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ComponentExecutorInfo;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ILaunchableRuntimeComponent;
-import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IThickClientLauncher;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager.ThickClientInfo;
-import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentTypes;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IThickClientLauncher;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.RuntimeExecutionException;
-import com._1c.g5.v8.dt.platform.services.model.AppArch;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder.ThickClientMode;
+import com._1c.g5.v8.dt.platform.services.model.AppArch;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
+import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
@@ -39,6 +38,18 @@ import org.eclipse.wst.server.core.IServer;
 public class EdtRuntimeService {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtRuntimeService.class);
+
+    /**
+     * Runtime-type and component-type ids used to resolve the thick client launcher. EDT 2025.2
+     * (services.core 21.x) dropped the {@code IRuntimeComponentManager.getThickClientInfo(...)}
+     * convenience methods; their former bodies resolved an {@link IResolvableRuntimeInstallation}
+     * for these ids and delegated to {@code resolveExecutor(...)}. We inline that logic in
+     * {@link #resolveThickClient}.
+     */
+    private static final String RUNTIME_TYPE_ENTERPRISE_PLATFORM =
+            "com._1c.g5.v8.dt.platform.services.core.runtimeType.EnterprisePlatform"; //$NON-NLS-1$
+    private static final String COMPONENT_TYPE_THICK_CLIENT =
+            "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThickClient"; //$NON-NLS-1$
 
     private final EdtRuntimeGateway gateway;
 
@@ -402,44 +413,47 @@ public class EdtRuntimeService {
     }
 
     public ThickClientInfo resolveThickClientInfo(InfobaseReference infobase, String versionMask) {
-        IResolvableRuntimeInstallationManager installationManager = gateway.getResolvableRuntimeInstallationManager();
         IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
+        IResolvableRuntimeInstallationManager installationManager =
+                gateway.getResolvableRuntimeInstallationManager();
+        ThickClientInfo info;
         try {
             IResolvableRuntimeInstallation resolvable;
-            // First argument of resolve* is the RUNTIME TYPE (registry lookup key of
-            // IRuntimeInstallationManager, bound as "...runtimeType.EnterprisePlatform"),
-            // NOT a component type. Passing IRuntimeComponentTypes.THICK_CLIENT here made
-            // ServiceAccess look up a service registered under a non-existent name and fail with
-            // "Service ...IRuntimeInstallationManager is unavailable or not registered".
-            // Component types belong to resolvable.resolve(...) / resolveExecutor(...) below
-            // (same pattern as EDT's own AbstractInfobaseConnection.findRequired).
             if (versionMask != null && !versionMask.isBlank()) {
-                resolvable = installationManager.resolveByVersionOrMask(
-                        RuntimeInstallations.ENTERPRISE_PLATFORM, versionMask);
+                resolvable = installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
             } else {
-                IProject project = gateway.getInfobaseAssociationManager()
-                        .getAssociation(infobase)
-                        .map(IInfobaseAssociation::getProject)
-                        .orElse(null);
-                resolvable = installationManager.resolveByProjectAndInfobase(
-                        RuntimeInstallations.ENTERPRISE_PLATFORM, project, infobase, InfobaseAccessType.CLIENT_LAUNCH);
+                resolvable = installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
+                        null, infobase, InfobaseAccessType.UPDATE);
             }
-            var installation = resolvable.resolve(List.of(IRuntimeComponentTypes.THICK_CLIENT), AppArch.AUTO);
-            ComponentExecutorInfo<ILaunchableRuntimeComponent, IThickClientLauncher> executorInfo =
-                    runtimeComponentManager.resolveExecutor(
-                            ILaunchableRuntimeComponent.class, IThickClientLauncher.class,
-                            installation, IRuntimeComponentTypes.THICK_CLIENT);
-            ThickClientInfo info = new ThickClientInfo(resolvable, executorInfo.getInstallation(),
-                    executorInfo.getComponent(), executorInfo.getExecutor());
-            if (info.component() == null || info.component().getFile() == null) {
-                throw new IllegalStateException("Thick client runtime component not resolved for infobase"); //$NON-NLS-1$
-            }
-            return info;
-        } catch (MatchingRuntimeNotFound | RuntimeExecutionException e) {
-            throw new IllegalStateException("Failed to resolve thick client: " + e.getMessage(), e); //$NON-NLS-1$
-        } catch (Exception e) {
-            throw new IllegalStateException("Unexpected error resolving thick client: " + e.getMessage(), e); //$NON-NLS-1$
+            info = resolveThickClient(runtimeComponentManager, resolvable, infobase);
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("Failed to resolve thick client (possible EDT API incompatibility): " + e.getMessage(), e); //$NON-NLS-1$
+            return null;
         }
+        if (info == null || info.component() == null || info.component().getFile() == null) {
+            throw new IllegalStateException("Thick client runtime component not resolved for infobase"); //$NON-NLS-1$
+        }
+        return info;
+    }
+
+    /**
+     * Resolves the thick client launcher for a runtime installation, replacing the
+     * {@code IRuntimeComponentManager.getThickClientInfo(...)} methods removed in EDT 2025.2. This
+     * mirrors their former private {@code resolveThickClient} body: pick the app architecture from
+     * the infobase (or {@link AppArch#AUTO}), resolve the concrete {@link RuntimeInstallation} for
+     * the thick client component, then ask {@code resolveExecutor} for the launchable component and
+     * its launcher.
+     */
+    private static ThickClientInfo resolveThickClient(IRuntimeComponentManager runtimeComponentManager,
+            IResolvableRuntimeInstallation resolvable, InfobaseReference infobase)
+            throws MatchingRuntimeNotFound, RuntimeExecutionException {
+        AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+        RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THICK_CLIENT), appArch);
+        ComponentExecutorInfo<ILaunchableRuntimeComponent, IThickClientLauncher> executorInfo =
+                runtimeComponentManager.resolveExecutor(ILaunchableRuntimeComponent.class,
+                        IThickClientLauncher.class, installation, COMPONENT_TYPE_THICK_CLIENT);
+        return new ThickClientInfo(resolvable, executorInfo.getInstallation(), executorInfo.getComponent(),
+                executorInfo.getExecutor());
     }
 
     public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
@@ -476,7 +490,7 @@ public class EdtRuntimeService {
      *        different {@code /C} (YAxUnit uses {@code /C RunUnitTests=<config.json>}) must suppress
      *        the Vanessa one — otherwise the command carries two {@code /C} parameters, only the
      *        first is honoured by the platform, and the client silently starts Vanessa FeaturePlayer
-     *        instead of running the tests.
+     *        instead of running the tests (empty yaxunit.log, no junit.xml).
      */
     public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
                                                                   File vaParamsPath, File workspaceRoot,

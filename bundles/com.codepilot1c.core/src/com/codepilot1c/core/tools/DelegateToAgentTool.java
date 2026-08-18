@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.agent.profiles.ProfileRouter;
+import com.google.gson.JsonObject;
 
 /**
  * Thin orchestration wrapper over {@link TaskTool}.
@@ -73,6 +74,12 @@ public final class DelegateToAgentTool extends AbstractTool {
 
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
+        return doExecute(params, ToolExecutionContext.unscoped());
+    }
+
+    @Override
+    protected CompletableFuture<ToolResult> doExecute(
+            ToolParameters params, ToolExecutionContext context) {
         String agentType = profileRouter.normalizeProfileId(params.optString("agentType", "auto")); //$NON-NLS-1$ //$NON-NLS-2$
         if (!"auto".equals(agentType) && !profileRouter.supportedDelegateTargets().contains(agentType)) { //$NON-NLS-1$
             return CompletableFuture.completedFuture(ToolResult.failure(
@@ -81,17 +88,29 @@ public final class DelegateToAgentTool extends AbstractTool {
         }
 
         String prompt = params.requireString("task"); //$NON-NLS-1$
-        String context = params.optString("context", "").trim(); //$NON-NLS-1$ //$NON-NLS-2$
+        String extraContext = params.optString("context", "").trim(); //$NON-NLS-1$ //$NON-NLS-2$
         String description = params.optString("description", prompt); //$NON-NLS-1$ //$NON-NLS-2$
 
-        String delegatedPrompt = context.isEmpty()
+        String delegatedPrompt = extraContext.isEmpty()
                 ? prompt
-                : prompt + "\n\nДополнительный контекст:\n" + context; //$NON-NLS-1$
+                : prompt + "\n\nДополнительный контекст:\n" + extraContext; //$NON-NLS-1$
 
         Map<String, Object> delegatedParams = new LinkedHashMap<>();
         delegatedParams.put("prompt", delegatedPrompt); //$NON-NLS-1$
         delegatedParams.put("profile", agentType); //$NON-NLS-1$
         delegatedParams.put("description", description); //$NON-NLS-1$
-        return taskTool.execute(delegatedParams);
+        return taskTool.execute(delegatedParams, context)
+                .thenApply(this::remapDelegationDenial);
+    }
+
+    private ToolResult remapDelegationDenial(ToolResult result) {
+        if (result == null
+                || result.isSuccess()
+                || !"delegation_denied".equals(result.getStructuredString("error"))) { //$NON-NLS-1$ //$NON-NLS-2$
+            return result;
+        }
+        JsonObject structured = result.getStructuredData().deepCopy();
+        structured.addProperty("tool", getName()); //$NON-NLS-1$
+        return ToolResult.failure(result.getErrorMessage(), structured);
     }
 }

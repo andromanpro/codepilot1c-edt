@@ -15,6 +15,7 @@ import com._1c.g5.v8.dt.core.platform.IExternalObjectProjectManager;
 import com._1c.g5.v8.dt.core.platform.IExtensionProjectManager;
 import com._1c.g5.v8.dt.core.platform.IV8Project;
 import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
+import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.md.extension.IMdAdoptedPropertyAccess;
 import com._1c.g5.v8.dt.md.extension.adopt.IModelObjectAdopter;
 import com._1c.g5.v8.dt.platform.version.Version;
@@ -24,6 +25,14 @@ import com.codepilot1c.core.internal.VibeCorePlugin;
  * Access to EDT runtime services.
  */
 public class EdtMetadataGateway {
+
+    private volatile FormItemInformationServiceCache formItemInformationServiceCache;
+
+    private record FormItemInformationServiceCache(
+            Object injector,
+            FormItemInformationService service
+    ) {
+    }
 
     public IProject resolveProject(String projectName) {
         IWorkspace workspace = ResourcesPlugin.getWorkspace();
@@ -130,6 +139,29 @@ public class EdtMetadataGateway {
             throw serviceUnavailable("BmAwareResourceSetProvider"); //$NON-NLS-1$
         }
         return service;
+    }
+
+    /**
+     * Returns the form item information service assembled by the EDT form
+     * plug-in injector. The service has Guice-injected runtime-version support
+     * and keeps EDT's per-version event/type caches between calls.
+     */
+    public FormItemInformationService getFormItemInformationService() {
+        Object injector = EdtPluginInjectorLocator.formInjector();
+        FormItemInformationServiceCache cached = formItemInformationServiceCache;
+        if (cached != null && cached.injector() == injector) {
+            return cached.service();
+        }
+        synchronized (this) {
+            cached = formItemInformationServiceCache;
+            if (cached != null && cached.injector() == injector) {
+                return cached.service();
+            }
+            FormItemInformationService service =
+                    EdtPluginInjectorLocator.service(injector, FormItemInformationService.class);
+            formItemInformationServiceCache = new FormItemInformationServiceCache(injector, service);
+            return service;
+        }
     }
 
     public Version resolvePlatformVersion(IProject project) {

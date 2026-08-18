@@ -72,7 +72,8 @@ public class QwenRuntimeReferenceGuardTest {
         String chatView = Files.readString(
                 root.resolve("bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/views/ChatView.java"), //$NON-NLS-1$
                 StandardCharsets.UTF_8);
-        assertTrue(chatView.contains("ToolRegistry.getInstance().getToolDefinitions()")); //$NON-NLS-1$
+        assertTrue(chatView.contains(
+                "visibleToolDefinitions(ToolRegistry.getInstance())")); //$NON-NLS-1$
         assertFalse(chatView.contains("ProviderSelectionGate")); //$NON-NLS-1$
     }
 

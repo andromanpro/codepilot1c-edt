@@ -24,13 +24,14 @@ import com.codepilot1c.core.permissions.PermissionRule;
  *   <li>Чтение файлов</li>
  *   <li>Поиск по кодовой базе</li>
  *   <li>Анализ архитектуры</li>
+ *   <li>Compile-only проверка Java без изменения проекта</li>
  *   <li>Создание планов реализации</li>
  * </ul>
  *
  * <p>Ограничения:</p>
  * <ul>
  *   <li>Нет редактирования файлов</li>
- *   <li>Нет выполнения команд</li>
+ *   <li>Нет shell-команд и исполнения пользовательского кода</li>
  *   <li>Максимум 25 шагов</li>
  * </ul>
  *
@@ -79,6 +80,7 @@ public class PlanAgentProfile implements AgentProfile {
             "bsl_module_context",
             "bsl_module_exports",
             "inspect_platform_reference",
+            "java_compile_probe",
             "skill",
             "task",
             "discover_tools"
@@ -141,6 +143,7 @@ public class PlanAgentProfile implements AgentProfile {
                 PermissionRule.allow("bsl_module_context").forAllResources(),
                 PermissionRule.allow("bsl_module_exports").forAllResources(),
                 PermissionRule.allow("inspect_platform_reference").forAllResources(),
+                PermissionRule.allow("java_compile_probe").forAllResources(),
                 PermissionRule.allow("skill").forAllResources(),
                 PermissionRule.allow("task").forAllResources(),
                 PermissionRule.allow("discover_tools").forAllResources()

@@ -1,15 +1,14 @@
 package com.codepilot1c.core.edt.forms;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
-
-import org.eclipse.emf.ecore.EStructuralFeature;
 
 import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
 import com._1c.g5.v8.dt.mcore.Event;
 
+import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
@@ -22,25 +21,18 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
  */
 public class EventHandlerTargetResolver {
 
-    /**
-     * EMF feature name holding an item's type-specific extended info. Looked up
-     * reflectively so no concrete EDT item class is hardcoded here.
-     */
-    private static final String EXT_INFO_FEATURE = "extInfo"; //$NON-NLS-1$
+    /** Resolved platform event together with the model object owning its handlers. */
+    public record ResolvedEvent(EventHandlerContainer owner, Event event) {
+    }
 
     private final EventHandlerCatalog catalog;
 
-    public EventHandlerTargetResolver() {
-        this(new FormItemInformationEventCatalog());
-    }
-
     /**
-     * Test/DI-injection constructor: accepts an arbitrary {@link EventHandlerCatalog},
-     * e.g. a fake catalog substituted by unit tests outside this package (such as
-     * {@code EventHandlerWiringTest}), avoiding any live EDT/BM/OSGi dependency.
+     * Injection constructor: accepts the production EDT-backed catalog or a fake
+     * catalog for tests that run without live EDT/BM/OSGi dependencies.
      */
     public EventHandlerTargetResolver(EventHandlerCatalog catalog) {
-        this.catalog = catalog;
+        this.catalog = Objects.requireNonNull(catalog, "catalog"); //$NON-NLS-1$
     }
 
     /**
@@ -65,37 +57,6 @@ public class EventHandlerTargetResolver {
     }
 
     /**
-     * Collects every container that may physically hold event handlers for {@code target}:
-     * the entity itself and, when present, its {@code extInfo}.
-     *
-     * <p>EDT splits a field's handlers across two containers: the {@code FormField} itself
-     * keeps generic events (e.g. {@code OnChange}), while type-specific ones — such as
-     * {@code StartChoice}/{@code ChoiceProcessing} on an input field — live in its
-     * {@code InputFieldExtInfo}. Looking only at the item therefore silently misses
-     * handlers that exist in the {@code .form}, which made {@code remove_event_handler}
-     * a no-op for those events.</p>
-     *
-     * <p>The {@code extInfo} feature is resolved reflectively through EMF, so whatever the
-     * current EDT metamodel exposes is honoured without hardcoding item classes.</p>
-     *
-     * @param target the resolved form visual entity (a form item, or the form itself)
-     * @return containers to search, most specific owner first; never {@code null}
-     */
-    public List<EventHandlerContainer> handlerContainers(FormVisualEntity target) {
-        List<EventHandlerContainer> containers = new ArrayList<>(2);
-        if (target instanceof EventHandlerContainer container) {
-            containers.add(container);
-        }
-        EStructuralFeature extInfoFeature = target.eClass().getEStructuralFeature(EXT_INFO_FEATURE);
-        if (extInfoFeature != null && target.eIsSet(extInfoFeature)
-                && target.eGet(extInfoFeature) instanceof EventHandlerContainer extContainer
-                && !containers.contains(extContainer)) {
-            containers.add(extContainer);
-        }
-        return containers;
-    }
-
-    /**
      * Resolves the requested event name (EN or RU, case-insensitive) against the
      * container's allowed events, obtained from the injected {@link EventHandlerCatalog}.
      *
@@ -106,16 +67,46 @@ public class EventHandlerTargetResolver {
      *         allowed event matches; the message enumerates the allowed names
      */
     public Event resolveConcreteEvent(EventHandlerContainer container, String requestedEvent) {
-        List<Event> allowed = catalog.allowedEvents((FormVisualEntity) container);
-        return allowed.stream()
-                .filter(event -> requestedEvent != null
-                        && (requestedEvent.equalsIgnoreCase(event.getName())
-                                || requestedEvent.equalsIgnoreCase(event.getNameRu())))
-                .findFirst()
-                .orElseThrow(() -> new MetadataOperationException(
-                        MetadataOperationCode.METADATA_NOT_FOUND,
-                        "Unknown event '" + requestedEvent + "' for this item. Available events: " //$NON-NLS-1$ //$NON-NLS-2$
-                                + allowed.stream().map(Event::getName).collect(Collectors.joining(", ")), //$NON-NLS-1$
-                        false));
+        return resolveEvent((FormVisualEntity) container, requestedEvent).event();
+    }
+
+    /**
+     * Resolves an event in EDT UI order and preserves its actual handler owner. Direct
+     * item events win over ExtInfo events with the same localized/name spelling.
+     */
+    public ResolvedEvent resolveEvent(FormVisualEntity item, String requestedEvent) {
+        List<EventHandlerCatalog.EventSurface> surfaces = catalog.eventSurfaces(item);
+        if (surfaces.isEmpty() && !(item instanceof EventHandlerContainer)) {
+            requireEventHandlerContainer(item);
+        }
+        for (EventHandlerCatalog.EventSurface surface : surfaces) {
+            for (Event event : surface.events()) {
+                if (matches(event, requestedEvent)) {
+                    return new ResolvedEvent(surface.owner(), event);
+                }
+            }
+        }
+        List<Event> allowed = surfaces.stream()
+                .flatMap(surface -> surface.events().stream())
+                .toList();
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Unknown event '" + requestedEvent + "' for this item. Available events: " //$NON-NLS-1$ //$NON-NLS-2$
+                        + allowed.stream().map(Event::getName).collect(Collectors.joining(", ")), //$NON-NLS-1$
+                false);
+    }
+
+    /** Returns all actual handler owners in EDT UI order for inspection. */
+    public List<EventHandlerContainer> resolveHandlerOwners(FormVisualEntity item) {
+        return catalog.eventSurfaces(item).stream()
+                .map(EventHandlerCatalog.EventSurface::owner)
+                .distinct()
+                .toList();
+    }
+
+    private boolean matches(Event event, String requestedEvent) {
+        return requestedEvent != null && event != null
+                && (requestedEvent.equalsIgnoreCase(event.getName())
+                        || requestedEvent.equalsIgnoreCase(event.getNameRu()));
     }
 }

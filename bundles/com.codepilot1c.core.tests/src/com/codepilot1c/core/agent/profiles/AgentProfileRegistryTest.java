@@ -5,10 +5,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.permissions.PermissionDecision;
 
 /**
@@ -30,6 +33,7 @@ public class AgentProfileRegistryTest {
         assertTrue("Explore must include bsl_analyze_method", tools.contains("bsl_analyze_method")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Explore must include bsl_module_context", tools.contains("bsl_module_context")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("Explore must include bsl_module_exports", tools.contains("bsl_module_exports")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Explore must include java_compile_probe", tools.contains("java_compile_probe")); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Explore must NOT include write/mutate tools
         assertFalse("Explore must not include edit_file", tools.contains("edit_file")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -42,8 +46,8 @@ public class AgentProfileRegistryTest {
     public void exploreProfileToolCountWithinOptimalRange() {
         AgentProfile explore = new ExploreAgentProfile();
         int toolCount = explore.getAllowedTools().size();
-        assertTrue("Explore profile should have <= 30 tools for optimal LLM accuracy, has " + toolCount, //$NON-NLS-1$
-                toolCount <= 35);
+        assertTrue("Explore profile should have <= 36 tools for optimal LLM accuracy, has " + toolCount, //$NON-NLS-1$
+                toolCount <= 36);
     }
 
     @Test
@@ -123,9 +127,235 @@ public class AgentProfileRegistryTest {
                 new RecoveryProfile(),
                 new PlanAgentProfile(),
                 new ExploreAgentProfile(),
-                new OrchestratorProfile())) {
+                new OrchestratorProfile(),
+                new GsdDiscussProfile(),
+                new GsdPlanProfile(),
+                new GsdExecuteProfile(),
+                new GsdVerifyProfile(),
+                new GsdShipProfile())) {
             assertTrue(profile.getId() + " must include discover_tools", //$NON-NLS-1$
                     profile.getAllowedTools().contains("discover_tools")); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void gsdProfilesRegisteredInRegistry() {
+        AgentProfileRegistry registry = AgentProfileRegistry.getInstance();
+
+        assertNotNull("gsd-discuss profile", registry.getProfile("gsd-discuss").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-plan profile", registry.getProfile("gsd-plan").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-execute profile", registry.getProfile("gsd-execute").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-verify profile", registry.getProfile("gsd-verify").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-ship profile", registry.getProfile("gsd-ship").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void gsdReadOnlyProfilesHaveNoProjectMutations() {
+        List<String> readOnlyIds = Arrays.asList(
+                "gsd-discuss", //$NON-NLS-1$
+                "gsd-plan", //$NON-NLS-1$
+                "gsd-verify"); //$NON-NLS-1$
+        List<String> mutations = Arrays.asList(
+                "edit_file", "write_file", "workspace_copy_transform", "workspace_copy_transform_batch", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "create_metadata", "update_metadata", "delete_metadata", "add_metadata_child", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "create_form", "apply_form_recipe", "mutate_form_model", "ensure_module_artifact", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "dcs_manage", "extension_manage", "external_manage", "render_template", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "git_mutate", "git_clone_and_import_project", "import_project_from_infobase", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "workspace_import_project", "connect_infobase", "qa_generate", "qa_run", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "qa_prepare_form_context", "author_yaxunit_tests", "run_yaxunit_tests", "debug_yaxunit_tests", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "start_profiling", "set_breakpoint", "remove_breakpoint", "step", "resume", "evaluate_expression", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                "edt_diagnostics", //$NON-NLS-1$
+                "task"); //$NON-NLS-1$
+
+        for (String profileId : readOnlyIds) {
+            AgentProfile profile = AgentProfileRegistry.getInstance()
+                    .getProfile(profileId).orElseThrow(() -> new AssertionError(profileId + " not registered")); //$NON-NLS-1$
+            assertTrue(profileId + " must be read-only", profile.isReadOnly()); //$NON-NLS-1$
+            Set<String> tools = profile.getAllowedTools();
+            for (String mutation : mutations) {
+                assertFalse(profileId + " must not include mutation tool " + mutation, tools.contains(mutation)); //$NON-NLS-1$
+            }
+        }
+    }
+
+    @Test
+    public void gsdMutatingProfilesUseAskForProjectMutations() {
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        AgentProfile ship = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-ship").orElseThrow(() -> new AssertionError("gsd-ship missing")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertPermissionDecision(execute, "edit_file", PermissionDecision.ASK); //$NON-NLS-1$
+        assertPermissionDecision(execute, "write_file", PermissionDecision.ASK); //$NON-NLS-1$
+        assertPermissionDecision(execute, "ensure_module_artifact", PermissionDecision.ASK); //$NON-NLS-1$
+        assertPermissionDecision(ship, "git_mutate", PermissionDecision.ASK); //$NON-NLS-1$
+        assertPermissionDecision(ship, "write_file", PermissionDecision.ASK); //$NON-NLS-1$
+
+        assertFalse("gsd-execute must not bypass ask for mutations", //$NON-NLS-1$
+                hasDecision(execute, "edit_file", PermissionDecision.ALLOW)); //$NON-NLS-1$
+        assertFalse("gsd-ship must not bypass ask for mutations", //$NON-NLS-1$
+                hasDecision(ship, "git_mutate", PermissionDecision.ALLOW)); //$NON-NLS-1$
+    }
+
+    private void assertPermissionDecision(AgentProfile profile, String toolName, PermissionDecision expected) {
+        boolean found = profile.getDefaultPermissions().stream()
+                .anyMatch(rule -> rule.getToolName().equals(toolName) && rule.getDecision() == expected);
+        assertTrue(profile.getId() + " must have " + expected + " for " + toolName, found); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private boolean hasDecision(AgentProfile profile, String toolName, PermissionDecision decision) {
+        return profile.getDefaultPermissions().stream()
+                .anyMatch(rule -> rule.getToolName().equals(toolName) && rule.getDecision() == decision);
+    }
+
+    @Test
+    public void gsdExecuteIncludesEdtValidateRequest() {
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue("gsd-execute must include edt_validate_request", //$NON-NLS-1$
+                execute.getAllowedTools().contains("edt_validate_request")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void gsdExecuteContainsAllRequiredEdtMutationTools() {
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        Set<String> tools = execute.getAllowedTools();
+
+        List<String> required = Arrays.asList(
+                "edt_validate_request", //$NON-NLS-1$
+                "create_metadata", //$NON-NLS-1$
+                "create_form", //$NON-NLS-1$
+                "add_metadata_child", //$NON-NLS-1$
+                "update_metadata", //$NON-NLS-1$
+                "mutate_form_model", //$NON-NLS-1$
+                "delete_metadata"); //$NON-NLS-1$
+        for (String tool : required) {
+            assertTrue("gsd-execute must include " + tool, tools.contains(tool)); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void gsdExecuteMutationToolsRequireAskPermission() {
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        List<String> mutations = Arrays.asList(
+                "edit_file", //$NON-NLS-1$
+                "write_file", //$NON-NLS-1$
+                "ensure_module_artifact", //$NON-NLS-1$
+                "create_metadata", //$NON-NLS-1$
+                "create_form", //$NON-NLS-1$
+                "add_metadata_child", //$NON-NLS-1$
+                "update_metadata", //$NON-NLS-1$
+                "mutate_form_model", //$NON-NLS-1$
+                "delete_metadata"); //$NON-NLS-1$
+        for (String tool : mutations) {
+            assertPermissionDecision(execute, tool, PermissionDecision.ASK);
+            assertFalse("gsd-execute must not bypass ask for " + tool, //$NON-NLS-1$
+                    hasDecision(execute, tool, PermissionDecision.ALLOW));
+        }
+    }
+
+    @Test
+    public void gsdExecuteDeniesDirectMdoWrite() {
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        boolean found = execute.getDefaultPermissions().stream()
+                .anyMatch(rule -> "write_file".equals(rule.getToolName()) //$NON-NLS-1$
+                        && rule.getDecision() == PermissionDecision.DENY
+                        && "**/*.mdo".equals(rule.getResourcePattern())); //$NON-NLS-1$
+        assertTrue("gsd-execute must deny direct write_file for *.mdo/Configuration.mdo", found); //$NON-NLS-1$
+    }
+
+    @Test
+    public void gsdShipDoesNotExposeEdtMutationTools() {
+        AgentProfile ship = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-ship").orElseThrow(() -> new AssertionError("gsd-ship missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        Set<String> tools = ship.getAllowedTools();
+
+        assertFalse("ship must not include edt_validate_request because it has no EDT mutation tools", //$NON-NLS-1$
+                tools.contains("edt_validate_request")); //$NON-NLS-1$
+        assertFalse("ship must not include edit_file", tools.contains("edit_file")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("ship must not include create_metadata", tools.contains("create_metadata")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("ship must not include ensure_module_artifact", tools.contains("ensure_module_artifact")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void gsdPhaseProfilesContainExpectedGsdTools() {
+        AgentProfile discuss = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-discuss").orElseThrow(() -> new AssertionError("gsd-discuss missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        AgentProfile plan = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-plan").orElseThrow(() -> new AssertionError("gsd-plan missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        AgentProfile execute = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-execute").orElseThrow(() -> new AssertionError("gsd-execute missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        AgentProfile verify = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-verify").orElseThrow(() -> new AssertionError("gsd-verify missing")); //$NON-NLS-1$ //$NON-NLS-2$
+        AgentProfile ship = AgentProfileRegistry.getInstance()
+                .getProfile("gsd-ship").orElseThrow(() -> new AssertionError("gsd-ship missing")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue("discuss needs gsd_record_decision", discuss.getAllowedTools().contains("gsd_record_decision")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("plan needs gsd_create_plan", plan.getAllowedTools().contains("gsd_create_plan")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("execute needs gsd_update_task", execute.getAllowedTools().contains("gsd_update_task")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("verify needs gsd_record_evidence", verify.getAllowedTools().contains("gsd_record_evidence")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        for (AgentProfile profile : Arrays.asList(discuss, plan, execute, verify, ship)) {
+            Set<String> tools = profile.getAllowedTools();
+            assertTrue(profile.getId() + " needs gsd_get_state", tools.contains("gsd_get_state")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertTrue(profile.getId() + " needs gsd_transition", tools.contains("gsd_transition")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertFalse(profile.getId() + " must not use old monolithic gsd_plan", tools.contains("gsd_plan")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    @Test
+    public void gsdReadOnlyProfilesCannotGsdPlanOrMutateGsdTasksOfOtherPhases() {
+        AgentProfile discuss = new GsdDiscussProfile();
+        AgentProfile plan = new GsdPlanProfile();
+        AgentProfile verify = new GsdVerifyProfile();
+
+        assertFalse("discuss must not update tasks", discuss.getAllowedTools().contains("gsd_update_task")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("plan must not record evidence", plan.getAllowedTools().contains("gsd_record_evidence")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("verify must not create plans", verify.getAllowedTools().contains("gsd_create_plan")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void gsdProfilesWithinOptimalToolRange() {
+        assertToolCount(new GsdDiscussProfile(), 40);
+        assertToolCount(new GsdPlanProfile(), 40);
+        assertToolCount(new GsdExecuteProfile(), 55);
+        assertToolCount(new GsdVerifyProfile(), 40);
+        assertToolCount(new GsdShipProfile(), 45);
+    }
+
+    @Test
+    public void gsdPhasePromptsMentionAllAllowedToolsAndNoOldGsdPlan() {
+        List<AgentProfile> profiles = Arrays.asList(
+                new GsdDiscussProfile(),
+                new GsdPlanProfile(),
+                new GsdExecuteProfile(),
+                new GsdVerifyProfile(),
+                new GsdShipProfile());
+
+        for (AgentProfile profile : profiles) {
+            String prompt = AgentPromptTemplates.buildGsdPhasePrompt(profile.getId());
+            assertFalse(profile.getId() + " prompt must not mention old monolithic gsd_plan", //$NON-NLS-1$
+                    prompt.contains("gsd_plan")); //$NON-NLS-1$
+            for (String tool : profile.getAllowedTools()) {
+                assertTrue(profile.getId() + " prompt should mention allowed tool " + tool, //$NON-NLS-1$
+                        prompt.contains(tool));
+            }
+        }
+    }
+
+    @Test
+    public void gsdReadOnlyPromptsDoNotMentionAbsentTaskTool() {
+        java.util.regex.Pattern taskWord = java.util.regex.Pattern.compile("\\btask\\b"); //$NON-NLS-1$
+        for (AgentProfile profile : Arrays.asList(new GsdDiscussProfile(), new GsdPlanProfile(), new GsdVerifyProfile())) {
+            String prompt = AgentPromptTemplates.buildGsdPhasePrompt(profile.getId());
+            assertFalse(profile.getId() + " read-only prompt must not mention absent task tool", //$NON-NLS-1$
+                    taskWord.matcher(prompt).find());
         }
     }
 
@@ -138,10 +368,15 @@ public class AgentProfileRegistryTest {
         assertTrue(new DCSBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
         assertTrue(new ExtensionBuildProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
         assertTrue(new RecoveryProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new GsdExecuteProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertTrue(new GsdShipProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
 
         assertFalse(new PlanAgentProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
         assertFalse(new ExploreAgentProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
         assertFalse(new OrchestratorProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertFalse(new GsdDiscussProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertFalse(new GsdPlanProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
+        assertFalse(new GsdVerifyProfile().getAllowedTools().contains("remember_fact")); //$NON-NLS-1$
     }
 
     @Test
@@ -168,8 +403,13 @@ public class AgentProfileRegistryTest {
         assertNotNull("recovery profile", registry.getProfile("recovery").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("plan profile", registry.getProfile("plan").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("explore profile", registry.getProfile("explore").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-discuss profile", registry.getProfile("gsd-discuss").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-plan profile", registry.getProfile("gsd-plan").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-execute profile", registry.getProfile("gsd-execute").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-verify profile", registry.getProfile("gsd-verify").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNotNull("gsd-ship profile", registry.getProfile("gsd-ship").orElse(null)); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertEquals("Registry should have 11 profiles", 11, registry.getAllProfiles().size()); //$NON-NLS-1$
+        assertEquals("Registry should have 16 profiles", 16, registry.getAllProfiles().size()); //$NON-NLS-1$
     }
 
     @Test

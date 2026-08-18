@@ -19,20 +19,35 @@ public record FormRecipeResult(
         int attributesUpdated,
         int attributesRemoved,
         int layoutOperationsApplied,
-        List<String> layoutOperationSummaries
+        List<String> layoutOperationSummaries,
+        HandlerStubReport handlerStubs
 ) {
+    public FormRecipeResult {
+        layoutOperationSummaries = immutableList(layoutOperationSummaries);
+        handlerStubs = handlerStubs == null ? HandlerStubReport.empty() : handlerStubs;
+    }
+
+    public List<String> handlerStubsWritten() {
+        return handlerStubs.written();
+    }
+
+    public List<String> handlerStubsSkippedExisting() {
+        return handlerStubs.skippedExisting();
+    }
+
     public String formatForLlm() {
         StringBuilder summaries = new StringBuilder();
-        if (layoutOperationSummaries != null) {
-            for (String summary : layoutOperationSummaries) {
-                if (summary == null || summary.isBlank()) {
-                    continue;
-                }
-                summaries.append("- ").append(summary).append('\n'); //$NON-NLS-1$
+        for (String summary : layoutOperationSummaries) {
+            if (summary.isBlank()) {
+                continue;
             }
+            summaries.append("- ").append(summary).append('\n'); //$NON-NLS-1$
         }
+        String header = handlerStubs.header(
+                "✅ Рецепт формы применен.", //$NON-NLS-1$
+                "⚠️ Рецепт формы применен ЧАСТИЧНО: часть заглушек не записана (процедуры уже существуют)."); //$NON-NLS-1$
         return """
-                ✅ Рецепт формы применен.
+                %s
                 Проект: %s
                 Форма: %s
                 Создано реквизитов формы: %d
@@ -40,15 +55,21 @@ public record FormRecipeResult(
                 Удалено реквизитов формы: %d
                 Операций по макету: %d
                 %s
-                Рекомендуется проверить get_diagnostics (scope=file и scope=project).
+                %sРекомендуется проверить get_diagnostics (scope=file и scope=project).
                 """.formatted(
+                header,
                 safe(projectName),
                 safe(formFqn),
                 Integer.valueOf(attributesCreated),
                 Integer.valueOf(attributesUpdated),
                 Integer.valueOf(attributesRemoved),
                 Integer.valueOf(layoutOperationsApplied),
-                summaries.toString());
+                summaries.toString(),
+                handlerStubs.formatForLlm());
+    }
+
+    private static List<String> immutableList(List<String> values) {
+        return values == null ? List.of() : List.copyOf(values);
     }
 
     private String safe(String value) {

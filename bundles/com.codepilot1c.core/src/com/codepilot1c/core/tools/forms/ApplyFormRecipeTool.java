@@ -16,9 +16,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import com.google.gson.JsonObject;
+
 import com.codepilot1c.core.edt.forms.EdtFormService;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeResult;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
@@ -235,10 +238,20 @@ public class ApplyFormRecipeTool extends AbstractTool {
                         asListOfMaps(validatedPayload.get("layout"))); //$NON-NLS-1$
 
                 FormRecipeResult result = formService.applyFormRecipe(request);
-                LOG.info("[%s] SUCCESS in %s form=%s", opId, //$NON-NLS-1$
+                LOG.info("[%s] SUCCESS in %s form=%s stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                        result.formFqn());
-                return ToolResult.success(result.formatForLlm());
+                        result.formFqn(),
+                        Integer.valueOf(result.handlerStubsWritten().size()),
+                        Integer.valueOf(result.handlerStubsSkippedExisting().size()));
+                return ToolResult.success(result.formatForLlm(), toStructuredResult(result));
+            } catch (FormRecipePartialFailureException e) {
+                LOG.warn("[%s] PARTIAL in %s: %s (%s)", opId, //$NON-NLS-1$
+                        LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                        e.getMessage(),
+                        e.getCode());
+                return ToolResult.failure(
+                        "[" + e.getCode() + "] " + e.getMessage(), //$NON-NLS-1$ //$NON-NLS-2$
+                        toStructuredFailure(e));
             } catch (MetadataOperationException e) {
                 LOG.warn("[%s] FAILED in %s: %s (%s)", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -250,6 +263,14 @@ public class ApplyFormRecipeTool extends AbstractTool {
                 return ToolResult.failure("Ошибка apply_form_recipe: " + e.getMessage()); //$NON-NLS-1$
             }
         });
+    }
+
+    static JsonObject toStructuredResult(FormRecipeResult result) {
+        return FormResultPayloads.formRecipeSuccess(result);
+    }
+
+    static JsonObject toStructuredFailure(FormRecipePartialFailureException failure) {
+        return FormResultPayloads.partialFailure(failure);
     }
 
     private String getString(Map<String, Object> parameters, String key) {

@@ -18,6 +18,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import com.codepilot1c.core.agent.profiles.InitAgentProfile;
+import com.codepilot1c.core.agent.events.IAgentEventListener;
 import com.codepilot1c.core.model.LlmMessage;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 
@@ -160,6 +161,15 @@ public class AgentSessionControllerTest {
         assertTrue(controller.getEventsAfter(baseline).stream()
                 .anyMatch(event -> "session_reset".equals(event.getType()) //$NON-NLS-1$
                         && "desktop_fresh".equals(event.getPayload().get("reason")))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void forwardingListenerHandlesConfirmations() throws Exception {
+        Field field = AgentSessionController.class.getDeclaredField("forwardingListener"); //$NON-NLS-1$
+        field.setAccessible(true);
+        IAgentEventListener listener = (IAgentEventListener) field.get(controller);
+
+        assertTrue(listener.handlesConfirmations());
     }
 
     private void setControllerField(String name, Object value) throws Exception {

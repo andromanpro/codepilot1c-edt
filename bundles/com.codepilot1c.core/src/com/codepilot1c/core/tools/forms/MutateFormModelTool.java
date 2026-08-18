@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.forms.EdtFormService;
+import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
 import com.codepilot1c.core.edt.forms.UpdateFormModelRequest;
 import com.codepilot1c.core.edt.forms.UpdateFormModelResult;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
@@ -85,6 +86,11 @@ public class MutateFormModelTool extends AbstractTool {
                       "handler_name": {
                         "type": "string",
                         "description": "BSL handler procedure name for the event op. Strongly recommended; a deterministic name is used when omitted."
+                      },
+                      "call_type": {
+                        "type": "string",
+                        "enum": ["BEFORE", "AFTER", "OVERRIDE", "CHANGE_AND_VALIDATE"],
+                        "description": "For adopted-form event operations, selects the exact extension handler tuple. Allowed values: BEFORE, AFTER, OVERRIDE, CHANGE_AND_VALIDATE. Defaults to BEFORE. Ignored for native forms."
                       },
                       "target": {
                         "type": "string",
@@ -169,11 +175,22 @@ public class MutateFormModelTool extends AbstractTool {
                         asRequiredString(validatedPayload, "form_fqn"), //$NON-NLS-1$
                         asListOfMaps(validatedPayload.get("operations"))); //$NON-NLS-1$
                 UpdateFormModelResult result = formService.updateFormModel(request);
-                LOG.info("[%s] SUCCESS in %s form=%s operations=%d", opId, //$NON-NLS-1$
+                LOG.info("[%s] SUCCESS in %s form=%s operations=%d stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
                         result.formFqn(),
-                        Integer.valueOf(result.operationsApplied()));
-                return ToolResult.success(result.formatForLlm());
+                        Integer.valueOf(result.operationsApplied()),
+                        Integer.valueOf(result.handlerStubsWritten().size()),
+                        Integer.valueOf(result.handlerStubsSkippedExisting().size()));
+                return ToolResult.success(
+                        result.formatForLlm(), FormResultPayloads.formModelSuccess(result));
+            } catch (FormRecipePartialFailureException e) {
+                LOG.warn("[%s] PARTIAL in %s: %s (%s)", opId, //$NON-NLS-1$
+                        LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                        e.getMessage(),
+                        e.getCode());
+                return ToolResult.failure(
+                        "[" + e.getCode() + "] " + e.getMessage(), //$NON-NLS-1$ //$NON-NLS-2$
+                        FormResultPayloads.partialFailure(e));
             } catch (MetadataOperationException e) {
                 LOG.warn("[%s] FAILED in %s: %s (%s)", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),

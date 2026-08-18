@@ -47,6 +47,18 @@ package com.codepilot1c.core.agent.events;
 public interface IAgentEventListener {
 
     /**
+     * Указывает, способен ли слушатель разрешить
+     * {@link ConfirmationRequiredEvent}: подтвердить, отклонить или пропустить.
+     * Наблюдающие слушатели должны сохранять значение {@code false}, чтобы
+     * headless runner немедленно отказал вместо бесконечного ожидания.
+     *
+     * @return true, если слушатель разрешает события подтверждения
+     */
+    default boolean handlesConfirmations() {
+        return false;
+    }
+
+    /**
      * Вызывается при возникновении события агента.
      *
      * <p>Метод может быть вызван из любого потока.

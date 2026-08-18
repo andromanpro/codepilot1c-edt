@@ -56,6 +56,11 @@ public class AgentProfileRegistry {
         register(new RecoveryProfile());
         register(new PlanAgentProfile());
         register(new ExploreAgentProfile());
+        register(new GsdDiscussProfile());
+        register(new GsdPlanProfile());
+        register(new GsdExecuteProfile());
+        register(new GsdVerifyProfile());
+        register(new GsdShipProfile());
     }
 
     /**

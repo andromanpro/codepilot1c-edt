@@ -55,6 +55,7 @@ public class ProviderEditDialog extends TitleAreaDialog {
     private Text modelText;
     private Button fetchModelsButton;
     private Spinner maxTokensSpinner;
+    private Combo reasoningEffortCombo;
     private Button streamingCheckbox;
     private Button codexLoginButton;
     private Label codexStatusLabel;
@@ -166,6 +167,13 @@ public class ProviderEditDialog extends TitleAreaDialog {
         maxTokensSpinner.setMaximum(1000000);
         maxTokensSpinner.setSelection(config.getMaxTokens());
 
+        // Reasoning effort (currently applicable to OpenAI Codex / Responses API).
+        createLabel(container, "Reasoning"); //$NON-NLS-1$
+        reasoningEffortCombo = new Combo(container, SWT.DROP_DOWN | SWT.READ_ONLY);
+        reasoningEffortCombo.setLayoutData(createTextGridData(2));
+        reasoningEffortCombo.setItems(CodexOAuthConstants.REASONING_EFFORTS);
+        reasoningEffortCombo.setText(config.getReasoningEffort());
+
         // Streaming
         createLabel(container, ""); //$NON-NLS-1$
         streamingCheckbox = new Button(container, SWT.CHECK);
@@ -231,6 +239,7 @@ public class ProviderEditDialog extends TitleAreaDialog {
     private void updateCodexControls() {
         boolean codex = getSelectedType() == ProviderType.OPENAI_CODEX;
         codexLoginButton.setEnabled(codex);
+        reasoningEffortCombo.setEnabled(codex);
         if (codex) {
             if (baseUrlText.getText().trim().isEmpty()) {
                 baseUrlText.setText(CodexOAuthConstants.CODEX_BASE_URL);
@@ -397,6 +406,7 @@ public class ProviderEditDialog extends TitleAreaDialog {
         config.setApiKey(apiKeyText.getText().trim());
         config.setModel(modelText.getText().trim());
         config.setMaxTokens(maxTokensSpinner.getSelection());
+        config.setReasoningEffort(reasoningEffortCombo.getText());
         config.setStreamingEnabled(streamingCheckbox.getSelection());
 
         super.okPressed();

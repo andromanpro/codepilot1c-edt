@@ -216,6 +216,11 @@ public class AgentViewAdapter implements IAgentEventListener {
         }
     }
 
+    @Override
+    public boolean handlesConfirmations() {
+        return true;
+    }
+
     private void handleStarted(AgentStartedEvent event) {
         asyncExec(() -> {
             if (stateChangeListener != null) {

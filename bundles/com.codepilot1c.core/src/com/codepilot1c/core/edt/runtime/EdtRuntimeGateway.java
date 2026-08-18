@@ -78,20 +78,20 @@ public class EdtRuntimeGateway {
         return service;
     }
 
-    public IResolvableRuntimeInstallationManager getResolvableRuntimeInstallationManager() {
-        VibeCorePlugin plugin = requirePlugin();
-        IResolvableRuntimeInstallationManager service = plugin.getResolvableRuntimeInstallationManager();
-        if (service == null) {
-            throw serviceUnavailable("IResolvableRuntimeInstallationManager"); //$NON-NLS-1$
-        }
-        return service;
-    }
-
     public IRuntimeComponentManager getRuntimeComponentManager() {
         VibeCorePlugin plugin = requirePlugin();
         IRuntimeComponentManager service = plugin.getRuntimeComponentManager();
         if (service == null) {
             throw serviceUnavailable("IRuntimeComponentManager"); //$NON-NLS-1$
+        }
+        return service;
+    }
+
+    public IResolvableRuntimeInstallationManager getResolvableRuntimeInstallationManager() {
+        VibeCorePlugin plugin = requirePlugin();
+        IResolvableRuntimeInstallationManager service = plugin.getResolvableRuntimeInstallationManager();
+        if (service == null) {
+            throw serviceUnavailable("IResolvableRuntimeInstallationManager"); //$NON-NLS-1$
         }
         return service;
     }

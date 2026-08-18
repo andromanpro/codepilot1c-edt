@@ -53,6 +53,7 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
     private Label statusLabel;
     private Label planLabel;
     private Combo modelCombo;
+    private Combo reasoningEffortCombo;
     private Button loginButton;
     private Button logoutButton;
 
@@ -92,6 +93,12 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
         modelCombo.setItems(CodexOAuthConstants.KNOWN_MODELS);
         modelCombo.setText(resolveInitialModel());
 
+        createLabel(group, "Reasoning:"); //$NON-NLS-1$
+        reasoningEffortCombo = new Combo(group, SWT.DROP_DOWN | SWT.READ_ONLY);
+        reasoningEffortCombo.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        reasoningEffortCombo.setItems(CodexOAuthConstants.REASONING_EFFORTS);
+        reasoningEffortCombo.setText(resolveInitialReasoningEffort());
+
         Composite buttonRow = new Composite(group, SWT.NONE);
         GridLayout buttonLayout = new GridLayout(2, false);
         buttonLayout.marginWidth = 0;
@@ -120,7 +127,8 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
         Label hint = new Label(root, SWT.WRAP);
         hint.setText("После подключения провайдер «OpenAI Codex (ChatGPT)» создаётся и активируется " //$NON-NLS-1$
             + "автоматически с выбранной моделью. Набор доступных моделей задаёт OpenAI и периодически " //$NON-NLS-1$
-            + "меняет — если выбранная модель отклонена (ошибка 400), выберите другую из списка."); //$NON-NLS-1$
+            + "меняет — если выбранная модель отклонена (ошибка 400), выберите другую из списка и " //$NON-NLS-1$
+            + "нажмите «Применить и закрыть»."); //$NON-NLS-1$
         GridData hintData = new GridData(SWT.FILL, SWT.TOP, true, false);
         hintData.widthHint = 520;
         hint.setLayoutData(hintData);
@@ -152,7 +160,7 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
             setErrorMessage(cause.getMessage());
         } else if (result != null) {
             try {
-                ensureActiveCodexProvider(modelCombo.getText().trim());
+                ensureActiveCodexProvider(modelCombo.getText().trim(), reasoningEffortCombo.getText());
                 setErrorMessage(null);
             } catch (Exception e) {
                 VibeCorePlugin.logWarn("Failed to activate Codex provider: " + e.getMessage()); //$NON-NLS-1$
@@ -171,7 +179,7 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
         refreshStatus();
     }
 
-    private void ensureActiveCodexProvider(String model) {
+    private void ensureActiveCodexProvider(String model, String reasoningEffort) {
         String effectiveModel = model != null && !model.isBlank() ? model : CodexOAuthConstants.DEFAULT_MODEL;
         LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
         LlmProviderConfig codex = store.getProviders().stream()
@@ -182,10 +190,12 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
             codex = new LlmProviderConfig(null, "OpenAI Codex (ChatGPT)", ProviderType.OPENAI_CODEX, //$NON-NLS-1$
                 CodexOAuthConstants.CODEX_BASE_URL, "", effectiveModel, 4096); //$NON-NLS-1$
             codex.setStreamingEnabled(true);
+            codex.setReasoningEffort(reasoningEffort);
             store.addProvider(codex);
         } else {
             codex.setBaseUrl(CodexOAuthConstants.CODEX_BASE_URL);
             codex.setModel(effectiveModel);
+            codex.setReasoningEffort(reasoningEffort);
             store.updateProvider(codex);
         }
         store.setActiveProviderId(codex.getId());
@@ -226,11 +236,27 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
             .orElse(CodexOAuthConstants.DEFAULT_MODEL);
     }
 
+    private String resolveInitialReasoningEffort() {
+        return LlmProviderConfigStore.getInstance().getProviders().stream()
+            .filter(config -> config.getType() == ProviderType.OPENAI_CODEX)
+            .map(LlmProviderConfig::getReasoningEffort)
+            .findFirst()
+            .orElse(CodexOAuthConstants.DEFAULT_REASONING_EFFORT);
+    }
+
     private Label createLabel(Composite parent, String text) {
         Label label = new Label(parent, SWT.NONE);
         label.setText(text);
         label.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
         return label;
+    }
+
+    @Override
+    public boolean performOk() {
+        if (codexOAuthService.isLoggedIn()) {
+            ensureActiveCodexProvider(modelCombo.getText().trim(), reasoningEffortCombo.getText());
+        }
+        return super.performOk();
     }
 
     @Override

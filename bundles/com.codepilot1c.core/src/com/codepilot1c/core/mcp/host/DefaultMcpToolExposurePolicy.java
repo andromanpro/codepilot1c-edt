@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
@@ -15,11 +16,25 @@ import com.codepilot1c.core.tools.ToolRegistry;
 public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
 
     private final McpHostConfig config;
+    private final Predicate<String> sensitivePredicate;
+    private final Predicate<String> localExecPredicate;
     private final Set<String> explicitAllow;
     private final Set<String> explicitDeny;
 
     public DefaultMcpToolExposurePolicy(McpHostConfig config) {
+        this(config, DefaultMcpToolExposurePolicy::isSensitiveTool,
+                DefaultMcpToolExposurePolicy::isLocalExecTool);
+    }
+
+    DefaultMcpToolExposurePolicy(McpHostConfig config, Predicate<String> sensitivePredicate) {
+        this(config, sensitivePredicate, DefaultMcpToolExposurePolicy::isLocalExecTool);
+    }
+
+    DefaultMcpToolExposurePolicy(McpHostConfig config, Predicate<String> sensitivePredicate,
+            Predicate<String> localExecPredicate) {
         this.config = config;
+        this.sensitivePredicate = sensitivePredicate;
+        this.localExecPredicate = localExecPredicate;
         this.explicitAllow = new HashSet<>();
         this.explicitDeny = new HashSet<>();
         parse(config.getExposedToolsFilter());
@@ -51,10 +66,23 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
         if (explicitDeny.contains(toolName)) {
             return false;
         }
-        if (explicitAllow.contains("*")) { //$NON-NLS-1$
+        if (explicitAllow.contains(toolName)) {
             return true;
         }
-        return explicitAllow.contains(toolName);
+        if (explicitAllow.contains("*")) { //$NON-NLS-1$
+            return !sensitivePredicate.test(toolName) && !localExecPredicate.test(toolName);
+        }
+        return false;
+    }
+
+    private static boolean isSensitiveTool(String toolName) {
+        ITool tool = ToolRegistry.getInstance().getTool(toolName);
+        return tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
+    }
+
+    private static boolean isLocalExecTool(String toolName) {
+        ITool tool = ToolRegistry.getInstance().getTool(toolName);
+        return tool != null && tool.getTags() != null && tool.getTags().contains("local-exec"); //$NON-NLS-1$
     }
 
     @Override

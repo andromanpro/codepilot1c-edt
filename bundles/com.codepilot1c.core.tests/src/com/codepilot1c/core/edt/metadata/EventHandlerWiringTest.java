@@ -9,6 +9,7 @@ import static org.junit.Assert.fail;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -129,6 +130,59 @@ public class EventHandlerWiringTest {
     }
 
     @Test
+    public void extensionEventIsWiredOnExtInfoOwner() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event startChoice = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        service = serviceForExtensionEvent(field, extInfo, startChoice);
+
+        applyFormModelOperations(form, List.of(
+                opAddEventHandlerByItemId(1, "StartChoice", "FieldStartChoice"))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(field.getHandlers().isEmpty());
+        assertEquals(1, extInfo.getHandlers().size());
+        assertEquals(startChoice, extInfo.getHandlers().get(0).getEvent());
+    }
+
+    @Test
+    public void extensionEventUpsertMatchesStableEventNameNotObjectIdentity() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event catalogEvent = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(createEvent("StartChoice", "НачалоВыбора")); //$NON-NLS-1$ //$NON-NLS-2$
+        existing.setName("OldName"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        service = serviceForExtensionEvent(field, extInfo, catalogEvent);
+
+        applyFormModelOperations(form, List.of(
+                opSetEventHandler(null, 1, "StartChoice", "NewName"))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(1, extInfo.getHandlers().size());
+        assertEquals("NewName", extInfo.getHandlers().get(0).getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void removeExtensionEventUsesExtInfoOwner() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = createInputField(form);
+        InputFieldExtInfo extInfo = (InputFieldExtInfo) field.getExtInfo();
+        Event startChoice = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
+        existing.setEvent(startChoice);
+        existing.setName("FieldStartChoice"); //$NON-NLS-1$
+        extInfo.getHandlers().add(existing);
+        service = serviceForExtensionEvent(field, extInfo, startChoice);
+
+        applyFormModelOperations(form, List.of(
+                opRemoveEventHandler(null, 1, "StartChoice"))); //$NON-NLS-1$
+
+        assertTrue(extInfo.getHandlers().isEmpty());
+    }
+
+    @Test
     public void addEventHandlerOnButtonThrowsInvalidMetadataChangeRedirectingToAddCommand() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         Button button = FormFactory.eINSTANCE.createButton();
@@ -212,69 +266,51 @@ public class EventHandlerWiringTest {
         assertEquals(0, form.getHandlers().size());
     }
 
-    /**
-     * EDT keeps a field's type-specific events (StartChoice/ChoiceProcessing) in its
-     * {@code InputFieldExtInfo}, not on the field itself. Removing such a handler used to
-     * be a silent no-op: the lookup only scanned the item, found nothing, and still
-     * reported success — the handler stayed in the {@code .form}.
-     */
     @Test
-    public void removeEventHandlerRemovesHandlerStoredInFieldExtInfo() throws Exception {
+    public void nativeRemoveIgnoresCallType() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
-        FormField field = FormFactory.eINSTANCE.createFormField();
-        field.setId(1);
-        field.setName("Заказ"); //$NON-NLS-1$
-        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
         EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
-        existing.setEvent(onChangeEvent);
-        existing.setName("ЗаказОбработкаВыбора"); //$NON-NLS-1$
-        extInfo.getHandlers().add(existing);
-        field.setExtInfo(extInfo);
-        form.getItems().add(field);
+        existing.setEvent(onOpenEvent);
+        existing.setName("FormOnOpen"); //$NON-NLS-1$
+        form.getHandlers().add(existing);
+        Map<String, Object> remove = opRemoveEventHandler("form", null, EVENT_ON_OPEN_EN);
+        remove.put("call_type", "not-an-extension-call-type"); //$NON-NLS-1$ //$NON-NLS-2$
 
-        List<String> summaries = applyFormModelOperations(form, List.of(
-                opRemoveEventHandlerByItemId(1, EVENT_ON_CHANGE_EN)));
+        applyFormModelOperations(form, List.of(remove));
 
-        assertEquals(0, extInfo.getHandlers().size());
-        assertTrue(summaries.get(0).contains("removed")); //$NON-NLS-1$
+        assertTrue(form.getHandlers().isEmpty());
     }
 
-    /**
-     * An upsert must find the handler wherever it already lives, otherwise it creates a
-     * second handler on the item for an event that is already bound in {@code extInfo}.
-     */
     @Test
-    public void addEventHandlerUpsertsHandlerAlreadyStoredInFieldExtInfo() throws Exception {
+    public void compensationRemovesHandlerCreatedByFailedMutation() {
         Form form = FormFactory.eINSTANCE.createForm();
-        FormField field = FormFactory.eINSTANCE.createFormField();
-        field.setId(1);
-        field.setName("Заказ"); //$NON-NLS-1$
-        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        EventHandler created = FormFactory.eINSTANCE.createEventHandler();
+        created.setEvent(onOpenEvent);
+        created.setName("NewName"); //$NON-NLS-1$
+        form.getHandlers().add(created);
+
+        service.restoreHandlerSnapshot(
+                form, onOpenEvent, false, null,
+                EdtMetadataService.HandlerMutationSnapshot.capture(null));
+
+        assertTrue(form.getHandlers().isEmpty());
+    }
+
+    @Test
+    public void writeOrFreshVerificationFailureCompensationRestoresPreExistingHandlerName() {
+        Form form = FormFactory.eINSTANCE.createForm();
         EventHandler existing = FormFactory.eINSTANCE.createEventHandler();
-        existing.setEvent(onChangeEvent);
+        existing.setEvent(onOpenEvent);
         existing.setName("OldName"); //$NON-NLS-1$
-        extInfo.getHandlers().add(existing);
-        field.setExtInfo(extInfo);
-        form.getItems().add(field);
+        form.getHandlers().add(existing);
+        EdtMetadataService.HandlerMutationSnapshot snapshot =
+                EdtMetadataService.HandlerMutationSnapshot.capture(existing);
+        existing.setName("NewName"); //$NON-NLS-1$
 
-        applyFormModelOperations(form, List.of(
-                opAddEventHandlerByItemId(1, EVENT_ON_CHANGE_EN, "NewName"))); //$NON-NLS-1$
+        service.restoreHandlerSnapshot(form, onOpenEvent, false, null, snapshot);
 
-        assertEquals(1, extInfo.getHandlers().size());
-        assertEquals("NewName", extInfo.getHandlers().get(0).getName()); //$NON-NLS-1$
-        assertEquals(0, field.getHandlers().size());
-    }
-
-    /** A removal that matched nothing must say so instead of reporting a bare success. */
-    @Test
-    public void removeEventHandlerReportsWhenNothingWasBound() throws Exception {
-        Form form = FormFactory.eINSTANCE.createForm();
-
-        List<String> summaries = applyFormModelOperations(form, List.of(
-                opRemoveEventHandler("form", null, EVENT_ON_OPEN_EN))); //$NON-NLS-1$
-
-        assertEquals(0, form.getHandlers().size());
-        assertTrue(summaries.get(0).contains("nothing removed")); //$NON-NLS-1$
+        assertEquals(1, form.getHandlers().size());
+        assertEquals("OldName", form.getHandlers().get(0).getName()); //$NON-NLS-1$
     }
 
     private static Event createEvent(String nameEn, String nameRu) {
@@ -282,6 +318,34 @@ public class EventHandlerWiringTest {
         event.setName(nameEn);
         event.setNameRu(nameRu);
         return event;
+    }
+
+    private static FormField createInputField(Form form) {
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("MyField"); //$NON-NLS-1$
+        field.setExtInfo(FormFactory.eINSTANCE.createInputFieldExtInfo());
+        form.getItems().add(field);
+        return field;
+    }
+
+    private static EdtMetadataService serviceForExtensionEvent(
+            FormField field, InputFieldExtInfo extInfo, Event extensionEvent) {
+        EventHandlerCatalog catalog = new EventHandlerCatalog() {
+            @Override
+            public List<Event> allowedEvents(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                return List.of(extensionEvent);
+            }
+
+            @Override
+            public List<EventSurface> eventSurfaces(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                if (item == field) {
+                    return List.of(new EventSurface(extInfo, List.of(extensionEvent)));
+                }
+                return EventHandlerCatalog.super.eventSurfaces(item);
+            }
+        };
+        return new EdtMetadataService(new EdtMetadataGateway(), new EventHandlerTargetResolver(catalog));
     }
 
     private static Map<String, Object> opAddEventHandler(String target, Integer itemId, String event, String handlerName) {
@@ -323,18 +387,14 @@ public class EventHandlerWiringTest {
         return operation;
     }
 
-    private static Map<String, Object> opRemoveEventHandlerByItemId(int itemId, String event) {
-        return opRemoveEventHandler(null, Integer.valueOf(itemId), event);
-    }
-
     @SuppressWarnings("unchecked")
     private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations)
             throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
         Method method = EdtMetadataService.class.getDeclaredMethod(
-                "applyFormModelOperations", Form.class, List.class); //$NON-NLS-1$
+                "applyFormModelOperations", Form.class, List.class, List.class); //$NON-NLS-1$
         method.setAccessible(true);
         try {
-            return (List<String>) method.invoke(service, formModel, operations);
+            return (List<String>) method.invoke(service, formModel, operations, new ArrayList<>());
         } catch (InvocationTargetException e) {
             if (e.getCause() instanceof RuntimeException runtimeException) {
                 throw runtimeException;

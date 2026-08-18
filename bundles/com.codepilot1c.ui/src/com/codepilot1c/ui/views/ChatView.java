@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -60,6 +61,7 @@ import org.eclipse.ui.part.ViewPart;
 
 import com.codepilot1c.core.diff.CodeDiffUtils;
 import com.codepilot1c.core.logging.VibeLogger;
+import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.skills.SkillMentionParser;
 import com.codepilot1c.core.model.LlmAttachment;
@@ -82,10 +84,12 @@ import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.remote.AgentSessionController;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
+import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.ui.ChatSystemPromptToolsSection;
+import com.codepilot1c.core.ui.ChatToolGate;
 import com.codepilot1c.core.util.AttachmentTextExtractor;
 import com.codepilot1c.core.backend.BackendConfig;
 import com.codepilot1c.core.backend.BackendService;
@@ -99,6 +103,7 @@ import com.codepilot1c.ui.diff.DiffReviewDialog;
 import com.codepilot1c.ui.diff.ProposedChange;
 import com.codepilot1c.ui.diff.ProposedChangeSet;
 import com.codepilot1c.ui.editor.CodeApplicationService;
+import com.codepilot1c.ui.gsd.GsdStatusPanel;
 import com.codepilot1c.ui.internal.Messages;
 import com.codepilot1c.ui.internal.ToolDisplayNames;
 import com.codepilot1c.ui.internal.VibeUiPlugin;
@@ -125,6 +130,7 @@ public class ChatView extends ViewPart {
     /** Whether to use Browser-based rendering for chat messages */
     private static final boolean USE_BROWSER_RENDERING = true;
     private static final String CORE_PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
+    private static final String PREF_CHAT_PROFILE_ID = "chat.profileId"; //$NON-NLS-1$
     private static final int CHAT_INPUT_HEIGHT = 92;
     private static final int CHAT_ACTION_BUTTON_HEIGHT = 30;
     private static final int CHAT_ICON_BUTTON_WIDTH = 36;
@@ -160,6 +166,7 @@ public class ChatView extends ViewPart {
     private TypingIndicatorWidget typingIndicator;
     private Label tokenUsageLabel;
     private Composite attachmentPreviewArea;
+    private GsdStatusPanel gsdStatusPanel;
 
     private final List<LlmMessage> conversationHistory = new ArrayList<>();
     private final List<ChatMessageComposite> messageWidgets = new ArrayList<>();
@@ -235,6 +242,8 @@ public class ChatView extends ViewPart {
     private boolean previewModeEnabled = false;
     /** Current set of proposed changes awaiting review */
     private ProposedChangeSet currentProposedChanges;
+    /** Profile and permission policy fixed for the current chat turn. */
+    private volatile ChatToolGate toolGate;
     /** Token usage totals for current chat session */
     private long inputTokensTotal = 0;
     private long cachedInputTokensTotal = 0;
@@ -293,6 +302,7 @@ public class ChatView extends ViewPart {
         container.setBackground(theme.getBackground());
 
         createChatArea(container);
+        createGsdStatusPanel(container);
         createInputArea(container);
 
         // Phase 0: restore the last chat (persistence) or show the welcome message.
@@ -304,6 +314,76 @@ public class ChatView extends ViewPart {
             createBrowserChatArea(parent);
         } else {
             createStyledTextChatArea(parent);
+        }
+    }
+
+    /**
+     * Creates the GSD status panel between the chat area and the input composer.
+     * The panel is read-only, collapsible, and loads state asynchronously off the UI thread.
+     */
+    private void createGsdStatusPanel(Composite parent) {
+        gsdStatusPanel = new GsdStatusPanel(parent);
+        GridData gsdData = new GridData(SWT.FILL, SWT.CENTER, true, false);
+        gsdStatusPanel.getControl().setLayoutData(gsdData);
+
+        // Wire the suggested-profile hint to open profile preferences
+        gsdStatusPanel.setSuggestedProfileAction(profileId -> {
+            try {
+                org.eclipse.ui.PlatformUI.getWorkbench().getDisplay().asyncExec(() -> {
+                    if (isDisposed()) {
+                        return;
+                    }
+                    org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(
+                            getSite().getShell(),
+                            "com.codepilot1c.ui.preferences.ProfilesPreferencePage", //$NON-NLS-1$
+                            null, null).open();
+                });
+            } catch (Exception e) {
+                LOG.debug("Failed to open profile preferences: %s", e.getMessage()); //$NON-NLS-1$
+            }
+        });
+
+        // Initial refresh
+        refreshGsdStatus();
+    }
+
+    /**
+     * Resolves the project root for the GSD status panel from this view's own session
+     * first, falling back to workspace resolution. Triggers an async reload of the
+     * GSD state off the UI thread.
+     */
+    private void refreshGsdStatus() {
+        if (gsdStatusPanel == null || gsdStatusPanel.isDisposed()) {
+            return;
+        }
+        Path projectRoot = resolveGsdProjectRoot();
+        gsdStatusPanel.setProjectRoot(projectRoot);
+        gsdStatusPanel.refresh();
+    }
+
+    /**
+     * Resolves the project root for GSD state reading. Prefers this view's own session
+     * over the global {@code currentSession} to avoid cross-view interference.
+     *
+     * @return the project root path, or {@code null} if no project is available
+     */
+    private Path resolveGsdProjectRoot() {
+        // 1. Try this view's own session first
+        if (session != null && session.hasProject()) {
+            IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
+            Path root = GsdStatusPanel.resolveProjectRoot(project);
+            if (root != null) {
+                return root;
+            }
+        }
+
+        // 2. Fallback: resolve from session manager (same as Code.md resolution)
+        try {
+            IProject project = resolveCodeMdProject();
+            return GsdStatusPanel.resolveProjectRoot(project);
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve GSD project root: %s", e.getMessage()); //$NON-NLS-1$
+            return null;
         }
     }
 
@@ -1236,6 +1316,9 @@ public class ChatView extends ViewPart {
     private void startConversationLoop(ILlmProvider provider) {
         LOG.debug("startConversationLoop: beginning"); //$NON-NLS-1$
 
+        this.toolGate = createToolGate();
+        LOG.debug("chat tool gate: profile=%s", toolGate.profile().getId()); //$NON-NLS-1$
+
         // Build request with tools
         LlmRequest request = buildRequestWithTools();
         LOG.debug("startConversationLoop: request built with %d messages, %d tools", //$NON-NLS-1$
@@ -1590,7 +1673,8 @@ public class ChatView extends ViewPart {
 
         // Add tools if enabled
         if (toolsEnabled) {
-            List<ToolDefinition> tools = ToolRegistry.getInstance().getToolDefinitions();
+            List<ToolDefinition> tools = activeToolGate()
+                    .visibleToolDefinitions(ToolRegistry.getInstance());
             requestBuilder.tools(tools);
             requestBuilder.toolChoice(LlmRequest.ToolChoice.AUTO);
         }
@@ -1689,15 +1773,32 @@ public class ChatView extends ViewPart {
         conversationHistory.add(LlmMessage.assistantWithToolCalls(
                 assistantContent, response.getReasoningContent(), toolCalls));
 
-        // Separate edit_file calls for preview from other tool calls
+        ChatToolGate gate = activeToolGate();
+        ToolRegistry registry = ToolRegistry.getInstance();
+        Map<String, ChatToolGate.Decision> decisions = new LinkedHashMap<>();
+        Map<String, ITool> resolvedTools = new HashMap<>();
+        List<ToolCall> deniedCalls = new ArrayList<>();
         List<ToolCall> editCalls = new ArrayList<>();
         List<ToolCall> otherCalls = new ArrayList<>();
 
         for (ToolCall call : toolCalls) {
-            if (shouldInterceptForPreview(call)) {
+            ITool resolved = registry.getTool(call.getName());
+            resolvedTools.put(call.getId(), resolved);
+            ChatToolGate.Decision decision = gate.decide(call, resolved);
+            decisions.put(call.getId(), decision);
+            if (decision.action() == ChatToolGate.Action.DENY) {
+                deniedCalls.add(call);
+                LOG.warn("permission_denied tool=%s profile=%s layer=%s resource=%s", //$NON-NLS-1$
+                        call.getName(), gate.profile().getId(),
+                        decision.layer(), decision.resource());
+            } else if (gate.interceptForPreview(call, decision, previewModeEnabled)) {
                 editCalls.add(call);
             } else {
                 otherCalls.add(call);
+            }
+            if ("confirmation_skipped_by_preference".equals(decision.reasonCode())) { //$NON-NLS-1$
+                LOG.debug("chat tool gate: tool=%s profile=%s reason_code=%s", //$NON-NLS-1$
+                        call.getName(), gate.profile().getId(), decision.reasonCode());
             }
         }
 
@@ -1745,7 +1846,7 @@ public class ChatView extends ViewPart {
                         StringBuilder toolInfo = new StringBuilder();
                         toolInfo.append("\uD83D\uDD27 Использую инструменты:\n"); //$NON-NLS-1$
                         for (ToolCall call : toolCalls) {
-                            String suffix = shouldInterceptForPreview(call)
+                            String suffix = editCalls.contains(call)
                                     ? " (предпросмотр)" : ""; //$NON-NLS-1$ //$NON-NLS-2$
                             toolInfo.append("\u2022 ").append(call.getName()).append(suffix).append("\n"); //$NON-NLS-1$ //$NON-NLS-2$
                         }
@@ -1761,7 +1862,8 @@ public class ChatView extends ViewPart {
             proposedChanges = new ProposedChangeSet(String.valueOf(System.currentTimeMillis()));
             for (ToolCall call : editCalls) {
                 try {
-                    ProposedChange change = createProposedChangeFromToolCall(call);
+                    ProposedChange change = createProposedChangeFromToolCall(
+                            call, decisions.get(call.getId()).arguments());
                     proposedChanges.addChange(change);
                 } catch (Exception e) {
                     // If we can't create proposed change, fall back to normal execution
@@ -1771,55 +1873,72 @@ public class ChatView extends ViewPart {
             currentProposedChanges = proposedChanges;
         }
 
-        // Execute non-edit tool calls with confirmation for destructive operations
-        ToolRegistry registry = ToolRegistry.getInstance();
+        // Execute non-edit tool calls after the profile and permission decision.
         List<CompletableFuture<ToolResult>> futures = new ArrayList<>();
         List<ToolCall> executedCalls = new ArrayList<>();
 
+        for (ToolCall call : deniedCalls) {
+            executedCalls.add(call);
+            futures.add(CompletableFuture.completedFuture(
+                    decisions.get(call.getId()).denial()));
+        }
+
         for (ToolCall call : otherCalls) {
-            ITool tool = registry.getTool(call.getName());
+            ITool tool = resolvedTools.get(call.getId());
+            ChatToolGate.Decision decision = decisions.get(call.getId());
             executedCalls.add(call);
 
-            boolean skipConfirmations = shouldSkipToolConfirmations();
-            if (!skipConfirmations && tool != null && (tool.requiresConfirmation() || tool.isDestructive())) {
+            if (decision.action() == ChatToolGate.Action.CONFIRM) {
                 // Need confirmation on UI thread
                 CompletableFuture<ToolResult> confirmedFuture = new CompletableFuture<>();
 
                 // Check display before asyncExec to prevent hanging futures
                 if (display.isDisposed()) {
                     LOG.warn("Display disposed, skipping tool confirmation for %s", call.getName()); //$NON-NLS-1$
-                    confirmedFuture.complete(ToolResult.failure("Display disposed")); //$NON-NLS-1$
+                    confirmedFuture.complete(decision.confirmationUnavailableDenial());
                 } else {
                     display.asyncExec(() -> {
-                        if (isDisposed()) {
-                            confirmedFuture.complete(ToolResult.failure("View disposed")); //$NON-NLS-1$
-                            return;
-                        }
+                        try {
+                            if (isDisposed() || getShell() == null) {
+                                confirmedFuture.complete(decision.confirmationUnavailableDenial());
+                                return;
+                            }
+                            if (tool == null) {
+                                confirmedFuture.complete(decision.confirmationUnavailableDenial());
+                                return;
+                            }
 
-                        ToolConfirmationDialog dialog = new ToolConfirmationDialog(
-                                getShell(),
-                                call,
-                                tool.getDescription(),
-                                tool.isDestructive()
-                        );
+                            ToolConfirmationDialog dialog = new ToolConfirmationDialog(
+                                    getShell(),
+                                    call,
+                                    tool.getDescription(),
+                                    tool.isDestructive(),
+                                    decision.arguments()
+                            );
 
-                        if (dialog.openAndConfirm()) {
-                            // User confirmed - execute the tool
-                            registry.execute(call)
-                                    .thenAccept(confirmedFuture::complete)
-                                    .exceptionally(e -> {
-                                        confirmedFuture.complete(ToolResult.failure("Error: " + e.getMessage())); //$NON-NLS-1$
-                                        return null;
-                                    });
-                        } else if (dialog.wasSkipped()) {
-                            // User skipped - return skip message
-                            confirmedFuture.complete(ToolResult.success(
-                                    "Операция пропущена пользователем", //$NON-NLS-1$
-                                    ToolResult.ToolResultType.CONFIRMATION));
-                        } else {
-                            // User cancelled - return cancelled message
+                            if (dialog.openAndConfirm()) {
+                                // User confirmed - execute the tool
+                                registry.execute(call, decision.arguments(), null, null, decision.context())
+                                        .thenAccept(confirmedFuture::complete)
+                                        .exceptionally(e -> {
+                                            confirmedFuture.complete(ToolResult.failure("Error: " + e.getMessage())); //$NON-NLS-1$
+                                            return null;
+                                        });
+                            } else if (dialog.wasSkipped()) {
+                                // User skipped - return skip message
+                                confirmedFuture.complete(ToolResult.success(
+                                        "Операция пропущена пользователем", //$NON-NLS-1$
+                                        ToolResult.ToolResultType.CONFIRMATION));
+                            } else {
+                                // User cancelled - return cancelled message
+                                confirmedFuture.complete(ToolResult.failure(
+                                        "Операция отменена пользователем")); //$NON-NLS-1$
+                            }
+                        } catch (Throwable t) { // NOSONAR future must complete on every runnable exit
+                            LOG.error(String.format(Locale.ROOT,
+                                    "tool confirmation failed for %s", call.getName()), t); //$NON-NLS-1$
                             confirmedFuture.complete(ToolResult.failure(
-                                    "Операция отменена пользователем")); //$NON-NLS-1$
+                                    "Ошибка подтверждения инструмента: " + call.getName())); //$NON-NLS-1$
                         }
                     });
                 }
@@ -1827,7 +1946,8 @@ public class ChatView extends ViewPart {
                 futures.add(confirmedFuture);
             } else {
                 // No confirmation needed - execute directly
-                futures.add(registry.execute(call));
+                futures.add(registry.execute(
+                        call, decision.arguments(), null, null, decision.context()));
             }
         }
 
@@ -1905,6 +2025,28 @@ public class ChatView extends ViewPart {
     private boolean shouldSkipToolConfirmations() {
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID);
         return prefs.getBoolean(VibePreferenceConstants.PREF_AGENT_SKIP_TOOL_CONFIRMATIONS, false);
+    }
+
+    private synchronized ChatToolGate activeToolGate() {
+        if (toolGate == null) {
+            toolGate = createToolGate();
+        }
+        return toolGate;
+    }
+
+    private ChatToolGate createToolGate() {
+        Display display = getDisplay();
+        ToolRegistry registry = ToolRegistry.getInstance();
+        AgentProfile profile = ChatToolGate.selectProfile(
+                InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID)
+                        .get(PREF_CHAT_PROFILE_ID, "")); //$NON-NLS-1$
+        return new ChatToolGate(
+                profile,
+                () -> PermissionManager.getInstance().getAllRules(),
+                registry.getExecutionService()::parseArguments,
+                registry::getDynamicToolNames,
+                () -> display != null && !display.isDisposed() && !isDisposed(),
+                this::shouldSkipToolConfirmations);
     }
 
     /**
@@ -2195,48 +2337,18 @@ public class ChatView extends ViewPart {
     }
 
     /**
-     * Checks if a tool call is for edit_file and should be intercepted for preview.
-     */
-    private boolean shouldInterceptForPreview(ToolCall call) {
-        return previewModeEnabled && "edit_file".equals(call.getName()); //$NON-NLS-1$
-    }
-
-    /**
-     * Parses tool call arguments from JSON string to Map.
-     *
-     * @param json the JSON arguments string
-     * @return parsed arguments map
-     */
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseToolArguments(String json) {
-        if (json == null || json.isEmpty() || "{}".equals(json)) { //$NON-NLS-1$
-            return new HashMap<>();
-        }
-        try {
-            com.google.gson.Gson gson = new com.google.gson.Gson();
-            java.lang.reflect.Type mapType = new com.google.gson.reflect.TypeToken<Map<String, Object>>(){}.getType();
-            Map<String, Object> result = gson.fromJson(json, mapType);
-            return result != null ? result : new HashMap<>();
-        } catch (Exception e) {
-            return new HashMap<>();
-        }
-    }
-
-    /**
      * Creates a ProposedChange from an edit_file tool call.
      */
-    private ProposedChange createProposedChangeFromToolCall(ToolCall call) {
-        // Parse JSON arguments string to Map
-        Map<String, Object> args = parseToolArguments(call.getArguments());
-
-        String filePath = (String) args.get("path"); //$NON-NLS-1$
+    private ProposedChange createProposedChangeFromToolCall(
+            ToolCall call, Map<String, Object> approvedArguments) {
+        String filePath = (String) approvedArguments.get("path"); //$NON-NLS-1$
         if (filePath == null) {
-            filePath = (String) args.get("file_path"); //$NON-NLS-1$
+            filePath = (String) approvedArguments.get("file_path"); //$NON-NLS-1$
         }
 
-        String newContent = (String) args.get("content"); //$NON-NLS-1$
-        String oldString = (String) args.get("old_string"); //$NON-NLS-1$
-        String newString = (String) args.get("new_string"); //$NON-NLS-1$
+        String newContent = (String) approvedArguments.get("content"); //$NON-NLS-1$
+        String oldString = (String) approvedArguments.get("old_string"); //$NON-NLS-1$
+        String newString = (String) approvedArguments.get("new_string"); //$NON-NLS-1$
 
         // Read current file content for diff
         String beforeContent = readFileContent(filePath);
@@ -2442,7 +2554,8 @@ public class ChatView extends ViewPart {
         // it in the system prompt burned ~1200 tokens of redundant input per request
         // (codex review of Phase 3 flagged this as the primary duplicated overhead).
         if (toolsEnabled) {
-            boolean hasTools = !ToolRegistry.getInstance().getToolDefinitions().isEmpty();
+            boolean hasTools = !activeToolGate()
+                    .visibleToolDefinitions(ToolRegistry.getInstance()).isEmpty();
             ChatSystemPromptToolsSection.append(prompt, hasTools);
         }
 
@@ -2709,6 +2822,7 @@ public class ChatView extends ViewPart {
                 SessionManager.getInstance().setCurrentSession(restored);
                 renderSession(restored);
                 updateModelButtonLabel();
+                refreshGsdStatus();
                 return;
             }
         } catch (Exception e) {
@@ -3501,6 +3615,11 @@ public class ChatView extends ViewPart {
         }
         currentRequestUsesDesktopController = false;
         conversationHistory.clear();
+
+        // Dispose GSD status panel
+        if (gsdStatusPanel != null && !gsdStatusPanel.isDisposed()) {
+            gsdStatusPanel.dispose();
+        }
 
         // Dispose typing indicator
         if (typingIndicator != null && !typingIndicator.isDisposed()) {

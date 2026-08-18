@@ -44,6 +44,14 @@ public class CodexResponsesRequestBuilder {
      * @return the serialized JSON body
      */
     public String build(LlmRequest request, String defaultModel, int defaultMaxTokens, boolean stream) {
+        return build(request, defaultModel, defaultMaxTokens, stream, CodexOAuthConstants.DEFAULT_REASONING_EFFORT);
+    }
+
+    /**
+     * Builds a Responses API request with an explicit reasoning effort.
+     */
+    public String build(LlmRequest request, String defaultModel, int defaultMaxTokens, boolean stream,
+            String reasoningEffort) {
         JsonObject body = new JsonObject();
         body.addProperty("model", resolveModel(request, defaultModel)); //$NON-NLS-1$
         // The Codex backend requires store=false; text/include mirror the official Codex client.
@@ -51,6 +59,9 @@ public class CodexResponsesRequestBuilder {
         JsonObject text = new JsonObject();
         text.addProperty("verbosity", "medium"); //$NON-NLS-1$ //$NON-NLS-2$
         body.add("text", text); //$NON-NLS-1$
+        JsonObject reasoning = new JsonObject();
+        reasoning.addProperty("effort", normalizeReasoningEffort(reasoningEffort)); //$NON-NLS-1$
+        body.add("reasoning", reasoning); //$NON-NLS-1$
         JsonArray include = new JsonArray();
         include.add("reasoning.encrypted_content"); //$NON-NLS-1$
         body.add("include", include); //$NON-NLS-1$
@@ -105,6 +116,18 @@ public class CodexResponsesRequestBuilder {
         body.addProperty("stream", Boolean.valueOf(stream)); //$NON-NLS-1$
 
         return gson.toJson(body);
+    }
+
+    private String normalizeReasoningEffort(String value) {
+        if (value != null) {
+            String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+            for (String supported : CodexOAuthConstants.REASONING_EFFORTS) {
+                if (supported.equals(normalized)) {
+                    return supported;
+                }
+            }
+        }
+        return CodexOAuthConstants.DEFAULT_REASONING_EFFORT;
     }
 
     /**

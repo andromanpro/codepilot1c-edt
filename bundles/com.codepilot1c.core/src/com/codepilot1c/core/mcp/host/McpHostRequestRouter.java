@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import com.google.gson.Gson;
@@ -15,6 +16,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import com.codepilot1c.core.agent.profiles.AgentCapability;
+import com.codepilot1c.core.agent.profiles.AgentProfile;
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
 import com.codepilot1c.core.mcp.host.resource.IMcpResourceProvider;
@@ -25,11 +30,14 @@ import com.codepilot1c.core.mcp.model.McpMessage;
 import com.codepilot1c.core.mcp.model.McpPromptResult;
 import com.codepilot1c.core.mcp.model.McpResource;
 import com.codepilot1c.core.mcp.model.McpResourceContent;
+import com.codepilot1c.core.model.ToolCall;
+import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionDecision;
 import com.codepilot1c.core.permissions.PermissionManager;
-import com.codepilot1c.core.evaluation.trace.TraceEventType;
-import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.permissions.PermissionRule;
+import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
@@ -42,6 +50,11 @@ public class McpHostRequestRouter {
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(McpHostRequestRouter.class);
     private static final String SERVER_NAME = "CodePilot1C MCP Host"; //$NON-NLS-1$
     private static final String SERVER_VERSION = "1.3.0"; //$NON-NLS-1$
+    private static final String COMPAT_PROFILE_ID = "mcp-host"; //$NON-NLS-1$
+    /** Global rules remain exclusively in {@link #resolvePermissionDecision}. */
+    private static final List<PermissionRule> NO_GLOBAL_RULES = List.of();
+    private static final ToolExecutionContext LEGACY_CONTEXT =
+            new ToolExecutionContext(COMPAT_PROFILE_ID, AgentCapability.MUTATING, 0);
     private static final List<String> SUPPORTED_PROTOCOLS = List.of(
         "2025-11-25", //$NON-NLS-1$
         "2025-06-18", //$NON-NLS-1$
@@ -53,18 +66,49 @@ public class McpHostRequestRouter {
     private final List<IMcpResourceProvider> resourceProviders;
     private final IMcpPromptProvider promptProvider;
     private final McpHostConfig.MutationPolicy defaultMutationPolicy;
+    private final String configuredProfileId;
+    private final AgentProfile sessionProfile;
+    private final boolean profileGateEnabled;
+    private final ToolExecutionContext executionContext;
 
     public McpHostRequestRouter(
             McpToolExposurePolicy exposurePolicy,
             List<IMcpResourceProvider> resourceProviders,
             IMcpPromptProvider promptProvider,
             McpHostConfig.MutationPolicy defaultMutationPolicy) {
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, ""); //$NON-NLS-1$
+    }
+
+    public McpHostRequestRouter(
+            McpToolExposurePolicy exposurePolicy,
+            List<IMcpResourceProvider> resourceProviders,
+            IMcpPromptProvider promptProvider,
+            McpHostConfig.MutationPolicy defaultMutationPolicy,
+            String sessionProfileId) {
         this.exposurePolicy = exposurePolicy;
         this.resourceProviders = resourceProviders;
         this.promptProvider = promptProvider;
         this.defaultMutationPolicy = defaultMutationPolicy != null
             ? defaultMutationPolicy
             : McpHostConfig.MutationPolicy.ALLOW;
+        this.configuredProfileId = sessionProfileId != null ? sessionProfileId.trim() : ""; //$NON-NLS-1$
+        if (configuredProfileId.isEmpty()) {
+            this.profileGateEnabled = false;
+            this.sessionProfile = null;
+            this.executionContext = LEGACY_CONTEXT;
+        } else {
+            this.profileGateEnabled = true;
+            this.sessionProfile = AgentProfileRegistry.getInstance()
+                    .getProfile(configuredProfileId)
+                    .orElse(null);
+            if (sessionProfile != null) {
+                this.executionContext = ToolExecutionContext.of(sessionProfile, 0);
+            } else {
+                this.executionContext = LEGACY_CONTEXT;
+                LOG.error("MCP host session profile is not resolvable: %s; all tool calls will be denied", //$NON-NLS-1$
+                        configuredProfileId);
+            }
+        }
     }
 
     public McpMessage route(McpMessage request, McpHostSession session) {
@@ -149,6 +193,30 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Unknown tool: " + toolName)); //$NON-NLS-1$
         }
 
+        if (profileGateEnabled) {
+            if (sessionProfile == null) {
+                return denyByProfile(request, session, toolName, arguments, null,
+                        "profile_unresolved", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            Set<String> allowedTools = sessionProfile.getAllowedTools();
+            if (allowedTools != null && !allowedTools.isEmpty() && !allowedTools.contains(toolName)) {
+                return denyByProfile(request, session, toolName, arguments, null,
+                        "tool_not_in_profile", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            ProfilePermissionGate.GateResult gate = ProfilePermissionGate.evaluate(
+                    sessionProfile.getDefaultPermissions(), NO_GLOBAL_RULES, toolName, arguments);
+            String ruleDescription = gate.rule() != null ? gate.rule().getDescription() : null;
+            if (gate.isDenied()) {
+                return denyByProfile(request, session, toolName, arguments, gate.resource(),
+                        "denied_by_" + gate.layer() + "_rule", //$NON-NLS-1$ //$NON-NLS-2$
+                        gate.layer(), ruleDescription);
+            }
+            if (gate.decision() == ProfilePermissionGate.GateDecision.ASK) {
+                return denyByProfile(request, session, toolName, arguments, gate.resource(),
+                        "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
+            }
+        }
+
         Instant startedAt = Instant.now();
         PermissionDecision decision = resolvePermissionDecision(toolName, arguments);
 
@@ -161,7 +229,9 @@ public class McpHostRequestRouter {
         ToolResult toolResult;
         try {
             int timeoutSeconds = "qa_run".equals(toolName) ? 3600 : 120; //$NON-NLS-1$
-            toolResult = tool.execute(arguments)
+            ToolCall call = new ToolCall(String.valueOf(request.getRawId()), toolName, null);
+            toolResult = ToolRegistry.getInstance().getExecutionService()
+                .execute(call, arguments, null, null, executionContext)
                 .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
                 .join();
         } catch (Exception e) {
@@ -176,6 +246,19 @@ public class McpHostRequestRouter {
         writeMcpToolTrace(session, toolName, arguments, decision, toolResult, duration, null);
 
         return ok(request, toMcpToolResult(toolResult));
+    }
+
+    private McpMessage denyByProfile(
+            McpMessage request, McpHostSession session, String toolName,
+            Map<String, Object> arguments, String resource, String reasonCode,
+            String layer, String ruleDescription) {
+        ToolResult denied = PermissionDenialPayload.denied(
+                toolName, configuredProfileId, resource, reasonCode, layer, ruleDescription);
+        writeMcpToolTrace(session, toolName, arguments, PermissionDecision.DENY,
+                denied, Duration.ZERO, null);
+        LOG.warn("mcp_permission_denied tool=%s profile=%s layer=%s resource=%s reason_code=%s", //$NON-NLS-1$
+                toolName, configuredProfileId, layer, resource, reasonCode);
+        return ok(request, toolError(denied.getErrorMessage()));
     }
 
     private PermissionDecision resolvePermissionDecision(String toolName, Map<String, Object> arguments) {
@@ -237,6 +320,16 @@ public class McpHostRequestRouter {
             if (!exposurePolicy.isExposed(tool.getName())) {
                 continue;
             }
+            if (profileGateEnabled) {
+                if (sessionProfile == null) {
+                    continue;
+                }
+                Set<String> allowedTools = sessionProfile.getAllowedTools();
+                if (allowedTools != null && !allowedTools.isEmpty()
+                        && !allowedTools.contains(tool.getName())) {
+                    continue;
+                }
+            }
             var effectiveTool = registry.getToolDefinition(tool, surfaceContext);
             Map<String, Object> item = new HashMap<>();
             item.put("name", tool.getName()); //$NON-NLS-1$
@@ -256,9 +349,12 @@ public class McpHostRequestRouter {
     }
 
     private Map<String, Object> toMcpToolResult(ToolResult result) {
-        Map<String, Object> payload = new HashMap<>();
+        Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("isError", Boolean.valueOf(!result.isSuccess())); //$NON-NLS-1$
         payload.put("content", List.of(McpContent.text(result.getContentForLlm()))); //$NON-NLS-1$
+        if (result.hasStructuredData()) {
+            payload.put("structuredContent", result.getStructuredData().deepCopy()); //$NON-NLS-1$
+        }
         return payload;
     }
 

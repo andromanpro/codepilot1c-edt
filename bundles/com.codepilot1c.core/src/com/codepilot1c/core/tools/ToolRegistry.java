@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -46,6 +47,8 @@ import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
 import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
 import com.codepilot1c.core.tools.meta.ToolDescriptorRegistry;
 import com.codepilot1c.core.tools.workspace.*;
+import com.codepilot1c.core.tools.gsd.*;
+import com.codepilot1c.core.tools.java.JavaCompileProbeTool;
 
 /**
  * Registry for AI tools.
@@ -123,6 +126,7 @@ public class ToolRegistry {
         register(new GetSymbolInfoTool());
         register(new GetBookmarksTool());
         register(new GetTasksTool());
+        register(new JavaCompileProbeTool());
 
         register(new com.codepilot1c.core.tools.profiling.StartProfilingTool());
         register(new com.codepilot1c.core.tools.profiling.GetProfilingResultsTool());
@@ -193,6 +197,14 @@ public class ToolRegistry {
         register(new TaskTool(this));
         register(new DiscoverToolsTool(this));
         register(new com.codepilot1c.core.tools.memory.RememberFactTool());
+
+        // GSD workflow tools
+        register(new GsdGetStateTool());
+        register(new GsdRecordDecisionTool());
+        register(new GsdCreatePlanTool());
+        register(new GsdUpdateTaskTool());
+        register(new GsdRecordEvidenceTool());
+        register(new GsdTransitionTool());
 
         // Extra tools may be contributed by an overlay (e.g. Pro) via extension point.
         loadToolsFromExtensionPoint();
@@ -313,6 +325,15 @@ public class ToolRegistry {
     }
 
     /**
+     * Returns the names of dynamically registered tools (MCP clients and UI contributions).
+     *
+     * @return immutable set of dynamic tool names
+     */
+    public Set<String> getDynamicToolNames() {
+        return Set.copyOf(dynamicTools.keySet());
+    }
+
+    /**
      * Returns tool definitions for all registered tools (built-in and dynamic).
      *
      * @return list of tool definitions
@@ -374,6 +395,35 @@ public class ToolRegistry {
     public CompletableFuture<ToolResult> execute(ToolCall toolCall, AgentTraceSession traceSession,
             String parentEventId) {
         return executionService().execute(toolCall, traceSession, parentEventId);
+    }
+
+    /**
+     * Executes a tool call with arguments already parsed by the caller.
+     *
+     * @param toolCall the original tool call
+     * @param parameters the exact parsed parameters approved by the permission gate
+     * @param traceSession optional trace session
+     * @param parentEventId optional parent trace event
+     * @return future with the result
+     */
+    public CompletableFuture<ToolResult> execute(ToolCall toolCall, Map<String, Object> parameters,
+            AgentTraceSession traceSession, String parentEventId) {
+        return executionService().execute(toolCall, parameters, traceSession, parentEventId);
+    }
+
+    /**
+     * Executes an already parsed tool call with immutable caller context.
+     *
+     * @param toolCall original tool call
+     * @param parameters exact parsed parameters approved by the permission gate
+     * @param traceSession optional trace session
+     * @param parentEventId optional parent trace event
+     * @param context immutable caller context
+     * @return future with the result
+     */
+    public CompletableFuture<ToolResult> execute(ToolCall toolCall, Map<String, Object> parameters,
+            AgentTraceSession traceSession, String parentEventId, ToolExecutionContext context) {
+        return executionService().execute(toolCall, parameters, traceSession, parentEventId, context);
     }
 
     private ToolSurfaceContext contextForTool(ITool tool, ToolSurfaceContext baseContext) {
