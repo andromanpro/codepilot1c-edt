@@ -4,25 +4,15 @@
  */
 package com.codepilot1c.runtime.config;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.EnumMap;
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Secure builder/loader for standalone host settings. The same object supports
@@ -38,7 +28,6 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
     private static final int DEFAULT_AGENT_TIMEOUT_MILLIS = 300_000;
     private static final int MAX_TIMEOUT_MILLIS = 3_600_000;
     private static final int MAX_MAX_STEPS = 128;
-    private static final int MAX_SECRET_BYTES = 8 * 1024;
 
     private final Map<String, String> systemProperties = new LinkedHashMap<>();
     private final Map<String, String> environment = new LinkedHashMap<>();
@@ -95,7 +84,8 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
         ensureOpen();
         rejectInlineSecretInputs();
         FileInput fileInput = selectConfigFile();
-        Map<String, String> file = StrictPropertiesFile.read(fileInput.path(), fileInput.required());
+        Map<String, String> file = StrictPropertiesFile.read(fileInput.path(), fileInput.required(),
+                fileInput.protectParent());
         validateFileKeys(file);
         EnumMap<RuntimeSetting, Candidate> candidates = candidates(file);
         URI providerBaseUri = endpoint(candidates.get(RuntimeSetting.PROVIDER_BASE_URI), RuntimeSetting.PROVIDER_BASE_URI);
@@ -127,12 +117,12 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
     }
 
     private FileInput selectConfigFile() {
-        if (explicitConfigFile != null) return new FileInput(explicitConfigFile, true);
+        if (explicitConfigFile != null) return new FileInput(explicitConfigFile, true, false);
         String property = systemProperties.get("codepilot.config"); //$NON-NLS-1$
-        if (nonBlank(property)) return new FileInput(path(property, "config"), true); //$NON-NLS-1$
+        if (nonBlank(property)) return new FileInput(path(property, "config"), true, false); //$NON-NLS-1$
         String env = environment.get("CODEPILOT_CONFIG"); //$NON-NLS-1$
-        if (nonBlank(env)) return new FileInput(path(env, "config"), true); //$NON-NLS-1$
-        return new FileInput(PortableConfigPath.systemDefault(), false);
+        if (nonBlank(env)) return new FileInput(path(env, "config"), true, false); //$NON-NLS-1$
+        return new FileInput(PortableConfigPath.systemDefault(), false, true);
     }
 
     private EnumMap<RuntimeSetting, Candidate> candidates(Map<String, String> file) {
@@ -162,40 +152,21 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
     }
 
     private char[] readSecret(Path file) {
-        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)
-                || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
-            throw StrictPropertiesFile.error(ConfigurationErrorCode.UNSAFE_SECRET_FILE,
-                    RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file must be a regular non-symlink"); //$NON-NLS-1$
-        }
+        byte[] bytes = StrictPropertiesFile.readSecret(file);
         try {
-            if (Files.size(file) > MAX_SECRET_BYTES) {
-                throw StrictPropertiesFile.error(ConfigurationErrorCode.SECRET_TOO_LARGE,
-                        RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file exceeds size limit"); //$NON-NLS-1$
-            }
-            requirePrivatePermissions(file);
-            byte[] bytes = Files.readAllBytes(file);
-            try {
-                CharBuffer chars = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes));
-                char[] result = new char[chars.remaining()];
-                chars.get(result);
-                result = trimTrailingLineBreaks(result);
-                for (char character : result) {
-                    if (character == '\0' || character == '\n' || character == '\r') {
-                        Arrays.fill(result, '\0');
-                        throw StrictPropertiesFile.error(ConfigurationErrorCode.SECRET_UNAVAILABLE,
-                                RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file contains an unsupported character"); //$NON-NLS-1$
-                    }
+            char[] result = StrictPropertiesFile.decodeUtf8(bytes, ConfigurationErrorCode.SECRET_UNAVAILABLE,
+                    RuntimeSetting.PROVIDER_API_KEY_FILE.key());
+            result = trimTrailingLineBreaks(result);
+            for (char character : result) {
+                if (character == '\0' || character == '\n' || character == '\r') {
+                    Arrays.fill(result, '\0');
+                    throw StrictPropertiesFile.error(ConfigurationErrorCode.SECRET_UNAVAILABLE,
+                            RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file contains an unsupported character"); //$NON-NLS-1$
                 }
-                return result;
-            } finally {
-                Arrays.fill(bytes, (byte) 0);
             }
-        } catch (CharacterCodingException exception) {
-            throw StrictPropertiesFile.error(ConfigurationErrorCode.SECRET_UNAVAILABLE,
-                    RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file is not UTF-8"); //$NON-NLS-1$
-        } catch (IOException exception) {
-            throw StrictPropertiesFile.error(ConfigurationErrorCode.SECRET_UNAVAILABLE,
-                    RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file cannot be read"); //$NON-NLS-1$
+            return result;
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
         }
     }
 
@@ -206,21 +177,6 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
         char[] trimmed = Arrays.copyOf(chars, index);
         Arrays.fill(chars, '\0');
         return trimmed;
-    }
-
-    private static void requirePrivatePermissions(Path file) throws IOException {
-        try {
-            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file, LinkOption.NOFOLLOW_LINKS);
-            Set<PosixFilePermission> forbidden = EnumSet.of(PosixFilePermission.GROUP_READ, PosixFilePermission.GROUP_WRITE,
-                    PosixFilePermission.GROUP_EXECUTE, PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE,
-                    PosixFilePermission.OTHERS_EXECUTE);
-            for (PosixFilePermission permission : forbidden) {
-                if (permissions.contains(permission)) throw StrictPropertiesFile.error(ConfigurationErrorCode.UNSAFE_SECRET_FILE,
-                        RuntimeSetting.PROVIDER_API_KEY_FILE.key(), "file permissions are too broad"); //$NON-NLS-1$
-            }
-        } catch (UnsupportedOperationException exception) {
-            // Best effort: Windows ACL inspection is deliberately not guessed.
-        }
     }
 
     private static <T> ResolvedSetting<T> resolved(T value, Candidate candidate) {
@@ -257,6 +213,9 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
 
     private static boolean isLoopback(String host) {
         String normalized = host.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.startsWith("[") && normalized.endsWith("]")) { //$NON-NLS-1$ //$NON-NLS-2$
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
         return "localhost".equals(normalized) || "127.0.0.1".equals(normalized) || "::1".equals(normalized); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
@@ -311,7 +270,7 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
 
     private void validateFileKeys(Map<String, String> file) {
         for (String key : file.keySet()) {
-            if (looksLikeSecretKey(key)) {
+            if (StrictPropertiesFile.looksLikeSecretKey(key)) {
                 throw StrictPropertiesFile.error(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", "inline secret key is forbidden"); //$NON-NLS-1$ //$NON-NLS-2$
             }
             boolean known = false;
@@ -322,22 +281,24 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
 
     private void rejectInlineSecretInputs() {
         for (String key : systemProperties.keySet()) {
-            if (key.startsWith("codepilot.") && looksLikeSecretKey(key.substring("codepilot.".length()))) { //$NON-NLS-1$ //$NON-NLS-2$
+            if (hasInlineSecretAlias(key, "codepilot")) { //$NON-NLS-1$
                 throw StrictPropertiesFile.error(ConfigurationErrorCode.INVALID_VALUE, "config", "inline secret property is forbidden"); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
         for (String key : environment.keySet()) {
-            if (key.startsWith("CODEPILOT_") && looksLikeSecretKey(key.substring("CODEPILOT_".length()))) { //$NON-NLS-1$ //$NON-NLS-2$
+            if (hasInlineSecretAlias(key, "codepilot")) { //$NON-NLS-1$
                 throw StrictPropertiesFile.error(ConfigurationErrorCode.INVALID_VALUE, "config", "inline secret environment value is forbidden"); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
     }
 
-    private static boolean looksLikeSecretKey(String key) {
-        String normalized = key.replace("_", "").replace(".", "").toLowerCase(java.util.Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        if ("providerapikeyfile".equals(normalized)) return false; //$NON-NLS-1$
-        return normalized.contains("apikey") || normalized.contains("secret") || normalized.contains("token") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                || normalized.contains("password") || normalized.contains("authorization"); //$NON-NLS-1$ //$NON-NLS-2$
+    private static boolean hasInlineSecretAlias(String key, String prefix) {
+        String lower = key.toLowerCase(java.util.Locale.ROOT);
+        String normalizedPrefix = prefix.toLowerCase(java.util.Locale.ROOT);
+        if (!lower.startsWith(normalizedPrefix) || key.length() <= prefix.length()) return false;
+        char separator = key.charAt(prefix.length());
+        if (separator != '.' && separator != '_' && separator != '-') return false;
+        return StrictPropertiesFile.looksLikeSecretKey(key.substring(prefix.length() + 1));
     }
 
     private void ensureOpen() {
@@ -345,5 +306,5 @@ public final class RuntimeConfigurationLoader implements AutoCloseable {
     }
 
     private record Candidate(String value, ConfigurationSource source) { }
-    private record FileInput(Path path, boolean required) { }
+    private record FileInput(Path path, boolean required, boolean protectParent) { }
 }
