@@ -16,6 +16,7 @@ PACKAGING = ROOT / "packaging"
 EXPECTED_ARCHIVE = {
     "bin/codepilot",
     "bin/codepilot.cmd",
+    "bin/codepilot.ps1",
     "lib/codepilot-cli.jar",
     "LICENSE",
     "README.md",
@@ -27,10 +28,17 @@ class DistributionContractTest(unittest.TestCase):
     def test_launcher_line_endings_and_modes(self):
         posix = (PACKAGING / "launchers/codepilot").read_bytes()
         windows = (PACKAGING / "launchers/codepilot.cmd").read_bytes()
+        powershell = (PACKAGING / "launchers/codepilot.ps1").read_bytes()
         self.assertNotIn(b"\r\n", posix)
         self.assertNotIn(b"\neval ", posix)
         self.assertNotRegex(posix.decode("ascii"), r"(?m)^\s*eval\b")
-        self.assertNotIn(b"\r\n", windows.replace(b"\r\n", b""))
+        self.assertIn(b"\r\n", windows)
+        self.assertNotIn(b"\n", windows.replace(b"\r\n", b""))
+        self.assertIn(b"\r\n", powershell)
+        self.assertNotIn(b"\n", powershell.replace(b"\r\n", b""))
+        powershell_text = powershell.decode("ascii")
+        self.assertIn("@CliArguments", powershell_text)
+        self.assertNotRegex(powershell_text, r"(?i)invoke-expression|\biex\b")
         self.assertTrue(stat.S_IMODE((PACKAGING / "launchers/codepilot").stat().st_mode) & 0o111)
 
     def test_assembly_descriptor_declares_stable_inventory(self):
@@ -91,6 +99,21 @@ class DistributionContractTest(unittest.TestCase):
             self.assertEqual(Path(args[1]).resolve(), jar.resolve())
             self.assertEqual(args[2:], ["version", "--label", "value with spaces", "$(touch 'shell injection marker');"])
             self.assertFalse(marker.exists(), "launcher evaluated an argument as shell code")
+
+    def test_packaging_validation_follows_cli_jar_symlink(self):
+        cli_jar = ROOT / "cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar"
+        if not cli_jar.is_file():
+            self.skipTest("build the shaded CLI jar first")
+        with tempfile.TemporaryDirectory(prefix="codepilot cli jar ") as temp:
+            link = Path(temp) / "input jar link.jar"
+            link.symlink_to(cli_jar)
+            result = subprocess.run(
+                ["mvn", "-q", "-f", str(PACKAGING / "pom.xml"), "validate", f"-Dcli.jar={link}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

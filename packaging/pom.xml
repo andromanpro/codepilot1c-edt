@@ -38,11 +38,6 @@
                                     <property>cli.jar</property>
                                     <message>Set -Dcli.jar to the shaded CLI jar (for example cli/codepilot-cli/target/*-all.jar).</message>
                                 </requireProperty>
-                                <requireFilesExist>
-                                    <files>
-                                        <file>${cli.jar}</file>
-                                    </files>
-                                </requireFilesExist>
                             </rules>
                         </configuration>
                     </execution>
@@ -53,6 +48,19 @@
                 <artifactId>maven-antrun-plugin</artifactId>
                 <version>${maven.antrun.version}</version>
                 <executions>
+                    <execution>
+                        <id>validate-cli-jar</id>
+                        <phase>validate</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <!-- Ant's available follows symlinks on all supported hosts. -->
+                                <available file="${cli.jar}" type="file" property="cli.jar.available"/>
+                                <fail unless="cli.jar.available"
+                                      message="cli.jar must resolve to an existing regular file: ${cli.jar}"/>
+                            </target>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>stage-distribution</id>
                         <phase>prepare-package</phase>
@@ -65,6 +73,7 @@
                                     <fileset dir="${project.basedir}/launchers">
                                         <include name="codepilot"/>
                                         <include name="codepilot.cmd"/>
+                                        <include name="codepilot.ps1"/>
                                     </fileset>
                                 </copy>
                                 <copy file="${project.basedir}/../LICENSE"

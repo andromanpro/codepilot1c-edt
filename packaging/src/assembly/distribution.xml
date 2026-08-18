@@ -41,6 +41,7 @@
             <outputDirectory>/bin</outputDirectory>
             <includes>
                 <include>codepilot.cmd</include>
+                <include>codepilot.ps1</include>
             </includes>
             <fileMode>0644</fileMode>
         </fileSet>

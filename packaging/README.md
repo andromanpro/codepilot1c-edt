@@ -25,11 +25,23 @@ codepilot-cli-1.0.0-SNAPSHOT.zip.sha256
 codepilot-cli-1.0.0-SNAPSHOT.tar.gz.sha256
 ```
 
+To prove clean-build reproducibility locally (the shaded jar and both archive
+formats are compared byte-for-byte), run:
+
+```sh
+./packaging/tests/reproducibility.sh
+```
+
+This proves repeatability on the current host/JDK. It does not claim that ZIP
+or TAR bytes produced on different operating systems or JDK distributions are
+identical; verify the published checksums for the specific artifact.
+
 Both archives have the same platform-neutral layout:
 
 ```text
 bin/codepilot             # Linux and macOS, executable
-bin/codepilot.cmd         # Windows cmd.exe
+bin/codepilot.ps1         # Windows PowerShell, canonical launcher
+bin/codepilot.cmd         # Windows cmd.exe convenience wrapper
 lib/codepilot-cli.jar
 LICENSE
 README.md
@@ -49,15 +61,19 @@ EDT installation is needed to install or run the CLI distribution itself.
 1. Verify the archive checksum and extract the archive to a versioned
    directory. Keep `bin` and `lib` together.
 2. Run `bin/codepilot version` on Linux/macOS or
-   `bin\codepilot.cmd version` on Windows.
+   `pwsh -File .\bin\codepilot.ps1 version` on Windows.
 3. Optionally put the `bin` directory on `PATH`. The launchers resolve their
    own location (including a relative POSIX symlink), so the install may live
    in a path containing spaces.
 
 The POSIX launcher uses `CODEPILOT_JAVA` when set, then `JAVA_HOME/bin/java`,
 then `java` from `PATH`. Each value is one executable path; launcher arguments
-are never interpreted as shell code. The Windows launcher applies the same
-precedence with `java.exe` and quotes all distribution paths.
+are never interpreted as shell code. On Windows, prefer
+`pwsh -File .\bin\codepilot.ps1 version`: its `@CliArguments` array preserves
+argument boundaries and does not reparse metacharacters. The `.cmd` launcher
+uses the same Java-path precedence and is provided for convenience, but normal
+`cmd.exe` `%*` forwarding has the platform's usual metacharacter/quoting
+limitations; it is not the canonical arbitrary-argument interface.
 
 ## Update and uninstall
 
@@ -76,7 +92,9 @@ any CLI instance registry created by commands is separate and is documented in
 
 The POSIX launcher uses quoted arguments and `exec`, resolves symlinks without
 `eval`, and rejects a missing jar or non-executable configured Java path. The
-Windows launcher uses `%~dp0`, quoted paths, and `%*` argument forwarding; it
-does not invoke a shell command string. The launcher tests exercise spaces in
-the install path, symlink resolution, archive inventory, line endings, and
-the executable bit without starting EDT or a GUI.
+PowerShell launcher uses a call operator plus an argument array and rejects a
+missing jar or configured Java executable. The `.cmd` launcher uses `%~dp0`
+and quoted paths but retains the cmd.exe `%*` limitation described above. The
+launcher tests exercise spaces in the install path, symlink resolution,
+archive inventory, line endings, and executable bit without starting EDT or a
+GUI.
