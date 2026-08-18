@@ -47,6 +47,15 @@ public final class RootCommand implements Callable<Integer> {
         edtLine.addSubcommand("start", new EdtStartCommand(root));
         edtLine.addSubcommand("stop", new EdtStopCommand(root));
         commandLine.addSubcommand("edt", edtLine);
+        McpCommand mcp = new McpCommand(root);
+        CommandLine mcpLine = new CommandLine(mcp);
+        mcpLine.addSubcommand("health", new McpHealthCommand(root, mcp));
+        mcpLine.addSubcommand("initialize", new McpInitializeCommand(root, mcp));
+        mcpLine.addSubcommand("tools", new McpToolsCommand(root, mcp));
+        mcpLine.addSubcommand("call", new McpCallCommand(root, mcp));
+        mcpLine.addSubcommand("ping", new McpPingCommand(root, mcp));
+        mcpLine.addSubcommand("close", new McpCloseCommand(root, mcp));
+        commandLine.addSubcommand("mcp", mcpLine);
         return commandLine;
     }
 }
