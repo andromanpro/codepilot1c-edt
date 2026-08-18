@@ -110,6 +110,15 @@ public class ShellCliTest {
         assertEquals("error[internal]: IllegalStateException\n", fixture.err());
     }
 
+    @Test public void invalidTurnBoundsUseStableUsageExitWithoutOpeningTerminal() {
+        ScriptedTerminal terminal = new ScriptedTerminal();
+        Fixture fixture = new Fixture(new ScriptedFactory(false, terminal));
+
+        assertEquals(ExitCodes.USAGE, fixture.execute("shell", "--max-steps", "0"));
+        assertFalse(terminal.opened);
+        assertEquals("error[usage]: invalid max steps\n", fixture.err());
+    }
+
     private static final class Fixture {
         private final TerminalFactory terminalFactory;
         private final StringWriter output = new StringWriter();
