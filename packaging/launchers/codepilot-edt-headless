@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+# Development packaging prerequisite: start the installed EDT with CodePilot's
+# headless application. This wrapper deliberately does not require a CLI jar.
+set -eu
+
+if [ -z "${CODEPILOT_EDT_HOME:-}" ]; then
+    CODEPILOT_EDT_HOME=${EDT_HOME:-}
+fi
+if [ -z "$CODEPILOT_EDT_HOME" ]; then
+    echo "codepilot-edt-headless: set CODEPILOT_EDT_HOME to the EDT Eclipse directory" >&2
+    exit 64
+fi
+
+launcher=${CODEPILOT_EDT_EXECUTABLE:-}
+if [ -z "$launcher" ]; then
+    for candidate in \
+        "$CODEPILOT_EDT_HOME/1cedt" \
+        "$CODEPILOT_EDT_HOME/eclipse" \
+        "$CODEPILOT_EDT_HOME/../MacOS/1cedt" \
+        "$CODEPILOT_EDT_HOME/Contents/MacOS/1cedt"; do
+        if [ -x "$candidate" ]; then
+            launcher=$candidate
+            break
+        fi
+    done
+fi
+
+if [ -z "$launcher" ] || [ ! -x "$launcher" ]; then
+    echo "codepilot-edt-headless: no EDT launcher found under $CODEPILOT_EDT_HOME" >&2
+    echo "codepilot-edt-headless: set CODEPILOT_EDT_EXECUTABLE to 1cedt/eclipse explicitly" >&2
+    exit 64
+fi
+
+application=${CODEPILOT_APPLICATION:-com.codepilot1c.core.headless}
+exec "$launcher" -application "$application" "$@"

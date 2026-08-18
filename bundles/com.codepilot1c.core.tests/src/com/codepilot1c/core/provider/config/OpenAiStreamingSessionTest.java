@@ -5,9 +5,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -163,10 +165,14 @@ public class OpenAiStreamingSessionTest {
     private List<LlmStreamChunk> replayFixture(String fixtureName, OpenAiStreamingSession session) throws IOException {
         List<LlmStreamChunk> chunks = new ArrayList<>();
         String finishReason = null;
-        for (String line : Files.readAllLines(fixturePath(fixtureName))) {
-            String currentFinishReason = session.processLine(line, chunks::add);
-            if (currentFinishReason != null) {
-                finishReason = currentFinishReason;
+        try (InputStream stream = fixtureStream(fixtureName);
+                BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String currentFinishReason = session.processLine(line, chunks::add);
+                if (currentFinishReason != null) {
+                    finishReason = currentFinishReason;
+                }
             }
         }
         if (finishReason != null) {
@@ -175,9 +181,14 @@ public class OpenAiStreamingSessionTest {
         return chunks;
     }
 
-    private Path fixturePath(String fixtureName) {
-        return Path.of("/Users/alexorlik/repo/codepilot1c-oss/bundles/com.codepilot1c.core.tests/src/com/codepilot1c/core/provider/config/fixtures", //$NON-NLS-1$
-                fixtureName);
+    private InputStream fixtureStream(String fixtureName) throws IOException {
+        String resourceName = "fixtures/" + fixtureName; //$NON-NLS-1$
+        InputStream stream = OpenAiStreamingSessionTest.class.getResourceAsStream(resourceName);
+        if (stream == null) {
+            throw new IOException("Missing OpenAI streaming test fixture classpath resource: " + resourceName
+                    + ". Ensure bundles/com.codepilot1c.core.tests/src resources are configured."); //$NON-NLS-1$
+        }
+        return stream;
     }
 
     private LlmStreamChunk findToolChunk(List<LlmStreamChunk> chunks) {

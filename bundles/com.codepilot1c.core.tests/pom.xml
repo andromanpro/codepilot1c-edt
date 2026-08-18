@@ -49,6 +49,15 @@
 
     <build>
         <testSourceDirectory>src</testSourceDirectory>
+        <!-- The test bundle keeps Java and small protocol fixtures in one source tree. -->
+        <testResources>
+            <testResource>
+                <directory>src</directory>
+                <includes>
+                    <include>**/*.sse</include>
+                </includes>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
