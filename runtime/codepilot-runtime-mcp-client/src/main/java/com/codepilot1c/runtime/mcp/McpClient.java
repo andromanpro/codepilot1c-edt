@@ -36,11 +36,8 @@ public final class McpClient implements AutoCloseable {
     private final Object stateLock = new Object();
     private volatile String sessionId;
     private volatile String negotiatedProtocol;
-    /** A server-created session that must be deleted even when initialize result parsing fails. */
-    private volatile String cleanupSessionId;
-    private volatile String cleanupProtocol;
     private volatile boolean closed;
-    private CompletableFuture<InitializeResult> initialization;
+    private InitializationOperation initialization;
 
     public McpClient(McpClientConfig config) {
         this(java.util.Objects.requireNonNull(config, "config"),
@@ -72,18 +69,12 @@ public final class McpClient implements AutoCloseable {
             if (sessionId != null) {
                 return failed(stateError("MCP client is already initialized"));
             }
-            if (cleanupSessionId != null) {
-                return failed(stateError("MCP client must be closed after failed initialize"));
-            }
-            if (initialization != null) return initialization;
-            List<String> candidates = protocolCandidates(config.protocolPreferences());
-            initialization = initializeAttempt(candidates, 0);
-            initialization.whenComplete((result, error) -> {
-                synchronized (stateLock) {
-                    if (error != null) initialization = null;
-                }
-            });
-            return initialization;
+            if (initialization != null) return initialization.future;
+            InitializationOperation operation = new InitializationOperation(
+                    protocolCandidates(config.protocolPreferences()));
+            initialization = operation;
+            operation.startAttempt(0);
+            return operation.future;
         }
     }
 
@@ -116,12 +107,15 @@ public final class McpClient implements AutoCloseable {
     public CompletableFuture<Void> closeAsync() {
         final String session;
         final String protocol;
+        final InitializationOperation activeInitialization;
         synchronized (stateLock) {
             if (closed) return CompletableFuture.completedFuture(null);
             closed = true;
-            session = sessionId != null ? sessionId : cleanupSessionId;
-            protocol = sessionId != null ? negotiatedProtocol : cleanupProtocol;
+            session = sessionId;
+            protocol = negotiatedProtocol;
+            activeInitialization = initialization;
         }
+        if (activeInitialization != null) activeInitialization.cancel(true);
         if (session == null) {
             clearState();
             return CompletableFuture.completedFuture(null);
@@ -149,43 +143,6 @@ public final class McpClient implements AutoCloseable {
             // AutoCloseable cleanup remains best effort and never exposes bodies or credentials.
             clearState();
         }
-    }
-
-    private CompletableFuture<InitializeResult> initializeAttempt(List<String> candidates, int index) {
-        if (index >= candidates.size()) {
-            return failed(new McpClientException(McpClientException.Kind.PROTOCOL,
-                    "MCP server rejected all supported protocol versions"));
-        }
-        String protocol = candidates.get(index);
-        JsonObject params = new JsonObject();
-        params.addProperty("protocolVersion", protocol);
-        params.add("capabilities", new JsonObject());
-        JsonObject clientInfo = new JsonObject();
-        clientInfo.addProperty("name", CLIENT_NAME);
-        clientInfo.addProperty("version", CLIENT_VERSION);
-        params.add("clientInfo", clientInfo);
-        return request("initialize", params, protocol, null).handle((envelope, failure) -> {
-            if (failure == null) {
-                try {
-                    InitializeResult result = parseInitialize(envelope, protocol);
-                    synchronized (stateLock) {
-                        if (closed) throw stateError("MCP client was closed during initialize");
-                        sessionId = envelope.sessionId();
-                        negotiatedProtocol = result.protocolVersion();
-                        cleanupSessionId = null;
-                        cleanupProtocol = null;
-                    }
-                    return CompletableFuture.completedFuture(result);
-                } catch (McpClientException e) {
-                    return McpClient.<InitializeResult>failed(e);
-                }
-            }
-            McpClientException exception = unwrap(failure);
-            if (exception.isUnsupportedProtocol() && index + 1 < candidates.size()) {
-                return initializeAttempt(candidates, index + 1);
-            }
-            return McpClient.<InitializeResult>failed(exception);
-        }).thenCompose(value -> value);
     }
 
     private InitializeResult parseInitialize(HttpEnvelope envelope, String requestedProtocol)
@@ -255,8 +212,7 @@ public final class McpClient implements AutoCloseable {
                 .POST(HttpRequest.BodyPublishers.ofString(request.toString(), java.nio.charset.StandardCharsets.UTF_8));
         if (session != null && !session.isBlank()) builder.header(SESSION_HEADER, session);
         addAuthorization(builder);
-        return mapCancellable(execute(builder.build()),
-                response -> parseRpcResponse(response, session, protocol));
+        return mapCancellable(execute(builder.build()), response -> parseRpcResponse(response, session));
     }
 
     private CompletableFuture<HttpResponse<String>> execute(HttpRequest request) {
@@ -277,13 +233,8 @@ public final class McpClient implements AutoCloseable {
         return result;
     }
 
-    private HttpEnvelope parseRpcResponse(HttpResponse<String> response, String requestedSession, String requestedProtocol)
+    private HttpEnvelope parseRpcResponse(HttpResponse<String> response, String requestedSession)
             throws CompletionException {
-        String responseSession = response.headers().firstValue(SESSION_HEADER).orElse(requestedSession);
-        if (response.statusCode() >= 200 && response.statusCode() < 300
-                && requestedSession == null && responseSession != null && !responseSession.isBlank()) {
-            rememberCleanupSession(responseSession, requestedProtocol);
-        }
         String body = response.body() == null ? "" : response.body().trim();
         JsonObject object = parseObject(body);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -299,6 +250,7 @@ public final class McpClient implements AutoCloseable {
             throw new CompletionException(new McpClientException(McpClientException.Kind.MALFORMED_RESPONSE,
                     "MCP JSON-RPC response has no result", response.statusCode(), Integer.MIN_VALUE, null));
         }
+        String responseSession = response.headers().firstValue(SESSION_HEADER).orElse(requestedSession);
         return new HttpEnvelope(response.statusCode(), object.get("result"), responseSession);
     }
 
@@ -390,16 +342,6 @@ public final class McpClient implements AutoCloseable {
     private void forgetSession() {
         sessionId = null;
         negotiatedProtocol = null;
-        cleanupSessionId = null;
-        cleanupProtocol = null;
-    }
-
-    private void rememberCleanupSession(String session, String protocol) {
-        synchronized (stateLock) {
-            if (closed || sessionId != null) return;
-            cleanupSessionId = session;
-            cleanupProtocol = protocol;
-        }
     }
 
     private static List<String> protocolCandidates(List<String> preferences) {
@@ -513,6 +455,128 @@ public final class McpClient implements AutoCloseable {
 
     private static Throwable unwrapCause(Throwable failure) {
         return failure.getCause() == null ? failure : failure.getCause();
+    }
+
+    private final class InitializationOperation {
+        private final List<String> candidates;
+        private final InitializeFuture future = new InitializeFuture();
+        private CompletableFuture<HttpEnvelope> activeRequest;
+        private boolean cancelled;
+        private boolean terminal;
+
+        InitializationOperation(List<String> candidates) {
+            this.candidates = candidates;
+            future.onCancel(this::cancel);
+        }
+
+        void startAttempt(int index) {
+            if (index >= candidates.size()) {
+                completeFailure(new McpClientException(McpClientException.Kind.PROTOCOL,
+                        "MCP server rejected all supported protocol versions"));
+                return;
+            }
+            String protocol = candidates.get(index);
+            JsonObject params = new JsonObject();
+            params.addProperty("protocolVersion", protocol);
+            params.add("capabilities", new JsonObject());
+            JsonObject clientInfo = new JsonObject();
+            clientInfo.addProperty("name", CLIENT_NAME);
+            clientInfo.addProperty("version", CLIENT_VERSION);
+            params.add("clientInfo", clientInfo);
+
+            CompletableFuture<HttpEnvelope> request = request("initialize", params, protocol, null);
+            synchronized (stateLock) {
+                if (closed || cancelled || terminal || initialization != this) {
+                    request.cancel(true);
+                    return;
+                }
+                activeRequest = request;
+            }
+            request.whenComplete((envelope, failure) -> {
+                if (failure == null) completeSuccess(envelope, protocol);
+                else completeAttemptFailure(unwrap(failure), index);
+            });
+        }
+
+        void completeSuccess(HttpEnvelope envelope, String protocol) {
+            final InitializeResult result;
+            try {
+                result = parseInitialize(envelope, protocol);
+            } catch (McpClientException failure) {
+                completeFailure(failure);
+                return;
+            }
+            synchronized (stateLock) {
+                if (closed || cancelled || terminal || initialization != this) return;
+                terminal = true;
+                sessionId = envelope.sessionId();
+                negotiatedProtocol = result.protocolVersion();
+                activeRequest = null;
+                initialization = null;
+            }
+            future.completeInternal(result);
+        }
+
+        void completeAttemptFailure(McpClientException failure, int index) {
+            boolean retry;
+            synchronized (stateLock) {
+                if (closed || cancelled || terminal || initialization != this) return;
+                activeRequest = null;
+                retry = failure.isUnsupportedProtocol() && index + 1 < candidates.size();
+            }
+            if (retry) startAttempt(index + 1);
+            else completeFailure(failure);
+        }
+
+        void completeFailure(McpClientException failure) {
+            synchronized (stateLock) {
+                if (closed || cancelled || terminal || initialization != this) return;
+                terminal = true;
+                activeRequest = null;
+                initialization = null;
+            }
+            future.completeExceptionallyInternal(failure);
+        }
+
+        boolean cancel(boolean mayInterruptIfRunning) {
+            CompletableFuture<HttpEnvelope> request;
+            synchronized (stateLock) {
+                if (terminal || cancelled) return false;
+                terminal = true;
+                cancelled = true;
+                if (initialization == this) initialization = null;
+                request = activeRequest;
+                activeRequest = null;
+            }
+            future.cancelInternal(mayInterruptIfRunning);
+            if (request != null) request.cancel(mayInterruptIfRunning);
+            return true;
+        }
+    }
+
+    private static final class InitializeFuture extends CompletableFuture<InitializeResult> {
+        private volatile java.util.function.Predicate<Boolean> cancelAction = ignored -> false;
+
+        void onCancel(java.util.function.Predicate<Boolean> action) {
+            cancelAction = java.util.Objects.requireNonNull(action, "action");
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            return cancelAction.test(mayInterruptIfRunning);
+        }
+
+        boolean cancelInternal(boolean mayInterruptIfRunning) {
+            return super.cancel(mayInterruptIfRunning);
+        }
+
+        boolean completeInternal(InitializeResult value) {
+            return super.complete(value);
+        }
+
+        boolean completeExceptionallyInternal(Throwable failure) {
+            return super.completeExceptionally(failure);
+        }
     }
 
     private record HttpEnvelope(int statusCode, JsonElement result, String sessionId) {}

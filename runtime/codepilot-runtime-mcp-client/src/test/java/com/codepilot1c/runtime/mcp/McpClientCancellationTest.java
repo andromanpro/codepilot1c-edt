@@ -1,6 +1,8 @@
 package com.codepilot1c.runtime.mcp;
 
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 
 import java.io.IOException;
 import java.net.Authenticator;
@@ -42,6 +44,39 @@ public class McpClientCancellationTest {
         assertTrue(http.toolRoot.isCancelled());
 
         client.close();
+    }
+
+    @Test
+    public void cancellingInitializeCancelsRootAndIgnoresLateSuccess() {
+        PendingInitializeHttpClient http = new PendingInitializeHttpClient();
+        McpClient client = new McpClient(
+                McpClientConfig.builder("http://localhost:8123/mcp").build(), http); //$NON-NLS-1$
+
+        CompletableFuture<InitializeResult> initialize = client.initialize();
+        assertTrue(initialize.cancel(true));
+        assertTrue(http.root.cancelCalled);
+        http.completeLateSuccess();
+
+        assertTrue(initialize.isCancelled());
+        assertFalse(client.isInitialized());
+        assertNull(client.negotiatedProtocol());
+        client.close();
+    }
+
+    @Test
+    public void closeDuringInitializeCancelsRootAndLateSuccessCannotInstallSession() {
+        PendingInitializeHttpClient http = new PendingInitializeHttpClient();
+        McpClient client = new McpClient(
+                McpClientConfig.builder("http://localhost:8123/mcp").build(), http); //$NON-NLS-1$
+
+        CompletableFuture<InitializeResult> initialize = client.initialize();
+        client.closeAsync().join();
+        assertTrue(http.root.cancelCalled);
+        http.completeLateSuccess();
+
+        assertTrue(initialize.isCancelled());
+        assertFalse(client.isInitialized());
+        assertNull(client.negotiatedProtocol());
     }
 
     private static final class TrackingHttpClient extends HttpClient {
@@ -94,6 +129,64 @@ public class McpClientCancellationTest {
         @Override public Optional<Authenticator> authenticator() { return Optional.empty(); }
         @Override public Version version() { return Version.HTTP_1_1; }
         @Override public Optional<Executor> executor() { return Optional.empty(); }
+    }
+
+    private static final class PendingInitializeHttpClient extends HttpClient {
+        private final NonCancellingFuture<HttpResponse<String>> root = new NonCancellingFuture<>();
+        private HttpRequest request;
+
+        void completeLateSuccess() {
+            root.complete(new Response(request, 200,
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"serverInfo\":{},\"capabilities\":{}}}", //$NON-NLS-1$
+                    Map.of("Mcp-Session-Id", List.of("late-session")))); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+            this.request = request;
+            return (CompletableFuture<HttpResponse<T>>) (CompletableFuture<?>) root;
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler,
+                HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+            return sendAsync(request, responseBodyHandler);
+        }
+
+        @Override
+        public <T> HttpResponse<T> send(HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler) throws IOException, InterruptedException {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override public Optional<CookieHandler> cookieHandler() { return Optional.empty(); }
+        @Override public Optional<Duration> connectTimeout() { return Optional.of(Duration.ofSeconds(1)); }
+        @Override public Redirect followRedirects() { return Redirect.NEVER; }
+        @Override public Optional<ProxySelector> proxy() { return Optional.empty(); }
+        @Override public SSLContext sslContext() {
+            try {
+                return SSLContext.getDefault();
+            } catch (NoSuchAlgorithmException failure) {
+                throw new AssertionError(failure);
+            }
+        }
+        @Override public SSLParameters sslParameters() { return new SSLParameters(); }
+        @Override public Optional<Authenticator> authenticator() { return Optional.empty(); }
+        @Override public Version version() { return Version.HTTP_1_1; }
+        @Override public Optional<Executor> executor() { return Optional.empty(); }
+    }
+
+    private static final class NonCancellingFuture<T> extends CompletableFuture<T> {
+        private volatile boolean cancelCalled;
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelCalled = true;
+            return false;
+        }
     }
 
     private record Response(HttpRequest request, int statusCode, String body,

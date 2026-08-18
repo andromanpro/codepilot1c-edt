@@ -23,3 +23,7 @@ server wraps that response in SSE framing).
 `closeAsync()` is the non-blocking shutdown API. `close()` implements
 `AutoCloseable` and waits for the best-effort DELETE request, so callers that
 must not block their event loop should use `closeAsync()`.
+
+Initialization is a single owned operation. Cancelling its returned future or
+closing the client cancels the active root HTTP request; a late response cannot
+install a session or negotiated protocol after either terminal path.
