@@ -317,5 +317,9 @@ public class EventHandlerStubIntegrationTest {
         boolean hasHandler(String name) {
             return handlerNames.contains(name);
         }
+
+        void removeHandler(String name) {
+            handlerNames.remove(name);
+        }
     }
 }

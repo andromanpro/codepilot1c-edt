@@ -85,7 +85,7 @@ public class FormRecipeStubTailTest {
     }
 
     @Test
-    public void existingHandlerUpsertIsNotMarkedSafeForRemoval() throws Exception {
+    public void existingHandlerUpsertCarriesRestorableSnapshot() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         Map<String, Object> first = new LinkedHashMap<>();
         first.put("op", "add_event_handler"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -105,25 +105,15 @@ public class FormRecipeStubTailTest {
         Method createdHandlerSlot = pendingStubs.get(1).getClass().getDeclaredMethod("createdHandlerSlot"); //$NON-NLS-1$
         createdHandlerSlot.setAccessible(true);
         assertEquals(Boolean.FALSE, createdHandlerSlot.invoke(pendingStubs.get(1)));
-
-        Method compensate = EdtMetadataService.class.getDeclaredMethod(
-                "compensateHandlerSlot", //$NON-NLS-1$
-                IProject.class,
-                Configuration.class,
-                String.class,
-                String.class,
-                pendingStubs.get(1).getClass(),
-                String.class);
-        compensate.setAccessible(true);
-        Object outcome = compensate.invoke(
-                service, null, null, "Catalog.Products.Form.ItemForm", "Catalog.Products", //$NON-NLS-1$ //$NON-NLS-2$
-                pendingStubs.get(1), "test"); //$NON-NLS-1$
-        Method status = outcome.getClass().getDeclaredMethod("status"); //$NON-NLS-1$
-        Method bmState = outcome.getClass().getDeclaredMethod("bmState"); //$NON-NLS-1$
-        status.setAccessible(true);
-        bmState.setAccessible(true);
-        assertEquals(RollbackStatus.NOT_ATTEMPTED_UNSAFE, status.invoke(outcome));
-        assertEquals(BmState.INITIAL_COMMIT_REMAINS, bmState.invoke(outcome));
+        Method previousState = pendingStubs.get(1).getClass().getDeclaredMethod("previousState"); //$NON-NLS-1$
+        previousState.setAccessible(true);
+        Object snapshot = previousState.invoke(pendingStubs.get(1));
+        Method existed = snapshot.getClass().getDeclaredMethod("existed"); //$NON-NLS-1$
+        Method handlerName = snapshot.getClass().getDeclaredMethod("handlerName"); //$NON-NLS-1$
+        existed.setAccessible(true);
+        handlerName.setAccessible(true);
+        assertEquals(Boolean.TRUE, existed.invoke(snapshot));
+        assertEquals("OriginalOnOpen", handlerName.invoke(snapshot)); //$NON-NLS-1$
     }
 
     @Test
