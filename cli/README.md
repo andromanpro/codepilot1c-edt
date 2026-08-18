@@ -132,8 +132,11 @@ malformed JSON, unreadable paths, and combinations of sources are usage errors.
 
 All `--output json` responses are stable machine contracts. They include
 `command`, normalized `endpoint`, `status`, negotiated `protocolVersion` for
-session commands, and the relevant result payload. Credential-like fields in
-server JSON are omitted and bearer values are redacted. The CLI never emits the
+session commands, and the relevant result payload. The `health` command reports
+HTTP 401/403 as `status: "failed"` with `error: "authentication_failed"`, not
+as readiness failure. Server JSON recursively omits credential keys such as
+`apiKey`/`api-key`, `password`, `passphrase`, `privateKey`, `clientSecret`, and
+token/authorization fields; bearer values are redacted. The CLI never emits the
 configured bearer token or an `Authorization` header. Prefer
 `--bearer-token-file` over placing a token in a shell command or process list;
 it has precedence over the property and environment variable.

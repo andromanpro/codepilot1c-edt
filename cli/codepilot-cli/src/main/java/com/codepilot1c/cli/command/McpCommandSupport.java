@@ -39,12 +39,15 @@ final class McpCommandSupport {
         try (Connection connection = connect(root, options)) {
             var result = await(connection.client().healthReady());
             Map<String, Object> output = base(command, connection.endpoint());
-            output.put("status", result.ready() ? "ready" : "not_ready");
+            boolean authenticationFailed = result.statusCode() == 401 || result.statusCode() == 403;
+            output.put("status", authenticationFailed ? "failed" : result.ready() ? "ready" : "not_ready");
+            if (authenticationFailed) output.put("error", "authentication_failed");
             output.put("ready", result.ready());
             output.put("httpStatus", result.statusCode());
             if (result.body() != null) output.put("body", jsonValue(result.body()));
-            CommandOutput.print(root, result.ready() ? "ready" : "not ready", output);
-            if (result.statusCode() == 401 || result.statusCode() == 403) return ExitCodes.AUTH;
+            CommandOutput.print(root, authenticationFailed ? "error[authentication_failed]"
+                    : result.ready() ? "ready" : "not ready", output);
+            if (authenticationFailed) return ExitCodes.AUTH;
             return result.ready() ? ExitCodes.OK : ExitCodes.EDT_UNAVAILABLE;
         } catch (McpUsageException exception) {
             return usage(root, command, exception.code());
@@ -350,10 +353,14 @@ final class McpCommandSupport {
     }
 
     private static boolean sensitiveKey(String key) {
-        String normalized = key.toLowerCase(Locale.ROOT).replace('-', '_');
-        return normalized.equals("authorization") || normalized.equals("bearer")
-                || normalized.contains("token") || normalized.contains("secret")
-                || normalized.contains("credential");
+        if (key == null || key.isBlank()) return false;
+        String normalized = key.toLowerCase(Locale.ROOT).replaceAll("[\\s._-]", "");
+        return normalized.equals("authorization") || normalized.endsWith("authorization")
+                || normalized.equals("bearer") || normalized.endsWith("password")
+                || normalized.endsWith("passphrase") || normalized.endsWith("privatekey")
+                || normalized.endsWith("clientsecret") || normalized.endsWith("apikey")
+                || normalized.equals("token") || normalized.endsWith("token")
+                || normalized.endsWith("credential") || normalized.endsWith("credentials");
     }
 
     private static String safeText(String value) {

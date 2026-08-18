@@ -79,13 +79,23 @@ public class McpCliHttpContractTest {
         assertTrue(fixture.out().contains("\"status\":\"closed\""));
     }
 
-    @Test public void callAcceptsOneObjectFromStdinAndRedactsSensitiveServerFields() {
+    @Test public void callAcceptsOneObjectFromStdinAndRecursivelyRedactsCredentialKeys() {
         Fixture fixture = new Fixture("{\"message\":\"hello\"}");
         assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "mcp", "call", "echo",
                 "--args-stdin", "--endpoint", endpoint));
         assertTrue(fixture.out().contains("\"tool\":\"echo\""));
         assertFalse(fixture.out().toLowerCase(java.util.Locale.ROOT).contains("authorization"));
         assertFalse(fixture.out().contains("should-not-appear"));
+        assertFalse(fixture.out().contains("nested-api-key"));
+        assertFalse(fixture.out().contains("nested-password"));
+        assertFalse(fixture.out().contains("nested-passphrase"));
+        assertFalse(fixture.out().contains("nested-private-key"));
+        assertFalse(fixture.out().contains("nested-client-secret"));
+        assertFalse(fixture.out().toLowerCase(java.util.Locale.ROOT).contains("api_key"));
+        assertFalse(fixture.out().toLowerCase(java.util.Locale.ROOT).contains("privatekey"));
+        assertTrue(fixture.out().contains("\"monkey\":\"banana\""));
+        assertTrue(fixture.out().contains("\"tokenCount\":7"));
+        assertTrue(fixture.out().contains("\"publicKey\":\"okay\""));
     }
 
     @Test public void argumentSourcesAreMutuallyExclusiveAndMustBeObjects() {
@@ -108,6 +118,19 @@ public class McpCliHttpContractTest {
         assertTrue(fixture.out().contains("\"error\":\"authentication_failed\""));
         assertFalse(fixture.out().contains("top-secret-token"));
         assertFalse(fixture.err().contains("top-secret-token"));
+    }
+
+    @Test public void healthAuthenticationFailureHasDistinctTextAndJsonContract() {
+        authRequired.set(true);
+        Fixture fixture = new Fixture("");
+        assertEquals(ExitCodes.AUTH, fixture.execute("mcp", "health", "--endpoint", endpoint));
+        assertEquals("error[authentication_failed]\n", fixture.out());
+
+        fixture.reset("");
+        assertEquals(ExitCodes.AUTH, fixture.execute("--output", "json", "mcp", "health", "--endpoint", endpoint));
+        assertTrue(fixture.out().contains("\"status\":\"failed\""));
+        assertTrue(fixture.out().contains("\"error\":\"authentication_failed\""));
+        assertFalse(fixture.out().contains("not_ready"));
     }
 
     @Test public void instanceIdSelectsOnlyValidatedRegistryRecord() throws IOException {
@@ -149,7 +172,7 @@ public class McpCliHttpContractTest {
         if ("tools/list".equals(method)) {
             send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         } else if ("tools/call".equals(method)) {
-            send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"authorization\":\"Bearer should-not-appear\",\"echo\":\"Bearer should-not-appear\"}}");
+            send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"authorization\":\"Bearer should-not-appear\",\"echo\":\"Bearer should-not-appear\",\"nested\":{\"API_KEY\":\"nested-api-key\",\"PrivateKey\":\"nested-private-key\",\"monkey\":\"banana\",\"tokenCount\":7,\"publicKey\":\"okay\"},\"items\":[{\"password\":\"nested-password\"},{\"passphrase\":\"nested-passphrase\"},{\"clientSecret\":\"nested-client-secret\"}]}}");
         } else if ("ping".equals(method)) {
             send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{}}");
         } else throw new AssertionError("unexpected MCP method: " + method);

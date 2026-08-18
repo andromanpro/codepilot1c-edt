@@ -165,6 +165,48 @@ public class McpClientHttpContractTest {
     }
 
     @Test
+    public void malformedInitializeStillDeletesServerCreatedSessionWithoutEnablingCalls() {
+        server.createContext("/mcp", exchange -> {
+            if ("DELETE".equals(exchange.getRequestMethod())) {
+                assertEquals("session-malformed", exchange.getRequestHeaders().getFirst("Mcp-Session-Id"));
+                assertEquals("2025-11-25", exchange.getRequestHeaders().getFirst("MCP-Protocol-Version"));
+                deletes.incrementAndGet();
+                write(exchange, 204, "");
+                return;
+            }
+            if ("initialize".equals(method(exchange))) {
+                exchange.getResponseHeaders().add("Mcp-Session-Id", "session-malformed");
+                write(exchange, 200, "{not-json");
+                return;
+            }
+            fail("malformed initialize must not enable session methods");
+        });
+        client = new McpClient(config(null));
+        try {
+            client.initialize().join();
+            fail("initialize should reject malformed result");
+        } catch (java.util.concurrent.CompletionException exception) {
+            assertEquals(McpClientException.Kind.MALFORMED_RESPONSE,
+                    ((McpClientException) exception.getCause()).kind());
+        }
+        assertFalse(client.isInitialized());
+        try {
+            client.ping().join();
+            fail("failed initialization must not authorize calls");
+        } catch (java.util.concurrent.CompletionException exception) {
+            assertEquals(McpClientException.Kind.STATE, ((McpClientException) exception.getCause()).kind());
+        }
+        try {
+            client.initialize().join();
+            fail("cleanup-only session must be closed before another initialize");
+        } catch (java.util.concurrent.CompletionException exception) {
+            assertEquals(McpClientException.Kind.STATE, ((McpClientException) exception.getCause()).kind());
+        }
+        client.close();
+        assertEquals(1, deletes.get());
+    }
+
+    @Test
     public void configRejectsUnsafeEndpointsAndRedactsCredentials() {
         try { McpClientConfig.builder("ftp://127.0.0.1/mcp")
                 .bearerToken("unsafe-ftp-secret".toCharArray()).build(); fail(); }
