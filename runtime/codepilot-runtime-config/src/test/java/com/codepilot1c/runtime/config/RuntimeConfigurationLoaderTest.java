@@ -84,6 +84,11 @@ public class RuntimeConfigurationLoaderTest {
                 () -> load(config, RuntimeSetting.PROVIDER_REQUEST_TIMEOUT_MILLIS, "3600001")); //$NON-NLS-1$
         expect(ConfigurationErrorCode.INVALID_VALUE, RuntimeSetting.AGENT_MAX_STEPS,
                 () -> load(config, RuntimeSetting.AGENT_MAX_STEPS, "129")); //$NON-NLS-1$
+        try (RuntimeConfiguration ipv6 = load(config, RuntimeSetting.PROVIDER_BASE_URI, "http://[::1]:8080/v1"); //$NON-NLS-1$
+                RuntimeConfiguration remoteHttps = load(config, RuntimeSetting.PROVIDER_BASE_URI, "https://provider.example/v1")) { //$NON-NLS-1$
+            assertEquals("http://[::1]:8080/v1", ipv6.providerBaseUri().value().toString()); //$NON-NLS-1$
+            assertEquals("https://provider.example/v1", remoteHttps.providerBaseUri().value().toString()); //$NON-NLS-1$
+        }
     }
 
     @Test
@@ -200,6 +205,28 @@ public class RuntimeConfigurationLoaderTest {
         Path config = config("provider.apiKeyFile=" + secret + "\n"); //$NON-NLS-1$ //$NON-NLS-2$
         expect(ConfigurationErrorCode.UNSAFE_SECRET_FILE, RuntimeSetting.PROVIDER_API_KEY_FILE.key(),
                 () -> RuntimeConfigurationLoader.builder().configFile(config).load());
+    }
+
+    @Test
+    public void rejectsGroupWritableConfigAndUnsafeDefaultParentWhenPosixIsAvailable() throws Exception {
+        Path config = config("provider.baseUri=https://provider.example/v1\n"); //$NON-NLS-1$
+        try {
+            Files.setPosixFilePermissions(config, EnumSet.of(PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE, PosixFilePermission.GROUP_WRITE));
+        } catch (UnsupportedOperationException exception) {
+            Assume.assumeNoException("POSIX permissions unavailable", exception); //$NON-NLS-1$
+        }
+        expect(ConfigurationErrorCode.UNSAFE_CONFIG_FILE, "config", //$NON-NLS-1$
+                () -> RuntimeConfigurationLoader.builder().configFile(config).load());
+
+        Path parent = Files.createTempDirectory("runtime-config-parent-"); //$NON-NLS-1$
+        Path defaultConfig = parent.resolve("runtime.properties"); //$NON-NLS-1$
+        Files.writeString(defaultConfig, "provider.model=safe-model\n", StandardCharsets.UTF_8); //$NON-NLS-1$
+        Files.setPosixFilePermissions(defaultConfig, EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        Files.setPosixFilePermissions(parent, EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_WRITE));
+        expect(ConfigurationErrorCode.UNSAFE_CONFIG_FILE, "config", //$NON-NLS-1$
+                () -> StrictPropertiesFile.read(defaultConfig, false, true));
     }
 
     private static RuntimeConfiguration load(Path config, RuntimeSetting setting, String value) {
