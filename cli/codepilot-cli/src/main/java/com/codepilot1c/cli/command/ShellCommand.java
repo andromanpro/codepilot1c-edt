@@ -147,7 +147,7 @@ public final class ShellCommand implements Callable<Integer> {
                 });
     }
 
-    private List<Candidate> discoverCandidates(ShellOptions options) {
+    List<Candidate> discoverCandidates(ShellOptions options) {
         if (options.mcpEndpoint() != null && options.instanceId() != null) {
             throw new IllegalArgumentException("MCP endpoint and instance are mutually exclusive");
         }
@@ -171,6 +171,13 @@ public final class ShellCommand implements Callable<Integer> {
 
         Map<String, Candidate> candidates = new LinkedHashMap<>();
         try {
+            URI endpoint = normalizedMcp(root.services().configuration().endpoint());
+            candidates.put(endpoint.toASCIIString(), new Candidate(
+                    endpoint.toASCIIString(), "unregistered", "configured endpoint"));
+        } catch (URISyntaxException | RuntimeException ignored) {
+            // Registry discovery may still provide a usable endpoint.
+        }
+        try {
             registry.list().stream().sorted(Comparator.comparing(InstanceRecord::startedAt).reversed())
                     .forEach(record -> {
                         URI endpoint = normalizedMcp(URI.create(record.baseUrl()));
@@ -179,13 +186,6 @@ public final class ShellCommand implements Callable<Integer> {
                     });
         } catch (IOException | RuntimeException ignored) {
             // The configured endpoint remains a deterministic fallback.
-        }
-        try {
-            URI endpoint = normalizedMcp(root.services().configuration().endpoint());
-            candidates.putIfAbsent(endpoint.toASCIIString(), new Candidate(
-                    endpoint.toASCIIString(), "unregistered", "configured endpoint"));
-        } catch (URISyntaxException | RuntimeException ignored) {
-            // ModeResolver will produce the actionable no-candidate diagnostic.
         }
         return List.copyOf(candidates.values());
     }

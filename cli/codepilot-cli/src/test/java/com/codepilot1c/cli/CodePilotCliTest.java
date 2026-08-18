@@ -11,12 +11,15 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.Assume;
 import org.junit.Test;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -240,6 +243,104 @@ public class CodePilotCliTest {
         }
     }
 
+    @Test public void doctorPrivateBearerFileOverridesPropertyAndEnvironmentInTextAndJson()
+            throws Exception {
+        String fileToken = "doctor-file-token-secret";
+        List<String> authorization = new CopyOnWriteArrayList<>();
+        try (LocalServer server = new LocalServer(exchange -> {
+            authorization.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(fileToken);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.host.properties.put("codepilot.mcp.bearerToken", "property-token-secret");
+            fixture.host.environment.put("CODEPILOT_MCP_BEARER_TOKEN", "environment-token-secret");
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.OK,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker PASS broker_ready"));
+            assertTrue(!fixture.out().contains(fileToken));
+
+            fixture.reset();
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_ready\""));
+            assertTrue(!fixture.out().contains(fileToken));
+
+            fixture.reset();
+            assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "doctor"));
+            assertTrue(!fixture.out().contains("property-token-secret"));
+            assertTrue(!fixture.out().contains("environment-token-secret"));
+            assertEquals(List.of("Bearer " + fileToken, "Bearer " + fileToken,
+                    "Bearer property-token-secret"), authorization);
+        }
+    }
+
+    @Test public void doctorRejectsNonPrivateBearerFileInTextAndJsonWithoutReadingIt()
+            throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        String secret = "doctor-insecure-file-secret";
+        try (LocalServer server = new LocalServer(exchange -> {
+            requests.incrementAndGet();
+            send(exchange, 200, BROKER_CAPABILITIES);
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(secret);
+            try {
+                Files.setPosixFilePermissions(tokenFile,
+                        PosixFilePermissions.fromString("rw-r--r--"));
+            } catch (UnsupportedOperationException failure) {
+                Assume.assumeNoException(failure);
+            }
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker FAIL broker_auth_configuration_invalid"));
+            assertTrue(!fixture.out().contains(secret));
+
+            fixture.reset();
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_auth_configuration_invalid\""));
+            assertTrue(!fixture.out().contains(secret));
+            assertEquals(0, requests.get());
+        }
+    }
+
+    @Test public void doctorBearerFileAuthenticationFailureIsSafeInTextAndJson()
+            throws Exception {
+        String secret = "doctor-rejected-file-token";
+        List<String> authorization = new CopyOnWriteArrayList<>();
+        try (LocalServer server = new LocalServer(exchange -> {
+            authorization.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            send(exchange, 401, "{\"error\":\"rejected " + secret + "\"}");
+        }); Fixture fixture = new Fixture()) {
+            fixture.healthyEdt();
+            fixture.register(server.port(), List.of("llm.v1"));
+            Path tokenFile = fixture.privateSecret(secret);
+            fixture.host.properties.put("codepilot.endpoint", server.endpoint());
+            fixture.probe = endpoint -> new ProbeResult(true, 200, "HTTP 200");
+
+            assertEquals(ExitCodes.EDT_UNAVAILABLE,
+                    fixture.execute("doctor", "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("broker FAIL broker_authentication_failed"));
+            assertTrue(!fixture.out().contains(secret));
+
+            fixture.reset();
+            assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "doctor",
+                    "--mcp-bearer-token-file", tokenFile.toString()));
+            assertTrue(fixture.out().contains("\"code\":\"broker_authentication_failed\""));
+            assertTrue(!fixture.out().contains(secret));
+            assertEquals(List.of("Bearer " + secret, "Bearer " + secret), authorization);
+        }
+    }
+
     @Test public void statusDisplaysLlmCapabilityOnlyWhenAdvertised() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.register(8765, List.of("llm.v1"));
@@ -335,6 +436,21 @@ public class CodePilotCliTest {
             String json = Files.readString(record, StandardCharsets.UTF_8).stripTrailing();
             Files.writeString(record, json.substring(0, json.length() - 1)
                     + ",\"llmBrokerVersion\":" + version + "}\n", StandardCharsets.UTF_8);
+        }
+
+        Path privateSecret(String value) throws IOException {
+            if (temporaryHome == null) {
+                temporaryHome = Files.createTempDirectory("codepilot-doctor-contract-");
+                host.home = temporaryHome.toString();
+            }
+            Path path = Files.createTempFile(temporaryHome, "doctor-token-", ".txt");
+            try {
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+            } catch (UnsupportedOperationException ignored) {
+                // ACL-based test platform.
+            }
+            Files.writeString(path, value, StandardCharsets.UTF_8);
+            return path;
         }
 
         @Override public void close() throws IOException {

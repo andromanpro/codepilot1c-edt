@@ -25,10 +25,14 @@ import com.codepilot1c.cli.supervisor.InstanceRegistry.BrokerAdvertisement;
 import com.codepilot1c.runtime.agent.AgentModelException;
 
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
 @Command(name = "doctor", mixinStandardHelpOptions = true, description = "Run machine-readable CLI and EDT checks.")
-final class DoctorCommand implements Callable<Integer> {
+final class DoctorCommand implements Callable<Integer>, McpConnectionOptions {
     private final RootCommand root;
+    @Option(names = "--mcp-bearer-token-file",
+            description = "Private UTF-8 file containing the MCP bearer token.")
+    private String mcpBearerTokenFile;
     DoctorCommand(RootCommand root) { this.root = root; }
 
     @Override public Integer call() {
@@ -95,7 +99,13 @@ final class DoctorCommand implements Callable<Integer> {
                     "The matching EDT record explicitly reports no llm.v1 broker; this remains supported");
         }
 
-        char[] token = brokerToken();
+        char[] token;
+        try {
+            token = McpCommandSupport.readBearerToken(root, this);
+        } catch (McpCommandSupport.McpUsageException failure) {
+            return new Check("broker", false, "broker_auth_configuration_invalid",
+                    "MCP bearer-token file is unreadable or is not a private regular file");
+        }
         try (BrokerClient broker = new BrokerClient(
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build(),
                 endpoint, token, false, BrokerClient.DEFAULT_PROBE_TIMEOUT,
@@ -165,17 +175,10 @@ final class DoctorCommand implements Callable<Integer> {
         return "https".equalsIgnoreCase(endpoint.getScheme()) ? 443 : 80;
     }
 
-    private char[] brokerToken() {
-        String value = first(root.services().host().systemProperty("codepilot.mcp.bearerToken"),
-                root.services().host().environment("CODEPILOT_MCP_BEARER_TOKEN"));
-        return value == null ? null : value.toCharArray();
-    }
-
-    private static String first(String first, String second) {
-        if (first != null && !first.isBlank()) return first;
-        if (second != null && !second.isBlank()) return second;
-        return null;
-    }
+    @Override public String endpoint() { return null; }
+    @Override public String instanceId() { return null; }
+    @Override public boolean allowInsecureHttp() { return false; }
+    @Override public String bearerTokenFile() { return mcpBearerTokenFile; }
 
     private static Check brokerFailure(Throwable failure) {
         if (failure instanceof AgentModelException modelFailure) {

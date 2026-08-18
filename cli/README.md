@@ -64,7 +64,11 @@ available. Only explicit negative broker metadata suppresses the probe. A 404
 probe response passes as `broker_not_advertised` for compatibility with old or
 broker-disabled plugins. Other results report unreachable, authentication,
 busy, protocol, streaming-readiness, and no-active-provider failures without
-printing endpoints, response bodies, tokens, or provider configuration.
+printing endpoints, response bodies, tokens, or provider configuration. For an
+authenticated probe, the recommended private `--mcp-bearer-token-file` takes
+precedence over `codepilot.mcp.bearerToken`, which takes precedence over
+`CODEPILOT_MCP_BEARER_TOKEN`; the file uses the same bounded, no-follow,
+private-regular-file validation as shell and MCP commands.
 
 ## Interactive shell
 
@@ -186,10 +190,11 @@ encrypted secret store.
 
 For a GUI EDT instance, ensure its MCP host is enabled and set the instance
 preference `mcp.host.llm.enabled=true`, then restart the MCP host/EDT so the
-registry record advertises `llm.v1`. The same preference can be forced at
+registry record publishes `llmBrokerVersion: 1`; current readers derive the
+`llm.v1` capability from that scalar. The same preference can be forced at
 startup with `-Dmcp.host.llm.enabled=true` or
 `-Dcodepilot.mcp.host.llm.enabled=true`. Current defaults enable it, but an old
-plugin has no capability field and remains valid. The broker also requires an
+plugin has no broker-version field and remains valid. The broker also requires an
 active EDT LLM provider; use `codepilot doctor` and `codepilot edt status --all`
 to distinguish an unadvertised capability from an advertised but unavailable
 broker.
@@ -230,14 +235,14 @@ Instances are stored using atomic replacement in:
 Registry schema version `1` contains only non-secret process metadata:
 `instanceId`, `pid`, `port`, `baseUrl`, canonical `workspace`, `edtHome`,
 `mode`, `owner`, `startedAt`, and optionally `pluginVersion`, `authMode`,
-`logFile`, and the non-secret `capabilities` array. The headless host may
+`logFile`, and the non-secret scalar `llmBrokerVersion: 1`. The headless host may
 atomically enrich or replace the same record;
 readers tolerate optional and unknown forward-compatible fields.
 
 `edt status --all` combines the registry, PID identity, and readiness probe and
 reports one of `starting`, `ready`, `degraded`, or `stale` for each instance.
-It prints `llm.v1` only when that exact value occurs in the record's optional
-capability array; old records remain readable and show no broker capability.
+It prints the derived `llm.v1` capability only when `llmBrokerVersion` is at
+least `1`; old records remain readable and show no broker capability.
 Plain `edt status` retains the configured-endpoint probe.
 
 `edt stop --id` first makes a best-effort `DELETE /mcp`, then requests normal

@@ -10,7 +10,7 @@ import com.codepilot1c.cli.shell.ShellOptions.Mode;
 /** Deterministic connected/standalone/auto selection over injectable discovery seams. */
 public final class ModeResolver {
     /** Four default two-second broker probes bound stale-candidate resolution to about eight seconds. */
-    static final int MAX_CONNECTED_CANDIDATES = 4;
+    public static final int MAX_CONNECTED_CANDIDATES = 4;
     private final CandidateDiscovery discovery;
     private final ConnectedFactory connected;
     private final StandaloneFactory standalone;
