@@ -30,12 +30,14 @@
     <modules>
         <module>codepilot-runtime-kernel</module>
         <module>codepilot-runtime-provider</module>
+        <module>codepilot-runtime-mcp-client</module>
     </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>
         <junit.version>4.13.2</junit.version>
+        <gson.version>2.10.1</gson.version>
         <maven.compiler.plugin.version>3.11.0</maven.compiler.plugin.version>
         <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
     </properties>
