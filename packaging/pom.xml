@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.codepilot1c</groupId>
+    <artifactId>codepilot-cli-distribution</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>CodePilot CLI distribution</name>
+    <description>Reproducible cross-platform archive for the shaded CodePilot CLI jar</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.build.outputTimestamp>2024-01-01T00:00:00Z</project.build.outputTimestamp>
+        <maven.assembly.version>3.7.1</maven.assembly.version>
+        <maven.antrun.version>3.1.0</maven.antrun.version>
+        <maven.enforcer.version>3.4.1</maven.enforcer.version>
+    </properties>
+
+    <build>
+        <finalName>codepilot-cli-${project.version}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${maven.enforcer.version}</version>
+                <executions>
+                    <execution>
+                        <id>require-cli-jar</id>
+                        <phase>validate</phase>
+                        <goals><goal>enforce</goal></goals>
+                        <configuration>
+                            <rules>
+                                <requireProperty>
+                                    <property>cli.jar</property>
+                                    <message>Set -Dcli.jar to the shaded CLI jar (for example cli/codepilot-cli/target/*-all.jar).</message>
+                                </requireProperty>
+                                <requireFilesExist>
+                                    <files>
+                                        <file>${cli.jar}</file>
+                                    </files>
+                                </requireFilesExist>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>${maven.antrun.version}</version>
+                <executions>
+                    <execution>
+                        <id>stage-distribution</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.directory}/distribution-root/bin"/>
+                                <mkdir dir="${project.build.directory}/distribution-root/lib"/>
+                                <copy todir="${project.build.directory}/distribution-root/bin">
+                                    <fileset dir="${project.basedir}/launchers">
+                                        <include name="codepilot"/>
+                                        <include name="codepilot.cmd"/>
+                                    </fileset>
+                                </copy>
+                                <copy file="${project.basedir}/../LICENSE"
+                                      tofile="${project.build.directory}/distribution-root/LICENSE"/>
+                                <copy file="${project.basedir}/README.md"
+                                      tofile="${project.build.directory}/distribution-root/README.md"/>
+                                <copy file="${cli.jar}"
+                                      tofile="${project.build.directory}/distribution-root/lib/codepilot-cli.jar"/>
+                                <checksum file="${project.build.directory}/distribution-root/lib/codepilot-cli.jar"
+                                          algorithm="SHA-256" property="cli.sha256"/>
+                                <echo file="${project.build.directory}/distribution-root/SHA256SUMS"
+                                      message="${cli.sha256}  lib/codepilot-cli.jar&#10;"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>archive-checksum</id>
+                        <phase>verify</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <checksum file="${project.build.directory}/${project.build.finalName}.zip"
+                                          algorithm="SHA-256" property="archive.sha256"/>
+                                <echo file="${project.build.directory}/${project.build.finalName}.zip.sha256"
+                                      message="${archive.sha256}  ${project.build.finalName}.zip&#10;"/>
+                                <checksum file="${project.build.directory}/${project.build.finalName}.tar.gz"
+                                          algorithm="SHA-256" property="archive.tar.sha256"/>
+                                <echo file="${project.build.directory}/${project.build.finalName}.tar.gz.sha256"
+                                      message="${archive.tar.sha256}  ${project.build.finalName}.tar.gz&#10;"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>${maven.assembly.version}</version>
+                <configuration>
+                    <descriptors>
+                        <descriptor>${project.basedir}/src/assembly/distribution.xml</descriptor>
+                    </descriptors>
+                    <finalName>codepilot-cli-${project.version}</finalName>
+                    <appendAssemblyId>false</appendAssemblyId>
+                    <tarLongFileMode>posix</tarLongFileMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>distribution-archives</id>
+                        <phase>package</phase>
+                        <goals><goal>single</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
