@@ -1,6 +1,7 @@
 # Maven/Tycho
 **/target/
 .m2/
+bundles/com.codepilot1c.core/lib/codepilot-runtime-kernel.jar
 
 # Codex / agent artifacts
 .codex/

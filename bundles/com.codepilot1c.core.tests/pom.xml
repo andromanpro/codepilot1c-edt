@@ -22,6 +22,12 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.codepilot1c</groupId>
+            <artifactId>codepilot-runtime-kernel</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>2.10.1</version>
@@ -61,6 +67,9 @@
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>
+                    <systemPropertyVariables>
+                        <core.bundle.path>${project.basedir}/../com.codepilot1c.core/target/com.codepilot1c.core-${project.version}.jar</core.bundle.path>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
         </plugins>
