@@ -1,0 +1,52 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+package com.codepilot1c.cli.command;
+
+import java.util.concurrent.Callable;
+
+import com.codepilot1c.cli.CliServices;
+import com.codepilot1c.cli.ExitCodes;
+import com.codepilot1c.cli.output.OutputMode;
+
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ScopeType;
+import picocli.CommandLine.Spec;
+import picocli.CommandLine.Model.CommandSpec;
+
+/** Root of the standalone command surface. */
+@Command(name = "codepilot", mixinStandardHelpOptions = true,
+        description = "Standalone harness for CodePilot and 1C:EDT.")
+public final class RootCommand implements Callable<Integer> {
+    private final CliServices services;
+
+    @Option(names = "--output", defaultValue = "TEXT", scope = ScopeType.INHERIT,
+            description = "Output format: ${COMPLETION-CANDIDATES}.")
+    private OutputMode outputMode;
+
+    @Spec private CommandSpec spec;
+
+    public RootCommand(CliServices services) { this.services = services; }
+    public CliServices services() { return services; }
+    public OutputMode outputMode() { return outputMode; }
+
+    @Override public Integer call() {
+        spec.commandLine().usage(services.out());
+        return ExitCodes.OK;
+    }
+
+    public static CommandLine commandLine(CliServices services) {
+        RootCommand root = new RootCommand(services);
+        CommandLine commandLine = new CommandLine(root);
+        commandLine.addSubcommand("version", new VersionCommand(root));
+        commandLine.addSubcommand("doctor", new DoctorCommand(root));
+        EdtCommand edt = new EdtCommand(root);
+        CommandLine edtLine = new CommandLine(edt);
+        edtLine.addSubcommand("status", new EdtStatusCommand(root));
+        edtLine.addSubcommand("installations", new EdtInstallationsCommand(root));
+        edtLine.addSubcommand("start", new EdtLifecycleCommand(root, "start"));
+        edtLine.addSubcommand("stop", new EdtLifecycleCommand(root, "stop"));
+        commandLine.addSubcommand("edt", edtLine);
+        return commandLine;
+    }
+}

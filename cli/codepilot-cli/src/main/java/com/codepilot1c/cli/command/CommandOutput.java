@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+package com.codepilot1c.cli.command;
+
+import java.util.Map;
+
+import com.codepilot1c.cli.output.JsonWriter;
+import com.codepilot1c.cli.output.OutputMode;
+
+final class CommandOutput {
+    private CommandOutput() { }
+
+    static void print(RootCommand root, String text, Map<String, Object> json) {
+        if (root.outputMode() == OutputMode.JSON) root.services().out().println(JsonWriter.write(json));
+        else root.services().out().println(text);
+        root.services().out().flush();
+    }
+}
