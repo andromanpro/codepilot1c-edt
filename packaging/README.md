@@ -11,7 +11,7 @@ Build the shaded jar and then pass its exact path to the standalone assembly
 module:
 
 ```sh
-mvn -f cli/pom.xml clean verify
+mvn -pl cli/codepilot-cli -am clean verify
 mvn -f packaging/pom.xml clean verify \
   -Dcli.jar="$PWD/cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar"
 ```

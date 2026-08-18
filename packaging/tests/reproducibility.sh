@@ -7,10 +7,10 @@ tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/codepilot-repro.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 
 cd "$repo_dir"
-mvn -q -f cli/pom.xml clean verify
+mvn -q -pl cli/codepilot-cli -am clean verify
 cp cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar "$tmpdir/cli-a.jar"
 
-mvn -q -f cli/pom.xml clean verify
+mvn -q -pl cli/codepilot-cli -am clean verify
 cp cli/codepilot-cli/target/codepilot-cli-1.0.0-SNAPSHOT-all.jar "$tmpdir/cli-b.jar"
 cmp "$tmpdir/cli-a.jar" "$tmpdir/cli-b.jar"
 
