@@ -28,6 +28,9 @@ TOOL_SCHEMA = {
 }
 TOOL_CALL_ID = "wave4-call-1"
 TOOL_ARGUMENTS = {"value": "approved-wave4"}
+TOOL_ARGUMENTS_JSON = json.dumps(TOOL_ARGUMENTS, separators=(",", ":"))
+if TOOL_ARGUMENTS_JSON != '{"value":"approved-wave4"}':
+    raise AssertionError("broker tool arguments must remain compact JSON")
 TOOL_RESULT_TEXT = "approved-wave4-tool-result"
 SHELL_PROMPT = "Run the approved Wave 4 tool."
 FINAL_TEXT = "Wave 4 connected shell complete."
@@ -411,7 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                             {
                                 "id": TOOL_CALL_ID,
                                 "name": TOOL_NAME,
-                                "arguments": TOOL_ARGUMENTS,
+                                "arguments": TOOL_ARGUMENTS_JSON,
                                 "argumentsRepaired": False,
                             }
                         ],
@@ -426,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                 and messages[0] == {"role": "user", "content": SHELL_PROMPT}
                 and messages[1].get("role") == "assistant"
                 and messages[1].get("toolCalls")
-                == [{"id": TOOL_CALL_ID, "name": TOOL_NAME, "arguments": TOOL_ARGUMENTS}]
+                == [{"id": TOOL_CALL_ID, "name": TOOL_NAME, "arguments": TOOL_ARGUMENTS_JSON}]
                 and messages[2].get("role") == "tool"
                 and messages[2].get("toolCallId") == TOOL_CALL_ID
                 and TOOL_RESULT_TEXT in messages[2].get("content", "")
