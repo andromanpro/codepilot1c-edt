@@ -11,7 +11,7 @@
 | Файл | Откуда взять |
 |---|---|
 | `edt.tar` | Офлайн-дистрибутив 1C:EDT для Linux x86_64 с [releases.1c.ru](https://releases.1c.ru) |
-| `plugin.zip` | Артефакт сборки: `mvn package` → `releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip` |
+| `plugin.zip` | Артефакт сборки: `mvn package` → `repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip` |
 | `Dockerfile` | `docker/Dockerfile` в этом репозитории |
 | `docker-entrypoint.sh` | `docker/docker-entrypoint.sh` в этом репозитории |
 
@@ -24,10 +24,10 @@
 
 ```bash
 # В корне репозитория
-mvn package -Dmaven.test.skip=true
+mvn -Dedt.home=/path/to/1cedt/Eclipse -Dmaven.test.skip=true package
 
 # Артефакт будет здесь:
-ls releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip
+ls repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip
 ```
 
 ---
@@ -47,7 +47,7 @@ docker/
 ```bash
 # Копируем дистрибутив и плагин
 cp /path/to/1c_edt_distr_offline_2025.2.3_30_linux_x86_64.tar docker/edt.tar
-cp releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
+cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
 
 # Собираем образ (~10–15 минут первый раз, ~1 минута при повторной сборке с кешем)
 docker build -t codepilot1c-edt:latest docker/
@@ -207,13 +207,13 @@ docker run
                  ├─ com.codepilot1c.core (autoStart=true в bundles.info)
                  │    └─ VibeCorePlugin.start()
                  │         └─ McpHostManager.startIfEnabled()
-                 │              └─ HTTP сервер на :8765 (Jetty)
+                 │              └─ HTTP сервер JDK HttpServer на :8765
                  └─ (workbench НЕ запускается — eclipse.ignoreApp=true)
 ```
 
 **Почему не нужен Xvfb в runtime:**
 `-Declipse.ignoreApp=true` запрещает запуск приложения `org.eclipse.ui.ide.workbench`.
-OSGi-бандлы стартуют, но SWT/GTK не инициализируются. MCP Host — чистый HTTP-сервер на Jetty, GUI не требует.
+OSGi-бандлы стартуют, но SWT/GTK не инициализируются. MCP Host использует JDK HttpServer и не требует GUI.
 
 **Почему Xvfb нужен при сборке:**
 `p2 director` (установщик плагинов Eclipse) использует GTK при инициализации, даже в headless-режиме. Без виртуального дисплея завершается с ошибкой.

@@ -36,11 +36,25 @@ URL update site: `https://ondysss.github.io/codepilot1c-edt/`
 
 ## Сборка
 
-Требования: JDK 17.
+Требования: JDK 17 и локальная инсталляция 1C:EDT. Передайте каталог `Eclipse`
+этой инсталляции как Maven system property — Tycho использует её для разрешения
+`com._1c.g5.v8.*` бандлов:
 
 ```bash
-mvn -DskipTests package
+mvn -Dedt.home=/path/to/1cedt/Eclipse -DskipTests package
 ```
+
+Это одинаково работает на macOS, Linux и Windows; для путей с пробелами
+заключите весь аргумент в кавычки, например:
+
+```powershell
+mvn "-Dedt.home=C:\Program Files\1C\EDT\Eclipse" -DskipTests package
+```
+
+`edt.home` не имеет machine-specific default и должен указывать именно на
+каталог `Eclipse`, содержащий плагины EDT. Текущий target platform относится к
+EDT `2025.2.3+30`; Docker baseline отдельно заявлен как `2025.1.5`, поэтому
+версию для локальной сборки выбирайте явно и проверяйте совместимость.
 
 ## Локальный E2E workflow для EDT
 

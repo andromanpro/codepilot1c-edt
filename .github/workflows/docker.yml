@@ -40,7 +40,7 @@ jobs:
 
       - name: Copy plugin artifact to docker context
         run: |
-          cp releng/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
+          cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
           ls -lh docker/plugin.zip
 
       - name: Extract plugin version
