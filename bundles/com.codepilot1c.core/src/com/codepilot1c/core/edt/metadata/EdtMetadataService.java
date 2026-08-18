@@ -156,6 +156,7 @@ import com.codepilot1c.core.edt.forms.CreateFormResult;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver.ResolvedEvent;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
+import com.codepilot1c.core.edt.forms.FormItemInformationEventCatalog;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -252,7 +253,8 @@ public class EdtMetadataService {
     }
 
     public EdtMetadataService(EdtMetadataGateway gateway) {
-        this(gateway, new EventHandlerTargetResolver());
+        this(gateway, new EventHandlerTargetResolver(
+                new FormItemInformationEventCatalog(gateway::getFormItemInformationService)));
     }
 
     /**

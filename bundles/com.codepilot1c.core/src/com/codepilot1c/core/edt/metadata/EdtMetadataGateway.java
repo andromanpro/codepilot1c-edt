@@ -1,8 +1,12 @@
 package com.codepilot1c.core.edt.metadata;
 
+import java.lang.reflect.Method;
+
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.Platform;
+import org.osgi.framework.Bundle;
 
 import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
 import com._1c.g5.v8.dt.bm.xtext.BmAwareResourceSetProvider;
@@ -15,6 +19,7 @@ import com._1c.g5.v8.dt.core.platform.IExternalObjectProjectManager;
 import com._1c.g5.v8.dt.core.platform.IExtensionProjectManager;
 import com._1c.g5.v8.dt.core.platform.IV8Project;
 import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
+import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.md.extension.IMdAdoptedPropertyAccess;
 import com._1c.g5.v8.dt.md.extension.adopt.IModelObjectAdopter;
 import com._1c.g5.v8.dt.platform.version.Version;
@@ -24,6 +29,10 @@ import com.codepilot1c.core.internal.VibeCorePlugin;
  * Access to EDT runtime services.
  */
 public class EdtMetadataGateway {
+
+    private static final String FORM_BUNDLE_ID = "com._1c.g5.v8.dt.form"; //$NON-NLS-1$
+    private static final String FORM_PLUGIN_CLASS = "com._1c.g5.v8.dt.internal.form.FormPlugin"; //$NON-NLS-1$
+    private static final String GUICE_INJECTOR_CLASS = "com.google.inject.Injector"; //$NON-NLS-1$
 
     public IProject resolveProject(String projectName) {
         IWorkspace workspace = ResourcesPlugin.getWorkspace();
@@ -130,6 +139,65 @@ public class EdtMetadataGateway {
             throw serviceUnavailable("BmAwareResourceSetProvider"); //$NON-NLS-1$
         }
         return service;
+    }
+
+    /**
+     * Returns the Guice-managed EDT form information service. The concrete service has
+     * injected runtime-version support; constructing it directly leaves that dependency
+     * {@code null} and breaks event discovery.
+     */
+    public FormItemInformationService getFormItemInformationService() {
+        try {
+            Bundle formBundle = Platform.getBundle(FORM_BUNDLE_ID);
+            if (formBundle == null) {
+                throw serviceUnavailable("EDT form bundle"); //$NON-NLS-1$
+            }
+            Class<?> pluginClass = formBundle.loadClass(FORM_PLUGIN_CLASS);
+            Method getDefault = pluginClass.getMethod("getDefault"); //$NON-NLS-1$
+            Object plugin = getDefault.invoke(null);
+            if (plugin == null) {
+                formBundle.start(Bundle.START_TRANSIENT);
+                plugin = getDefault.invoke(null);
+            }
+            if (plugin == null) {
+                throw serviceUnavailable("FormPlugin"); //$NON-NLS-1$
+            }
+            Object injector = pluginClass.getMethod("getInjector").invoke(plugin); //$NON-NLS-1$
+            if (injector == null) {
+                throw serviceUnavailable("FormPlugin injector"); //$NON-NLS-1$
+            }
+            Class<?> injectorApi = resolveInjectorApiClass(injector);
+            Method getInstance = injectorApi.getMethod("getInstance", Class.class); //$NON-NLS-1$
+            Object service = getInstance.invoke(injector, FormItemInformationService.class);
+            if (!(service instanceof FormItemInformationService result)) {
+                throw serviceUnavailable("FormItemInformationService"); //$NON-NLS-1$
+            }
+            return result;
+        } catch (MetadataOperationException e) {
+            throw e;
+        } catch (ReflectiveOperationException | org.osgi.framework.BundleException e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve EDT FormItemInformationService: " + e.getMessage(), false, e); //$NON-NLS-1$
+        }
+    }
+
+    private Class<?> resolveInjectorApiClass(Object injector) {
+        ClassLoader classLoader = injector.getClass().getClassLoader();
+        try {
+            Class<?> injectorInterface = Class.forName(GUICE_INJECTOR_CLASS, false, classLoader);
+            if (injectorInterface.isAssignableFrom(injector.getClass())) {
+                return injectorInterface;
+            }
+        } catch (ClassNotFoundException e) {
+            // Fall through to the interfaces exposed by the concrete injector.
+        }
+        for (Class<?> iface : injector.getClass().getInterfaces()) {
+            if (GUICE_INJECTOR_CLASS.equals(iface.getName())) {
+                return iface;
+            }
+        }
+        return injector.getClass();
     }
 
     public Version resolvePlatformVersion(IProject project) {

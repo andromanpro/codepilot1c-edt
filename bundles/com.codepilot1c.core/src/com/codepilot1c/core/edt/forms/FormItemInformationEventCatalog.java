@@ -2,6 +2,8 @@ package com.codepilot1c.core.edt.forms;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 import org.eclipse.emf.ecore.EStructuralFeature;
 
@@ -21,6 +23,18 @@ import com._1c.g5.v8.dt.mcore.Event;
  */
 public class FormItemInformationEventCatalog implements EventHandlerCatalog {
 
+    private final Supplier<FormItemInformationService> serviceSupplier;
+    private volatile FormItemInformationService service;
+
+    /**
+     * Creates a catalog backed by the EDT-managed service instance supplied by the
+     * metadata gateway. {@link FormItemInformationService} has Guice-injected runtime
+     * dependencies and therefore must never be instantiated with a plain constructor.
+     */
+    public FormItemInformationEventCatalog(Supplier<FormItemInformationService> serviceSupplier) {
+        this.serviceSupplier = Objects.requireNonNull(serviceSupplier, "serviceSupplier"); //$NON-NLS-1$
+    }
+
     @Override
     public List<Event> allowedEvents(FormVisualEntity item) {
         List<Event> result = new ArrayList<>();
@@ -32,7 +46,7 @@ public class FormItemInformationEventCatalog implements EventHandlerCatalog {
 
     @Override
     public List<EventSurface> eventSurfaces(FormVisualEntity item) {
-        FormItemInformationService service = new FormItemInformationService();
+        FormItemInformationService service = service();
         List<EventSurface> result = new ArrayList<>();
 
         // This is the same split used by the EDT properties UI: events belonging to
@@ -45,6 +59,21 @@ public class FormItemInformationEventCatalog implements EventHandlerCatalog {
         ExtInfo extInfo = service.getExtensionInfo(item);
         if (extInfo instanceof EventHandlerContainer extensionOwner) {
             result.add(new EventSurface(extensionOwner, service.getAllowedEvents(extInfo)));
+        }
+        return result;
+    }
+
+    private FormItemInformationService service() {
+        FormItemInformationService result = service;
+        if (result == null) {
+            synchronized (this) {
+                result = service;
+                if (result == null) {
+                    result = Objects.requireNonNull(
+                            serviceSupplier.get(), "EDT FormItemInformationService"); //$NON-NLS-1$
+                    service = result;
+                }
+            }
         }
         return result;
     }

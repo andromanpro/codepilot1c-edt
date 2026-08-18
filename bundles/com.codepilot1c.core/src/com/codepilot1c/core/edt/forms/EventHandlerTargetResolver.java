@@ -7,6 +7,7 @@ import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
 import com._1c.g5.v8.dt.mcore.Event;
 
+import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
@@ -25,8 +26,10 @@ public class EventHandlerTargetResolver {
 
     private final EventHandlerCatalog catalog;
 
+    /** Creates the production resolver backed by an EDT-managed form service. */
     public EventHandlerTargetResolver() {
-        this(new FormItemInformationEventCatalog());
+        EdtMetadataGateway gateway = new EdtMetadataGateway();
+        this.catalog = new FormItemInformationEventCatalog(gateway::getFormItemInformationService);
     }
 
     /**
