@@ -146,3 +146,23 @@ and quoted paths but retains the cmd.exe `%*` limitation described above. The
 launcher tests exercise spaces in the install path, symlink resolution,
 archive inventory, line endings, and executable bit without starting EDT or a
 GUI.
+
+After the shaded jar is built, the distribution tests also run `version`
+through every launcher whose native runner is available on the current host:
+
+```sh
+python3 -m unittest -v packaging.tests.test_distribution
+```
+
+macOS/Linux runs `bin/codepilot`; PowerShell and cmd tests run when `pwsh` (or
+Windows PowerShell) and `cmd.exe` are present and otherwise report skips. If no
+Windows runner is available, perform this check on Windows after
+`mvn -f packaging/pom.xml clean verify -Dcli.jar=...`:
+
+```powershell
+pwsh -NoLogo -NoProfile -File .\target\distribution-root\bin\codepilot.ps1 version
+cmd.exe /d /s /c ".\target\distribution-root\bin\codepilot.cmd version"
+```
+
+Both commands must exit zero and print a `codepilot <version>` line; repeat
+from an install directory containing spaces.

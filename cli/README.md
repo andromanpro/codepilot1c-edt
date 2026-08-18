@@ -412,7 +412,9 @@ The opt-in harness at `tools/run-cli-e2e.sh` runs outside unit tests and is
 not attached to the Maven reactor. Its default mode uses a local fake
 headless launcher/server, isolates Java `user.home`, registry, and workspace
 under a temporary directory, chooses a loopback ephemeral port, and verifies
-the full start/readiness/status/MCP/stop/cleanup path:
+the full start/readiness/status/authenticated-MCP/stop/cleanup path. Fake mode
+also stages the packaged POSIX launcher and drives the connected shell through
+tool approval, `/sessions`, `/resume`, `/status`, and `/exit` over stdin:
 
 ```sh
 mvn -pl cli/codepilot-cli -am -DskipTests package

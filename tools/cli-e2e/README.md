@@ -2,10 +2,13 @@
 
 `../run-cli-e2e.sh` is an explicit, opt-in check for the packaged CLI. It
 drives the public command surface through `edt start`, readiness/status,
-`mcp health`, `initialize`, `tools`, and `ping`, then `edt stop`. The default
-mode creates a local fake `1cedtcli` launcher and MCP host, so it is fast and
-does not require an EDT installation. It is not a unit test and is not wired
-into any Maven lifecycle.
+authenticated MCP `initialize`, `tools/list`, `tools/call`, `ping`, and
+session DELETE, then `edt stop`. In fake mode it also stages the production
+POSIX distribution launcher and shaded jar under a path containing spaces.
+Two dumb-terminal/stdin shell invocations exercise connected broker discovery,
+an annotated mutating tool approval (`y`), scripted SSE tool/result turns,
+`/sessions`, `/resume`, `/status`, and `/exit`. It is not a unit test and is
+not wired into any Maven lifecycle.
 
 ```sh
 # Build first, if the shaded jar is not already present.
@@ -27,6 +30,15 @@ fake-host log tail and remove the temporary root too; set
 The fake-host helper requires Python 3.10+; the packaged CLI itself remains
 Java 17-only.
 
+The fake is deliberately strict. It accepts only the exact headless EDT
+argument vector built by the supervisor, MCP protocol `2025-11-25`, the
+harness-private bearer, correct session/protocol headers, the scripted tool
+arguments, and broker turn two only after the approved MCP result. Each
+successful initialize must be paired with authenticated DELETE. The harness
+parses the private schema-v1 session metadata and JSONL transcript, checks
+POSIX `0700`/`0600` permissions, scans runtime artifacts and process command
+lines for the test bearer, and verifies no temporary process remains.
+
 The start command is a tracked background process, so an interrupt during
 readiness does not lose ownership before the registry record is available.
 Cleanup reconciles only records in this run's temporary registry, checks the
@@ -35,6 +47,13 @@ the exact start PID if still needed. It preserves the root rather than
 deleting it whenever a live or mismatched process cannot be proven safe.
 `TMPDIR`, `TMP`, and `TEMP` are ignored for allocation; OS-default `mktemp`
 is canonicalized and marked with an ownership file before cleanup.
+Cleanup and interruption traps are installed before allocation. An internal
+`CODEPILOT_E2E_TEST_PRE_PID_DELAY=<seconds>` seam exists only for safety tests:
+it proves SIGINT/SIGTERM cleanup can recover and terminate the exact start
+child from the private PID file before normal PID publication.
+`CODEPILOT_E2E_TEST_BIND_FAILURE_ONCE=true` makes the first fake process exit
+at bind time so the bounded fresh-port retry and stale-record reconciliation
+can be tested deterministically.
 
 ## Explicit real EDT smoke
 
@@ -104,3 +123,24 @@ The PowerShell example is intentionally real-EDT-only: Windows validates
 Windows. For a no-EDT fast check on Windows, run the same POSIX harness from
 WSL with the Linux packaged CLI jar. The real smoke remains opt-in because an
 installed EDT may open or lock workspace state and must be explicitly chosen.
+
+## Launcher smoke matrix
+
+After building the shaded jar, run the host-aware packaging tests:
+
+```sh
+python3 -m unittest -v packaging.tests.test_distribution
+```
+
+They execute the POSIX launcher on macOS/Linux and execute `codepilot.ps1`
+and `codepilot.cmd` when `pwsh`/Windows PowerShell and `cmd.exe` are available.
+Unavailable runners are reported as skips. This is the manual Windows check
+when the current host has no Windows runner:
+
+```powershell
+pwsh -NoLogo -NoProfile -File .\packaging\target\distribution-root\bin\codepilot.ps1 version
+cmd.exe /d /s /c ".\packaging\target\distribution-root\bin\codepilot.cmd version"
+```
+
+Both commands must print a `codepilot <version>` line and exit zero. Run them
+from a path containing spaces as an additional argument-boundary check.
