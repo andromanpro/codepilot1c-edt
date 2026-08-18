@@ -64,18 +64,19 @@ public final class McpClient implements AutoCloseable {
 
     /** Negotiates a protocol and captures the required server-created session. */
     public CompletableFuture<InitializeResult> initialize() {
+        final InitializationOperation operation;
         synchronized (stateLock) {
             if (closed) return failed(stateError("MCP client is closed"));
             if (sessionId != null) {
                 return failed(stateError("MCP client is already initialized"));
             }
             if (initialization != null) return initialization.future;
-            InitializationOperation operation = new InitializationOperation(
+            operation = new InitializationOperation(
                     protocolCandidates(config.protocolPreferences()));
             initialization = operation;
-            operation.startAttempt(0);
-            return operation.future;
         }
+        operation.startAttempt(0);
+        return operation.future;
     }
 
     public CompletableFuture<ToolsListResult> listTools() {
@@ -474,6 +475,9 @@ public final class McpClient implements AutoCloseable {
                 completeFailure(new McpClientException(McpClientException.Kind.PROTOCOL,
                         "MCP server rejected all supported protocol versions"));
                 return;
+            }
+            synchronized (stateLock) {
+                if (closed || cancelled || terminal || initialization != this) return;
             }
             String protocol = candidates.get(index);
             JsonObject params = new JsonObject();
