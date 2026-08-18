@@ -12,6 +12,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -143,6 +144,25 @@ public class OpenAiCompatibleProviderHttpTest {
                 .baseUri(URI.create("https://user:password@example.test/v1")) //$NON-NLS-1$
                 .defaultModel("model") //$NON-NLS-1$
                 .build();
+    }
+
+    @Test
+    public void failedBuildErasesBuilderSecretBuffer() {
+        char[] suppliedSecret = "builder-only-secret".toCharArray(); //$NON-NLS-1$
+        ProviderConfiguration.Builder builder = ProviderConfiguration.builder()
+                .id("test") //$NON-NLS-1$
+                .displayName("Test") //$NON-NLS-1$
+                .baseUri(URI.create("https://user:password@example.test/v1")) //$NON-NLS-1$
+                .defaultModel("model") //$NON-NLS-1$
+                .apiKey(suppliedSecret);
+        try {
+            builder.build();
+            fail("Expected invalid base URI to reject build"); //$NON-NLS-1$
+        } catch (IllegalArgumentException expected) {
+            assertNull(builderSecretBuffer(builder));
+        } finally {
+            Arrays.fill(suppliedSecret, '\0');
+        }
     }
 
     private static char[] builderSecretBuffer(ProviderConfiguration.Builder builder) {

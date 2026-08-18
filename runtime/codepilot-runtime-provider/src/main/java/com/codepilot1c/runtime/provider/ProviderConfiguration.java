@@ -205,15 +205,18 @@ public final class ProviderConfiguration {
 
         /**
          * Creates an immutable configuration and erases the builder's
-         * temporary secret copy before returning. Configure the key again
-         * before reusing this builder for another secret-bearing config.
+         * temporary secret copy whether validation succeeds or fails.
+         * Configure the key again before reusing this builder for another
+         * secret-bearing config.
          *
          * @return immutable configuration
          */
         public ProviderConfiguration build() {
-            ProviderConfiguration configuration = new ProviderConfiguration(this);
-            clearApiKey();
-            return configuration;
+            try {
+                return new ProviderConfiguration(this);
+            } finally {
+                clearApiKey();
+            }
         }
 
         private void clearApiKey() {
