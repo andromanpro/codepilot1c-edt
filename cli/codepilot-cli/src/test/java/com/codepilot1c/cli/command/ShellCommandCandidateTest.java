@@ -9,7 +9,6 @@ import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
@@ -29,11 +28,37 @@ import com.codepilot1c.cli.supervisor.InstanceRecord;
 import com.codepilot1c.cli.supervisor.InstanceRegistry;
 
 public class ShellCommandCandidateTest {
-    @Test public void configuredLiveEndpointPrecedesFourStaleRecordsAndIsDeduplicated()
+    @Test public void noUserConfigurationOrdersNewestRegistryBeforeDefault()
             throws Exception {
         Path home = Files.createTempDirectory("codepilot-shell-candidates-");
         try {
-            TestHost host = new TestHost(home, "http://127.0.0.1:9200");
+            TestHost host = new TestHost(home, null, null);
+            ShellCommand command = command(host);
+            InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(),
+                    home.resolve(".codepilot1c").resolve("instances"));
+            Instant now = Instant.now();
+            registry.write(record(9100, now));
+            registry.write(record(9101, now.plusSeconds(1)));
+
+            List<Candidate> candidates = command.discoverCandidates(options(null, null));
+
+            assertEquals(List.of(
+                    "http://127.0.0.1:9101/mcp",
+                    "http://127.0.0.1:9100/mcp",
+                    "http://127.0.0.1:8765/mcp"),
+                    candidates.stream().map(Candidate::endpoint).toList());
+            assertEquals("registered EDT instance", candidates.get(0).label());
+            assertEquals("default endpoint", candidates.get(2).label());
+        } finally {
+            deleteTree(home);
+        }
+    }
+
+    @Test public void actualConfiguredEndpointPrecedesFourStaleRegistryRecordsWithinProbeBound()
+            throws Exception {
+        Path home = Files.createTempDirectory("codepilot-shell-starvation-");
+        try {
+            TestHost host = new TestHost(home, "http://127.0.0.1:9200", null);
             ShellCommand command = command(host);
             InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(),
                     home.resolve(".codepilot1c").resolve("instances"));
@@ -41,16 +66,51 @@ public class ShellCommandCandidateTest {
             for (int index = 0; index < 4; index++) {
                 registry.write(record(9100 + index, now.plusSeconds(index + 1)));
             }
-            registry.write(record(9200, now.plusSeconds(10)));
 
             List<Candidate> candidates = command.discoverCandidates(options(null, null));
 
-            assertEquals(5, candidates.size());
+            assertEquals(6, candidates.size());
             assertEquals("http://127.0.0.1:9200/mcp", candidates.get(0).endpoint());
             assertEquals("configured endpoint", candidates.get(0).label());
-            assertEquals(candidates.size(), candidates.stream().map(Candidate::endpoint).distinct().count());
             assertTrue(candidates.stream().limit(ModeResolver.MAX_CONNECTED_CANDIDATES)
                     .anyMatch(candidate -> candidate.endpoint().equals("http://127.0.0.1:9200/mcp")));
+            assertEquals("http://127.0.0.1:8765/mcp",
+                    candidates.get(candidates.size() - 1).endpoint());
+        } finally {
+            deleteTree(home);
+        }
+    }
+
+    @Test public void endpointPropertyPrecedesEnvironment() throws Exception {
+        Path home = Files.createTempDirectory("codepilot-shell-precedence-");
+        try {
+            TestHost host = new TestHost(home, "http://127.0.0.1:9300",
+                    "http://127.0.0.1:9400");
+
+            List<Candidate> candidates = command(host).discoverCandidates(options(null, null));
+
+            assertEquals("http://127.0.0.1:9300/mcp", candidates.get(0).endpoint());
+            assertTrue(candidates.stream().noneMatch(candidate ->
+                    candidate.endpoint().equals("http://127.0.0.1:9400/mcp")));
+            assertEquals("http://127.0.0.1:8765/mcp", candidates.get(1).endpoint());
+        } finally {
+            deleteTree(home);
+        }
+    }
+
+    @Test public void userConfiguredRegistryAndDefaultCandidatesAreDeduplicated() throws Exception {
+        Path home = Files.createTempDirectory("codepilot-shell-dedup-");
+        try {
+            TestHost host = new TestHost(home, CliConfiguration.DEFAULT_ENDPOINT, null);
+            InstanceRegistry registry = new InstanceRegistry(new DefaultSupervisorFileSystem(),
+                    home.resolve(".codepilot1c").resolve("instances"));
+            registry.write(record(8765, Instant.now()));
+
+            List<Candidate> candidates = command(host).discoverCandidates(options(null, null));
+
+            assertEquals(1, candidates.size());
+            assertEquals("http://127.0.0.1:8765/mcp", candidates.get(0).endpoint());
+            assertEquals("configured endpoint", candidates.get(0).label());
         } finally {
             deleteTree(home);
         }
@@ -60,7 +120,7 @@ public class ShellCommandCandidateTest {
             throws Exception {
         Path home = Files.createTempDirectory("codepilot-shell-explicit-");
         try {
-            TestHost host = new TestHost(home, "http://127.0.0.1:9200");
+            TestHost host = new TestHost(home, "http://127.0.0.1:9200", null);
             ShellCommand command = command(host);
             InstanceRecord selected = record(9300, Instant.now());
             new InstanceRegistry(new DefaultSupervisorFileSystem(),
@@ -108,18 +168,25 @@ public class ShellCommandCandidateTest {
 
     private static final class TestHost implements HostSystem {
         private final Path home;
-        private final String endpoint;
-        TestHost(Path home, String endpoint) { this.home = home; this.endpoint = endpoint; }
+        private final String propertyEndpoint;
+        private final String environmentEndpoint;
+        TestHost(Path home, String propertyEndpoint, String environmentEndpoint) {
+            this.home = home;
+            this.propertyEndpoint = propertyEndpoint;
+            this.environmentEndpoint = environmentEndpoint;
+        }
         @Override public String osName() { return "Linux"; }
         @Override public String javaVersion() { return "17"; }
         @Override public String userHome() { return home.toString(); }
-        @Override public String environment(String name) { return null; }
+        @Override public String environment(String name) {
+            return "CODEPILOT_ENDPOINT".equals(name) ? environmentEndpoint : null;
+        }
         @Override public String systemProperty(String name) {
-            return "codepilot.endpoint".equals(name) ? endpoint : null;
+            return "codepilot.endpoint".equals(name) ? propertyEndpoint : null;
         }
         @Override public boolean isDirectory(String path) { return false; }
         @Override public boolean isRegularFile(String path) { return false; }
         @Override public boolean isReadable(String path) { return false; }
-        @Override public List<String> children(String directory) { return new ArrayList<>(); }
+        @Override public List<String> children(String directory) { return List.of(); }
     }
 }

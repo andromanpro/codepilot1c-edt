@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
+import com.codepilot1c.cli.CliConfiguration;
 import com.codepilot1c.cli.ExitCodes;
 import com.codepilot1c.cli.shell.McpShellToolSession;
 import com.codepilot1c.cli.shell.ModeResolver;
@@ -170,12 +171,14 @@ public final class ShellCommand implements Callable<Integer> {
         }
 
         Map<String, Candidate> candidates = new LinkedHashMap<>();
-        try {
-            URI endpoint = normalizedMcp(root.services().configuration().endpoint());
-            candidates.put(endpoint.toASCIIString(), new Candidate(
-                    endpoint.toASCIIString(), "unregistered", "configured endpoint"));
-        } catch (URISyntaxException | RuntimeException ignored) {
-            // Registry discovery may still provide a usable endpoint.
+        if (hasUserConfiguredEndpoint()) {
+            try {
+                URI endpoint = normalizedMcp(root.services().configuration().endpoint());
+                candidates.put(endpoint.toASCIIString(), new Candidate(
+                        endpoint.toASCIIString(), "unregistered", "configured endpoint"));
+            } catch (URISyntaxException | RuntimeException ignored) {
+                // Registry discovery and the built-in fallback may still provide a usable endpoint.
+            }
         }
         try {
             registry.list().stream().sorted(Comparator.comparing(InstanceRecord::startedAt).reversed())
@@ -185,9 +188,19 @@ public final class ShellCommand implements Callable<Integer> {
                                 endpoint.toASCIIString(), record.instanceId(), "registered EDT instance"));
                     });
         } catch (IOException | RuntimeException ignored) {
-            // The configured endpoint remains a deterministic fallback.
+            // The user-configured endpoint and built-in default remain deterministic fallbacks.
         }
+        URI defaultEndpoint = normalizedMcp(URI.create(CliConfiguration.DEFAULT_ENDPOINT));
+        candidates.putIfAbsent(defaultEndpoint.toASCIIString(), new Candidate(
+                defaultEndpoint.toASCIIString(), "unregistered", "default endpoint"));
         return List.copyOf(candidates.values());
+    }
+
+    private boolean hasUserConfiguredEndpoint() {
+        String property = root.services().host().systemProperty("codepilot.endpoint");
+        String environment = root.services().host().environment("CODEPILOT_ENDPOINT");
+        return property != null && !property.isBlank()
+                || environment != null && !environment.isBlank();
     }
 
     private ShellEnvironment connected(Candidate candidate, ShellOptions options,
