@@ -40,6 +40,7 @@ import com.codepilot1c.core.model.LlmResponse;
 import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.provider.ILlmProvider;
+import com.codepilot1c.core.provider.LlmProviderException;
 import com.codepilot1c.core.provider.config.DynamicLlmProvider;
 import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.ProviderType;
@@ -121,9 +122,11 @@ public class McpHostLlmBrokerHttpTest {
             assertTrue(response.body().contains("event: delta\ndata: {\"text\":\"answer\",\"schemaVersion\":1}")); //$NON-NLS-1$
             assertTrue(response.body().contains("event: reasoning\ndata: {\"text\":\"thinking\",\"schemaVersion\":1}")); //$NON-NLS-1$
             assertTrue(response.body().contains("event: tool_calls")); //$NON-NLS-1$
-            assertTrue(response.body().contains("\"arguments\":{\"key\":\"value\"}")); //$NON-NLS-1$
+            assertTrue(response.body().contains("\"arguments\":\"{\\\"key\\\":\\\"value\\\"}\"")); //$NON-NLS-1$
             assertTrue(response.body().contains("event: usage")); //$NON-NLS-1$
-            assertTrue(response.body().contains("\"promptTokens\":3")); //$NON-NLS-1$
+            assertTrue(response.body().contains("\"inputTokens\":3")); //$NON-NLS-1$
+            assertTrue(response.body().contains("\"outputTokens\":4")); //$NON-NLS-1$
+            assertFalse(response.body().contains("promptTokens")); //$NON-NLS-1$
             assertTrue(response.body().contains("event: done\ndata: {\"finishReason\":\"tool_use\",\"schemaVersion\":1}")); //$NON-NLS-1$
 
             LlmRequest normalized = provider.request.get();
@@ -152,6 +155,24 @@ public class McpHostLlmBrokerHttpTest {
                     + "\"options\":{\"model\":\"other-model\"}}", null); //$NON-NLS-1$ //$NON-NLS-2$
             assertError(model, 422, "model_override_unsupported"); //$NON-NLS-1$
             assertEquals(0, provider.invocations.get());
+        }
+    }
+
+    @Test
+    public void emitsFrozenTypedProviderErrorWithOptionalHttpStatusAndNoBodyLeak() throws Exception {
+        FakeProvider provider = new FakeProvider(false) {
+            @Override
+            public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
+                throw new LlmProviderException("provider-body-secret", null, 429, null); //$NON-NLS-1$
+            }
+        };
+        try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {
+            HttpResponse<String> response = fixture.post(CHAT, null);
+
+            assertEquals(200, response.statusCode());
+            assertTrue(response.body().contains("\"code\":\"PROVIDER_HTTP\"")); //$NON-NLS-1$
+            assertTrue(response.body().contains("\"status\":429")); //$NON-NLS-1$
+            assertFalse(response.body().contains("provider-body-secret")); //$NON-NLS-1$
         }
     }
 

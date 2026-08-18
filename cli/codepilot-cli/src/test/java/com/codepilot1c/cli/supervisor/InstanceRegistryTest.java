@@ -59,7 +59,7 @@ public class InstanceRegistryTest {
         assertEquals(List.of(record), registry.list());
     }
 
-    @Test public void acceptsAdditiveCapabilityArrayAndOlderRecords() throws Exception {
+    @Test public void acceptsScalarBrokerVersionLegacyCapabilityArrayAndOlderRecords() throws Exception {
         MemoryFiles files = new MemoryFiles();
         InstanceRegistry registry = new InstanceRegistry(files, Path.of("/registry"));
         String base = """
@@ -69,17 +69,22 @@ public class InstanceRegistryTest {
                 "startedAt":"2026-08-18T07:00:00Z"%s}
                 """;
 
-        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"capabilities\":[\"llm.v1\"]"));
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"llmBrokerVersion\":1"));
         InstanceRecord capable = registry.find(ID).orElseThrow();
         assertEquals(1, capable.schemaVersion());
         assertEquals("cli", capable.owner());
         assertEquals(List.of("llm.v1"), capable.capabilities());
-        assertEquals(List.of("llm.v1"), capable.toJsonValue().get("capabilities"));
+        assertEquals(1, capable.toJsonValue().get("llmBrokerVersion"));
+        assertFalse(capable.toJsonValue().containsKey("capabilities"));
+
+        files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(",\"capabilities\":[\"llm.v1\"]"));
+        assertEquals(List.of("llm.v1"), registry.find(ID).orElseThrow().capabilities());
 
         files.values.put(Path.of("/registry/" + ID + ".json"), base.formatted(""));
         InstanceRecord older = registry.find(ID).orElseThrow();
         assertEquals(List.of(), older.capabilities());
         assertFalse(older.toJsonValue().containsKey("capabilities"));
+        assertFalse(older.toJsonValue().containsKey("llmBrokerVersion"));
     }
 
     @Test public void rejectsRecordIdentityMismatchAndNonLoopbackEndpoint() throws Exception {

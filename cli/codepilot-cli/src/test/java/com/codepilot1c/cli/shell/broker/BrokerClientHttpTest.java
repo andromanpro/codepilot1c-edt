@@ -90,10 +90,9 @@ public class BrokerClientHttpTest {
                 + event("delta", "{\"schemaVersion\":1,\"text\":\"lo\"}")
                 + event("tool_calls", "{\"schemaVersion\":1,\"toolCalls\":["
                         + "{\"id\":\"call-1\",\"name\":\"lookup\",\"arguments\":"
-                        + "{\"path\":\"src/Каталог\",\"deep\":true},\"argumentsRepaired\":false}]}")
-                + event("usage", "{\"schemaVersion\":1,\"promptTokens\":8,"
-                        + "\"completionTokens\":3,\"totalTokens\":11,"
-                        + "\"cacheReadInputTokens\":2,\"cacheCreationInputTokens\":1}")
+                        + "\"{\\\"path\\\":\\\"src/Каталог\\\",\\\"deep\\\":true}\"}]}")
+                + event("usage", "{\"schemaVersion\":1,\"inputTokens\":8,"
+                        + "\"outputTokens\":3}")
                 + event("done", "{\"schemaVersion\":1,\"finishReason\":\"tool_use\"}");
         try (Fixture fixture = new Fixture(exchange -> json(exchange, 200, CAPABILITIES), exchange -> {
             requestJson.set(JsonParser.parseString(new String(
@@ -129,6 +128,9 @@ public class BrokerClientHttpTest {
                     .getAsJsonObject().get("id").getAsString());
             assertEquals("prior reasoning", wire.getAsJsonArray("messages").get(2)
                     .getAsJsonObject().get("reasoning").getAsString());
+            assertTrue(wire.getAsJsonArray("messages").get(2)
+                    .getAsJsonObject().getAsJsonArray("toolCalls").get(0)
+                    .getAsJsonObject().get("arguments").getAsJsonPrimitive().isString());
             assertEquals("call-old", wire.getAsJsonArray("messages").get(3)
                     .getAsJsonObject().get("toolCallId").getAsString());
             assertEquals("object", wire.getAsJsonArray("tools").get(0)
@@ -209,13 +211,21 @@ public class BrokerClientHttpTest {
     public void mapsMidstreamErrorAndDisconnectToBodySafeTransportFailures() throws Exception {
         String secret = "provider-diagnostic-secret";
         String error = event("delta", "{\"schemaVersion\":1,\"text\":\"prefix\"}")
-                + event("error", "{\"schemaVersion\":1,\"code\":\"provider_error\","
+                + event("error", "{\"schemaVersion\":1,\"code\":\"PROVIDER_TRANSPORT\","
                         + "\"message\":\"" + secret + "\"}");
         assertStreamFailure(error, AgentModelException.Kind.TRANSPORT, secret);
 
         String disconnected = event("delta", "{\"schemaVersion\":1,\"text\":\"partial-"
                 + secret + "\"}");
         assertStreamFailure(disconnected, AgentModelException.Kind.TRANSPORT, secret);
+    }
+
+    @Test
+    public void mapsFrozenTypedStreamErrorsWithoutCollapsingThemToTransport() throws Exception {
+        assertTypedStreamError("PROVIDER_AUTH", 401, AgentError.Code.PROVIDER_AUTH); //$NON-NLS-1$
+        assertTypedStreamError("PROVIDER_HTTP", 429, AgentError.Code.PROVIDER_HTTP); //$NON-NLS-1$
+        assertTypedStreamError("PROVIDER_RESPONSE", -1, AgentError.Code.PROVIDER_RESPONSE); //$NON-NLS-1$
+        assertTypedStreamError("PROVIDER_TRANSPORT", -1, AgentError.Code.PROVIDER_TRANSPORT); //$NON-NLS-1$
     }
 
     @Test
@@ -334,6 +344,24 @@ public class BrokerClientHttpTest {
             assertEquals(kind, ((AgentModelException) failure).kind());
             assertFalse(deepMessage(failure).contains(secret));
             assertFalse(deepMessage(failure).contains(TOKEN));
+        }
+    }
+
+    private static void assertTypedStreamError(String code, int status, AgentError.Code expected)
+            throws Exception {
+        String statusField = status > 0 ? ",\"status\":" + status : ""; //$NON-NLS-1$ //$NON-NLS-2$
+        String stream = event("error", "{\"schemaVersion\":1,\"code\":\"" + code //$NON-NLS-1$ //$NON-NLS-2$
+                + "\",\"message\":\"arbitrary-provider-body\"" + statusField + "}"); //$NON-NLS-1$ //$NON-NLS-2$
+        try (Fixture fixture = new Fixture(exchange -> json(exchange, 200, CAPABILITIES),
+                exchange -> fragmentedSse(exchange, stream, 2));
+             BrokerClient client = fixture.client(TOKEN);
+             AgentRuntime runtime = runtime(new BrokeredAgentModel(client))) {
+            AgentResult result = runtime.run(new AgentRequest("typed-error", List.of( //$NON-NLS-1$
+                    new AgentMessage.Text(AgentMessage.Role.USER, "hello")))) //$NON-NLS-1$
+                    .get(2, TimeUnit.SECONDS);
+            assertEquals(AgentResult.Status.FAILED, result.status());
+            assertEquals(expected, result.error().orElseThrow().code());
+            assertFalse(result.error().orElseThrow().message().contains("arbitrary-provider-body")); //$NON-NLS-1$
         }
     }
 

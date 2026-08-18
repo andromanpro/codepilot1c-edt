@@ -464,6 +464,18 @@ public final class AgentRuntime implements AutoCloseable {
             AgentError.Code code = AgentError.Code.PROVIDER_TRANSPORT;
             String message = "Provider request failed"; //$NON-NLS-1$
             if (failure instanceof AgentModelException modelFailure) {
+                if (modelFailure.agentErrorCode() != null) {
+                    code = modelFailure.agentErrorCode();
+                    message = switch (code) {
+                        case PROVIDER_AUTH -> "Provider authentication failed"; //$NON-NLS-1$
+                        case PROVIDER_HTTP -> "Provider returned an HTTP error"; //$NON-NLS-1$
+                        case PROVIDER_RESPONSE -> "Provider response is malformed"; //$NON-NLS-1$
+                        case CANCELLED -> "Provider request was cancelled"; //$NON-NLS-1$
+                        default -> "Provider request failed"; //$NON-NLS-1$
+                    };
+                    finish(AgentResult.Status.FAILED, null, new AgentError(code, message));
+                    return;
+                }
                 switch (modelFailure.kind()) {
                     case HTTP:
                         boolean authenticationFailed = modelFailure.httpStatus() == 401

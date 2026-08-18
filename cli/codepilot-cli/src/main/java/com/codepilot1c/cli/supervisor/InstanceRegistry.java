@@ -65,7 +65,7 @@ public final class InstanceRegistry {
                 string(value, "workspace"), string(value, "edtHome"), string(value, "mode"),
                 string(value, "owner"), Instant.parse(string(value, "startedAt")),
                 nullableString(value, "pluginVersion"), nullableString(value, "authMode"),
-                nullableString(value, "logFile"), nullableStringList(value, "capabilities"));
+                nullableString(value, "logFile"), capabilities(value));
     }
 
     private static String string(Map<String, Object> value, String key) {
@@ -89,6 +89,18 @@ public final class InstanceRegistry {
         for (Object element : items) {
             if (!(element instanceof String text)) throw new IllegalArgumentException("invalid array: " + key);
             result.add(text);
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<String> capabilities(Map<String, Object> value) {
+        List<String> result = new ArrayList<>(nullableStringList(value, "capabilities"));
+        Object brokerVersion = value.get("llmBrokerVersion");
+        if (brokerVersion != null) {
+            if (!(brokerVersion instanceof Long number) || number < 0 || number > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("invalid integer: llmBrokerVersion");
+            }
+            if (number >= 1 && !result.contains("llm.v1")) result.add("llm.v1");
         }
         return List.copyOf(result);
     }

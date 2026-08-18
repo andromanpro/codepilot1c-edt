@@ -10,8 +10,10 @@ package com.codepilot1c.core.provider.config;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -61,6 +63,7 @@ public class LlmProviderConfigStore {
     private final WarningSink warningSink;
     private List<LlmProviderConfig> cachedConfigs;
     private String cachedActiveProviderId;
+    private Map<String, CredentialBinding> credentialBindings = new LinkedHashMap<>();
     private final List<ProviderConfigChangeListener> listeners = new CopyOnWriteArrayList<>();
     private boolean migrationWarningLogged;
 
@@ -150,8 +153,10 @@ public class LlmProviderConfigStore {
      * Sets the active provider by ID.
      */
     public void setActiveProviderId(String id) {
-        this.cachedActiveProviderId = id;
-        saveToPreferences();
+        if (cachedConfigs == null) {
+            loadFromPreferences();
+        }
+        persistCandidate(cachedConfigs, id);
     }
 
     /**
@@ -166,8 +171,9 @@ public class LlmProviderConfigStore {
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
-        cachedConfigs.add(config);
-        saveToPreferences();
+        List<LlmProviderConfig> candidate = copies(cachedConfigs);
+        candidate.add(config.copy());
+        persistCandidate(candidate, cachedActiveProviderId);
     }
 
     /**
@@ -182,13 +188,14 @@ public class LlmProviderConfigStore {
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
-        for (int i = 0; i < cachedConfigs.size(); i++) {
-            if (cachedConfigs.get(i).getId().equals(config.getId())) {
-                cachedConfigs.set(i, config);
+        List<LlmProviderConfig> candidate = copies(cachedConfigs);
+        for (int i = 0; i < candidate.size(); i++) {
+            if (candidate.get(i).getId().equals(config.getId())) {
+                candidate.set(i, config.copy());
                 break;
             }
         }
-        saveToPreferences();
+        persistCandidate(candidate, cachedActiveProviderId);
     }
 
     /**
@@ -198,17 +205,14 @@ public class LlmProviderConfigStore {
         if (cachedConfigs == null) {
             loadFromPreferences();
         }
-        boolean exists = id != null && cachedConfigs.stream().anyMatch(p -> id.equals(p.getId()));
-        if (exists && !safeRemoveApiKey(id)) {
-            warningSink.warn(DELETE_WARNING);
-            return;
-        }
-        cachedConfigs.removeIf(p -> p.getId().equals(id));
+        List<LlmProviderConfig> candidate = copies(cachedConfigs);
+        candidate.removeIf(p -> Objects.equals(p.getId(), id));
         // Clear active if it was the removed provider
+        String candidateActiveId = cachedActiveProviderId;
         if (id != null && id.equals(cachedActiveProviderId)) {
-            cachedActiveProviderId = null;
+            candidateActiveId = null;
         }
-        saveToPreferences();
+        persistCandidate(candidate, candidateActiveId);
     }
 
     /**
@@ -218,9 +222,7 @@ public class LlmProviderConfigStore {
         LoadedState sanitized = sanitizeLoadedState(
                 providers != null ? providers : List.of(),
                 cachedActiveProviderId);
-        this.cachedConfigs = sanitized.configs();
-        this.cachedActiveProviderId = sanitized.activeProviderId();
-        saveToPreferences();
+        persistCandidate(sanitized.configs(), sanitized.activeProviderId());
     }
 
     /**
@@ -229,6 +231,7 @@ public class LlmProviderConfigStore {
     public void refresh() {
         cachedConfigs = null;
         cachedActiveProviderId = null;
+        credentialBindings = new LinkedHashMap<>();
         loadFromPreferences();
     }
 
@@ -257,37 +260,27 @@ public class LlmProviderConfigStore {
             MigrationResult migration = resolveAndMigrateKeys(loadedConfigs, storedVersion < CURRENT_CONFIG_VERSION);
             if (storedVersion < CURRENT_CONFIG_VERSION) {
                 if (migration.allPlaintextSecured()) {
-                    persistState(loadedConfigs, cachedActiveProviderId, CURRENT_CONFIG_VERSION, false);
+                    persistState(loadedConfigs, cachedActiveProviderId, CURRENT_CONFIG_VERSION);
                 } else {
                     warnMigrationOnce();
                 }
             } else if (!migration.securedPlaintextConfigs().isEmpty()
                     && migration.unsecuredPlaintextConfigs().isEmpty()) {
-                persistState(loadedConfigs, cachedActiveProviderId, storedVersion, false);
+                persistState(loadedConfigs, cachedActiveProviderId, storedVersion);
             }
             applyResolvedKeys(loadedConfigs, migration.resolvedKeys());
             cachedConfigs = loadedConfigs;
+            rememberBindings(loadedConfigs);
         } catch (Exception e) {
             warningSink.warn("Failed to parse provider configs; using an empty configuration."); //$NON-NLS-1$
             cachedConfigs = new ArrayList<>();
             cachedActiveProviderId = preferences.get(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, ""); //$NON-NLS-1$
+            credentialBindings = new LinkedHashMap<>();
         }
-    }
-
-    /**
-     * Saves configurations to Eclipse preferences.
-     */
-    private void saveToPreferences() {
-        if (!secureKeysForSave(cachedConfigs)) {
-            warningSink.warn(SAVE_WARNING);
-            return;
-        }
-        persistState(cachedConfigs, cachedActiveProviderId, CURRENT_CONFIG_VERSION, true);
     }
 
     /** Persists a secret-free provider snapshot. */
-    private boolean persistState(List<LlmProviderConfig> configs, String activeProviderId, int version,
-            boolean notifyListeners) {
+    private boolean persistState(List<LlmProviderConfig> configs, String activeProviderId, int version) {
         try {
             preferences.put(VibePreferenceConstants.PREF_LLM_PROVIDERS,
                     gson.toJson(serializableCopies(configs)));
@@ -295,9 +288,6 @@ public class LlmProviderConfigStore {
                     activeProviderId != null ? activeProviderId : ""); //$NON-NLS-1$
             preferences.putInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, version);
             preferences.flush();
-            if (notifyListeners) {
-                notifyListeners();
-            }
             return true;
         } catch (BackingStoreException e) {
             warningSink.warn("Failed to persist provider preferences."); //$NON-NLS-1$
@@ -313,6 +303,136 @@ public class LlmProviderConfigStore {
             copies.add(copy);
         }
         return copies;
+    }
+
+    /**
+     * Persists credentials and non-secret preferences as one compensating transaction.
+     * A null incoming key means unchanged; an empty key means an explicit clear.
+     */
+    private boolean persistCandidate(List<LlmProviderConfig> candidateConfigs, String candidateActiveId) {
+        List<LlmProviderConfig> candidate = copies(candidateConfigs);
+        Map<String, LlmProviderConfig> currentById = byId(cachedConfigs);
+        List<KeyMutation> mutations = new ArrayList<>();
+        Set<String> candidateIds = new java.util.HashSet<>();
+
+        for (LlmProviderConfig config : candidate) {
+            candidateIds.add(config.getId());
+            LlmProviderConfig current = currentById.get(config.getId());
+            String before = safeRetrieveApiKey(config.getId());
+            String oldEffective = !before.isEmpty() ? before
+                    : current != null && current.getApiKey() != null ? current.getApiKey() : ""; //$NON-NLS-1$
+            CredentialBinding binding = credentialBindings.get(config.getId());
+            boolean transitioned = binding != null && !binding.matches(config);
+            String incoming = config.getApiKey();
+            String desired;
+            if (config.getType() == null || !config.getType().requiresStaticApiKey()) {
+                desired = ""; //$NON-NLS-1$
+            } else if (current == null) {
+                desired = incoming != null ? incoming : ""; //$NON-NLS-1$
+            } else if (transitioned) {
+                desired = incoming != null && !incoming.isEmpty() && !incoming.equals(oldEffective)
+                        ? incoming : ""; //$NON-NLS-1$
+            } else {
+                desired = incoming == null ? oldEffective : incoming;
+            }
+            config.setApiKey(desired);
+            if (!before.equals(desired)) {
+                mutations.add(new KeyMutation(config.getId(), before, desired));
+            }
+        }
+        for (LlmProviderConfig current : currentById.values()) {
+            if (!candidateIds.contains(current.getId())) {
+                String before = safeRetrieveApiKey(current.getId());
+                if (!before.isEmpty()) {
+                    mutations.add(new KeyMutation(current.getId(), before, "")); //$NON-NLS-1$
+                }
+            }
+        }
+
+        List<KeyMutation> applied = new ArrayList<>();
+        for (KeyMutation mutation : mutations) {
+            if (!applyMutation(mutation)) {
+                rollbackMutations(applied);
+                warningSink.warn(mutation.after().isEmpty() ? DELETE_WARNING : SAVE_WARNING);
+                return false;
+            }
+            applied.add(mutation);
+        }
+
+        PreferenceSnapshot previousPreferences = preferenceSnapshot();
+        if (!persistState(candidate, candidateActiveId, CURRENT_CONFIG_VERSION)) {
+            rollbackMutations(applied);
+            restorePreferences(previousPreferences);
+            return false;
+        }
+        cachedConfigs = candidate;
+        cachedActiveProviderId = candidateActiveId != null ? candidateActiveId : ""; //$NON-NLS-1$
+        rememberBindings(candidate);
+        notifyListeners();
+        return true;
+    }
+
+    private boolean applyMutation(KeyMutation mutation) {
+        return mutation.after().isEmpty()
+                ? safeRemoveApiKey(mutation.providerId())
+                : safeStoreApiKey(mutation.providerId(), mutation.after());
+    }
+
+    private void rollbackMutations(List<KeyMutation> applied) {
+        for (int i = applied.size() - 1; i >= 0; i--) {
+            KeyMutation mutation = applied.get(i);
+            if (mutation.before().isEmpty()) {
+                safeRemoveApiKey(mutation.providerId());
+            } else {
+                safeStoreApiKey(mutation.providerId(), mutation.before());
+            }
+        }
+    }
+
+    private PreferenceSnapshot preferenceSnapshot() {
+        return new PreferenceSnapshot(
+                preferences.get(VibePreferenceConstants.PREF_LLM_PROVIDERS, "[]"), //$NON-NLS-1$
+                preferences.get(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, ""), //$NON-NLS-1$
+                preferences.getInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, 0));
+    }
+
+    private void restorePreferences(PreferenceSnapshot snapshot) {
+        try {
+            preferences.put(VibePreferenceConstants.PREF_LLM_PROVIDERS, snapshot.providersJson());
+            preferences.put(VibePreferenceConstants.PREF_LLM_ACTIVE_PROVIDER_ID, snapshot.activeProviderId());
+            preferences.putInt(VibePreferenceConstants.PREF_LLM_CONFIG_VERSION, snapshot.version());
+            preferences.flush();
+        } catch (BackingStoreException ignored) {
+            // The original persistence warning is already body-safe and sufficient.
+        }
+    }
+
+    private void rememberBindings(List<LlmProviderConfig> configs) {
+        Map<String, CredentialBinding> bindings = new LinkedHashMap<>();
+        for (LlmProviderConfig config : configs) {
+            bindings.put(config.getId(), CredentialBinding.of(config));
+        }
+        credentialBindings = bindings;
+    }
+
+    private static Map<String, LlmProviderConfig> byId(List<LlmProviderConfig> configs) {
+        Map<String, LlmProviderConfig> result = new LinkedHashMap<>();
+        if (configs != null) {
+            for (LlmProviderConfig config : configs) {
+                if (config != null) result.put(config.getId(), config);
+            }
+        }
+        return result;
+    }
+
+    private static List<LlmProviderConfig> copies(List<LlmProviderConfig> configs) {
+        List<LlmProviderConfig> result = new ArrayList<>();
+        if (configs != null) {
+            for (LlmProviderConfig config : configs) {
+                if (config != null) result.add(config.copy());
+            }
+        }
+        return result;
     }
 
     private void notifyListeners() {
@@ -335,6 +455,21 @@ public class LlmProviderConfigStore {
             String plaintext = config.getApiKey();
             boolean hasPlaintext = plaintext != null && !plaintext.isEmpty();
             String secureKey = ""; //$NON-NLS-1$
+
+            if (config.getType() == null || !config.getType().requiresStaticApiKey()) {
+                secureKey = safeRetrieveApiKey(config.getId());
+                boolean removed = secureKey.isEmpty() || safeRemoveApiKey(config.getId());
+                if (hasPlaintext) {
+                    if (removed) securedPlaintext.add(config);
+                    else unsecuredPlaintext.add(config);
+                }
+                if (!removed) {
+                    allPlaintextSecured = false;
+                    warnMigrationOnce();
+                }
+                resolved.put(config, ""); //$NON-NLS-1$
+                continue;
+            }
 
             if (hasPlaintext && forceLegacyWrites) {
                 if (safeStoreApiKey(config.getId(), plaintext)) {
@@ -364,21 +499,6 @@ public class LlmProviderConfigStore {
             resolved.put(config, !secureKey.isEmpty() ? secureKey : plaintext);
         }
         return new MigrationResult(resolved, securedPlaintext, unsecuredPlaintext, allPlaintextSecured);
-    }
-
-    private boolean secureKeysForSave(List<LlmProviderConfig> configs) {
-        boolean success = true;
-        for (LlmProviderConfig config : configs) {
-            String apiKey = config.getApiKey();
-            if (apiKey == null || apiKey.isEmpty()) {
-                continue;
-            }
-            String secureKey = safeRetrieveApiKey(config.getId());
-            if (!apiKey.equals(secureKey) && !safeStoreApiKey(config.getId(), apiKey)) {
-                success = false;
-            }
-        }
-        return success;
     }
 
     private void applyResolvedKeys(List<LlmProviderConfig> configs, Map<LlmProviderConfig, String> resolvedKeys) {
@@ -468,6 +588,9 @@ public class LlmProviderConfigStore {
 
     static String resolveApiKey(LlmProviderConfig config, ApiKeyStorage storage) {
         if (config == null) {
+            return ""; //$NON-NLS-1$
+        }
+        if (config.getType() == null || !config.getType().requiresStaticApiKey()) {
             return ""; //$NON-NLS-1$
         }
         String providerId = config.getId();
@@ -615,6 +738,24 @@ public class LlmProviderConfigStore {
             return activeProviderId;
         }
     }
+
+    private record CredentialBinding(ProviderType type, String baseUrl) {
+        static CredentialBinding of(LlmProviderConfig config) {
+            return new CredentialBinding(config.getType(), normalized(config.getBaseUrl()));
+        }
+
+        boolean matches(LlmProviderConfig config) {
+            return type == config.getType() && Objects.equals(baseUrl, normalized(config.getBaseUrl()));
+        }
+
+        private static String normalized(String value) {
+            return value == null ? "" : value.trim(); //$NON-NLS-1$
+        }
+    }
+
+    private record KeyMutation(String providerId, String before, String after) { }
+
+    private record PreferenceSnapshot(String providersJson, String activeProviderId, int version) { }
 
     /**
      * Checks if there are any configured providers.

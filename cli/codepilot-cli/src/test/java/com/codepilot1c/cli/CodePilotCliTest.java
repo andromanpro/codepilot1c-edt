@@ -184,7 +184,7 @@ public class CodePilotCliTest {
             fixture.register(8765, List.of("llm.v1"));
             assertEquals(ExitCodes.EDT_UNAVAILABLE,
                     fixture.execute("--output", "json", "edt", "status", "--all"));
-            assertTrue(fixture.out().contains("\"capabilities\":[\"llm.v1\"]"));
+            assertTrue(fixture.out().contains("\"llmBrokerVersion\":1"));
 
             fixture.reset();
             assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("edt", "status", "--all"));

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -19,6 +20,7 @@ import com.codepilot1c.core.model.LlmStreamChunk;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.provider.ILlmProvider;
+import com.codepilot1c.core.provider.LlmProviderException;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -193,8 +195,10 @@ public final class McpHostLlmBroker {
             } catch (Exception e) {
                 if (!flight.disconnected.get() && flight.terminal.compareAndSet(false, true)) {
                     LOG.warn("LLM broker provider request failed: %s", e.getClass().getSimpleName()); //$NON-NLS-1$
+                    BrokerFailure failure = brokerFailure(e);
                     try {
-                        emit(flight, "error", errorPayload("provider_error", "Provider request failed")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        emit(flight, "error", errorPayload(failure.code(), failure.message(), //$NON-NLS-1$
+                                failure.status()));
                     } catch (ClientDisconnectedException ignored) {
                         // Client left while the terminal error was being written.
                     }
@@ -226,7 +230,8 @@ public final class McpHostLlmBroker {
         }
         if (chunk.isError()) {
             if (flight.terminal.compareAndSet(false, true)) {
-                emit(flight, "error", errorPayload("provider_error", "Provider request failed")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                emit(flight, "error", errorPayload("PROVIDER_RESPONSE", //$NON-NLS-1$ //$NON-NLS-2$
+                        "Provider response failed", 0)); //$NON-NLS-1$
             }
             return;
         }
@@ -455,12 +460,7 @@ public final class McpHostLlmBroker {
             JsonObject value = new JsonObject();
             value.addProperty("id", call.getId()); //$NON-NLS-1$
             value.addProperty("name", call.getName()); //$NON-NLS-1$
-            try {
-                value.add("arguments", JsonParser.parseString(call.getArguments())); //$NON-NLS-1$
-            } catch (JsonSyntaxException e) {
-                value.addProperty("arguments", call.getArguments()); //$NON-NLS-1$
-            }
-            value.addProperty("argumentsRepaired", call.isArgumentsRepaired()); //$NON-NLS-1$
+            value.addProperty("arguments", call.getArguments()); //$NON-NLS-1$
             values.add(value);
         }
         JsonObject payload = new JsonObject();
@@ -470,19 +470,47 @@ public final class McpHostLlmBroker {
 
     private JsonObject usagePayload(LlmResponse.Usage usage) {
         JsonObject payload = new JsonObject();
-        payload.addProperty("promptTokens", usage.getPromptTokens()); //$NON-NLS-1$
-        payload.addProperty("completionTokens", usage.getCompletionTokens()); //$NON-NLS-1$
-        payload.addProperty("totalTokens", usage.getTotalTokens()); //$NON-NLS-1$
-        payload.addProperty("cacheReadInputTokens", usage.getCacheReadInputTokens()); //$NON-NLS-1$
-        payload.addProperty("cacheCreationInputTokens", usage.getCacheCreationInputTokens()); //$NON-NLS-1$
+        payload.addProperty("inputTokens", usage.getPromptTokens()); //$NON-NLS-1$
+        payload.addProperty("outputTokens", usage.getCompletionTokens()); //$NON-NLS-1$
         return payload;
     }
 
-    private JsonObject errorPayload(String code, String message) {
+    private JsonObject errorPayload(String code, String message, int status) {
         JsonObject payload = new JsonObject();
         payload.addProperty("code", code); //$NON-NLS-1$
+        if (status >= 100 && status <= 599) payload.addProperty("status", status); //$NON-NLS-1$
         payload.addProperty("message", message); //$NON-NLS-1$
         return payload;
+    }
+
+    private BrokerFailure brokerFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof CancellationException || current instanceof InterruptedException) {
+                return new BrokerFailure("CANCELLED", "Provider request was cancelled", 0); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            if (current instanceof LlmProviderException providerFailure) {
+                int status = providerFailure.getStatusCode();
+                if (status == 401 || status == 403) {
+                    return new BrokerFailure("PROVIDER_AUTH", //$NON-NLS-1$
+                            "Provider authentication failed", status); //$NON-NLS-1$
+                }
+                if (status >= 100 && status <= 599) {
+                    return new BrokerFailure("PROVIDER_HTTP", //$NON-NLS-1$
+                            "Provider returned an HTTP error", status); //$NON-NLS-1$
+                }
+                if (providerFailure.getCause() instanceof IOException) {
+                    return new BrokerFailure("PROVIDER_TRANSPORT", //$NON-NLS-1$
+                            "Provider transport failed", 0); //$NON-NLS-1$
+                }
+                return new BrokerFailure("PROVIDER_RESPONSE", //$NON-NLS-1$
+                        "Provider response failed", 0); //$NON-NLS-1$
+            }
+            if (current instanceof IOException) {
+                return new BrokerFailure("PROVIDER_TRANSPORT", //$NON-NLS-1$
+                        "Provider transport failed", 0); //$NON-NLS-1$
+            }
+        }
+        return new BrokerFailure("PROVIDER_TRANSPORT", "Provider request failed", 0); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private JsonObject object(String key, String value) {
@@ -605,6 +633,8 @@ public final class McpHostLlmBroker {
             this.provider = provider;
         }
     }
+
+    private record BrokerFailure(String code, String message, int status) { }
 
     private static final class ClientDisconnectedException extends RuntimeException {
         private static final long serialVersionUID = 1L;

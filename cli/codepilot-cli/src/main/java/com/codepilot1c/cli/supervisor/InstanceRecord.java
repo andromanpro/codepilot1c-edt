@@ -55,7 +55,7 @@ public record InstanceRecord(int schemaVersion, String instanceId, long pid, int
         if (pluginVersion != null && !pluginVersion.isBlank()) value.put("pluginVersion", pluginVersion);
         if (authMode != null && !authMode.isBlank()) value.put("authMode", authMode);
         if (logFile != null && !logFile.isBlank()) value.put("logFile", logFile);
-        if (!capabilities.isEmpty()) value.put("capabilities", capabilities);
+        if (capabilities.contains("llm.v1")) value.put("llmBrokerVersion", 1);
         return value;
     }
 

@@ -5,7 +5,6 @@ import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -83,9 +82,9 @@ public final class McpHostInstanceRegistryPublisher implements AutoCloseable {
     }
 
     /**
-     * Publishes a snapshot with additive, non-secret broker capability metadata.
+     * Publishes a snapshot with additive, non-secret broker version metadata.
      *
-     * <p>The schema version remains 1 because capabilities are an optional additive field.</p>
+     * <p>The schema version remains 1 because the broker version is an optional scalar field.</p>
      */
     public synchronized boolean publish(int port, String baseUrl, String workspace, String edtHome,
             String mode, String pluginVersion, String authMode, boolean llmBrokerAvailable) {
@@ -106,7 +105,8 @@ public final class McpHostInstanceRegistryPublisher implements AutoCloseable {
         record.put("pluginVersion", valueOrUnknown(pluginVersion)); //$NON-NLS-1$
         record.put("authMode", valueOrUnknown(authMode)); //$NON-NLS-1$
         if (llmBrokerAvailable) {
-            record.put("capabilities", List.of(McpHostLlmBroker.CAPABILITY_ID)); //$NON-NLS-1$
+            // Keep schema-v1 readable by main-era FlatJsonObjectReader, which rejects arrays.
+            record.put("llmBrokerVersion", Integer.valueOf(McpHostLlmBroker.SCHEMA_VERSION)); //$NON-NLS-1$
         }
         // The nonce is an ownership proof, not an authentication value. It lets an older host
         // avoid deleting a registry file replaced by a newer process with the same instance id.

@@ -1,6 +1,8 @@
 package com.codepilot1c.core.provider.config;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -35,13 +37,6 @@ public class ProviderApiKeyResolutionTest {
 
         assertEquals("Bearer secure-dynamic-key", //$NON-NLS-1$
                 request.headers().firstValue("Authorization").orElseThrow()); //$NON-NLS-1$
-
-        Method sanitizeDiagnostic = DynamicLlmProvider.class.getDeclaredMethod(
-                "sanitizeDiagnostic", String.class); //$NON-NLS-1$
-        sanitizeDiagnostic.setAccessible(true);
-        String diagnostic = (String) sanitizeDiagnostic.invoke(
-                provider, "provider echoed secure-dynamic-key"); //$NON-NLS-1$
-        assertEquals("provider echoed [REDACTED]", diagnostic); //$NON-NLS-1$
     }
 
     @Test
@@ -68,6 +63,45 @@ public class ProviderApiKeyResolutionTest {
         }
     }
 
+    @Test
+    public void ollamaNeverReceivesStaleStaticBearerFromResolver() throws Exception {
+        LlmProviderConfig config = configured("ollama", "http://127.0.0.1:11434"); //$NON-NLS-1$ //$NON-NLS-2$
+        config.setType(ProviderType.OLLAMA);
+        DynamicLlmProvider provider = new DynamicLlmProvider(
+                config, ignored -> "old-secure-key", () -> 60); //$NON-NLS-1$
+
+        Method buildHttpRequest = DynamicLlmProvider.class.getDeclaredMethod("buildHttpRequest", String.class); //$NON-NLS-1$
+        buildHttpRequest.setAccessible(true);
+        HttpRequest request = (HttpRequest) buildHttpRequest.invoke(provider, "{}"); //$NON-NLS-1$
+
+        assertFalse(request.headers().firstValue("Authorization").isPresent()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void ollamaModelFetchNeverReceivesStaleStaticBearerFromResolver() throws Exception {
+        AtomicReference<String> authorization = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/tags", exchange -> respondWithOllamaModels(exchange, authorization)); //$NON-NLS-1$
+        server.start();
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .build();
+            ModelFetchService service = new ModelFetchService(client, ignored -> "old-secure-key"); //$NON-NLS-1$
+            LlmProviderConfig config = configured(
+                    "ollama-models", "http://127.0.0.1:" + server.getAddress().getPort()); //$NON-NLS-1$ //$NON-NLS-2$
+            config.setType(ProviderType.OLLAMA);
+
+            FetchResult result = service.fetchModels(config).get(10, TimeUnit.SECONDS);
+
+            assertTrue(result.isSuccess());
+            assertNull(authorization.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private static LlmProviderConfig configured(String id, String baseUrl) {
         return new LlmProviderConfig(id, id, ProviderType.OPENAI_COMPATIBLE,
                 baseUrl, null, "model", 4096); //$NON-NLS-1$
@@ -77,6 +111,16 @@ public class ProviderApiKeyResolutionTest {
             throws IOException {
         authorization.set(exchange.getRequestHeaders().getFirst("Authorization")); //$NON-NLS-1$
         byte[] body = "{\"data\":[]}".getBytes(StandardCharsets.UTF_8); //$NON-NLS-1$
+        exchange.sendResponseHeaders(200, body.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(body);
+        }
+    }
+
+    private static void respondWithOllamaModels(HttpExchange exchange, AtomicReference<String> authorization)
+            throws IOException {
+        authorization.set(exchange.getRequestHeaders().getFirst("Authorization")); //$NON-NLS-1$
+        byte[] body = "{\"models\":[]}".getBytes(StandardCharsets.UTF_8); //$NON-NLS-1$
         exchange.sendResponseHeaders(200, body.length);
         try (OutputStream output = exchange.getResponseBody()) {
             output.write(body);

@@ -178,7 +178,7 @@ public class ModelFetchService {
                 .GET();
 
         // Add authorization if API key provided
-        if (apiKey != null && !apiKey.isEmpty()) {
+        if (type.requiresStaticApiKey() && apiKey != null && !apiKey.isEmpty()) {
             builder.header("Authorization", "Bearer " + apiKey); //$NON-NLS-1$ //$NON-NLS-2$
         }
 

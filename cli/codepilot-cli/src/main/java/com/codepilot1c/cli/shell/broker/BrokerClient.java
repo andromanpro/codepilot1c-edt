@@ -28,6 +28,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.codepilot1c.runtime.agent.AgentError;
 import com.codepilot1c.runtime.agent.AgentMessage;
 import com.codepilot1c.runtime.agent.AgentModel;
 import com.codepilot1c.runtime.agent.AgentModelException;
@@ -41,7 +42,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 
 /**
@@ -209,7 +209,7 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
                     JsonObject item = new JsonObject();
                     item.addProperty("id", call.id());
                     item.addProperty("name", call.name());
-                    item.add("arguments", argument(call.argumentsJson()));
+                    item.addProperty("arguments", call.argumentsJson());
                     calls.add(item);
                 }
                 value.add("toolCalls", calls);
@@ -222,14 +222,6 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
             throw new IllegalArgumentException("unsupported agent message");
         }
         return value;
-    }
-
-    private JsonElement argument(String argumentsJson) {
-        try {
-            return JsonParser.parseString(argumentsJson);
-        } catch (JsonParseException failure) {
-            return new com.google.gson.JsonPrimitive(argumentsJson);
-        }
     }
 
     private BrokerInfo parseInfo(String body) {
@@ -569,11 +561,17 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
 
         void usage(JsonObject payload) {
             ensureOpen();
-            nonNegative(payload, "promptTokens");
-            nonNegative(payload, "completionTokens");
-            nonNegative(payload, "totalTokens");
-            if (payload.has("cacheReadInputTokens")) nonNegative(payload, "cacheReadInputTokens");
-            if (payload.has("cacheCreationInputTokens")) nonNegative(payload, "cacheCreationInputTokens");
+            if (payload.has("inputTokens") || payload.has("outputTokens")) {
+                nonNegative(payload, "inputTokens");
+                nonNegative(payload, "outputTokens");
+            } else {
+                // Compatibility with broker records created before the public v1 freeze.
+                nonNegative(payload, "promptTokens");
+                nonNegative(payload, "completionTokens");
+                nonNegative(payload, "totalTokens");
+                if (payload.has("cacheReadInputTokens")) nonNegative(payload, "cacheReadInputTokens");
+                if (payload.has("cacheCreationInputTokens")) nonNegative(payload, "cacheCreationInputTokens");
+            }
         }
 
         void finish(JsonObject payload) {
@@ -584,9 +582,29 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
 
         void error(JsonObject payload) {
             ensureOpen();
-            requiredString(payload, "code");
+            String wireCode = requiredString(payload, "code");
             requiredString(payload, "message");
-            throw transport("EDT broker reported a provider failure");
+            if ("provider_error".equals(wireCode)) { //$NON-NLS-1$
+                throw transport("EDT broker reported a provider failure");
+            }
+            final AgentError.Code code;
+            try {
+                code = AgentError.Code.valueOf(wireCode);
+            } catch (IllegalArgumentException failure) {
+                throw malformed("EDT broker error code is not part of AgentError.Code");
+            }
+            if (code != AgentError.Code.CANCELLED
+                    && code != AgentError.Code.PROVIDER_TRANSPORT
+                    && code != AgentError.Code.PROVIDER_AUTH
+                    && code != AgentError.Code.PROVIDER_HTTP
+                    && code != AgentError.Code.PROVIDER_RESPONSE) {
+                throw malformed("EDT broker returned a non-provider AgentError.Code");
+            }
+            int status = payload.has("status") ? requiredInt(payload, "status") : -1;
+            if (status != -1 && (status < 100 || status > 599)) {
+                throw malformed("EDT broker error status is malformed");
+            }
+            throw new AgentModelException(code, safeErrorMessage(code), status);
         }
 
         AgentMessage.Assistant assistant() {
@@ -607,6 +625,16 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
         void nonNegative(JsonObject payload, String field) {
             int value = requiredInt(payload, field);
             if (value < 0) throw malformed("EDT broker usage is malformed");
+        }
+
+        String safeErrorMessage(AgentError.Code code) {
+            return switch (code) {
+                case PROVIDER_AUTH -> "EDT broker reported provider authentication failure";
+                case PROVIDER_HTTP -> "EDT broker reported a provider HTTP failure";
+                case PROVIDER_RESPONSE -> "EDT broker reported a provider response failure";
+                case CANCELLED -> "EDT broker reported provider cancellation";
+                default -> "EDT broker reported a provider transport failure";
+            };
         }
     }
 

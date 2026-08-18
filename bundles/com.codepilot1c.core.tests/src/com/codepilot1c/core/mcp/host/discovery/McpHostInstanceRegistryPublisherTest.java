@@ -47,11 +47,11 @@ public class McpHostInstanceRegistryPublisherTest {
             assertEquals("2026-08-18T08:00:00Z", record.get("startedAt")); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals("1.2.3", record.get("pluginVersion")); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals("OAUTH_OR_BEARER", record.get("authMode")); //$NON-NLS-1$ //$NON-NLS-2$
-            assertEquals(java.util.List.of("llm.v1"), record.get("capabilities")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(1.0d, record.get("llmBrokerVersion")); //$NON-NLS-1$
             assertNotNull(record.get("nonce")); //$NON-NLS-1$
             assertEquals(Set.of("schemaVersion", "instanceId", "pid", "port", "baseUrl", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
                     "workspace", "edtHome", "mode", "owner", "startedAt", "pluginVersion", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
-                    "authMode", "capabilities", "nonce"), record.keySet()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    "authMode", "llmBrokerVersion", "nonce"), record.keySet()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             assertTrue(gui.unpublish());
 
             McpHostInstanceRegistryPublisher headless = publisher(INSTANCE_ID, "cli", directory, 102); //$NON-NLS-1$
@@ -62,7 +62,7 @@ public class McpHostInstanceRegistryPublisherTest {
             assertEquals("cli", record.get("owner")); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals("unknown", record.get("workspace")); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals("unknown", record.get("edtHome")); //$NON-NLS-1$ //$NON-NLS-2$
-            assertFalse(record.containsKey("capabilities")); //$NON-NLS-1$
+            assertFalse(record.containsKey("llmBrokerVersion")); //$NON-NLS-1$
         } finally {
             deleteTree(directory);
         }

@@ -156,6 +156,89 @@ public class LlmProviderConfigStoreMigrationTest {
     }
 
     @Test
+    public void nullMeansUnchangedButEmptyExplicitlyClearsSecureKey() {
+        FakePreferences preferences = legacyPreferences(2, configured("provider", null)); //$NON-NLS-1$
+        FakeApiKeyStorage storage = new FakeApiKeyStorage();
+        storage.keys.put("provider", SECRET_A); //$NON-NLS-1$
+        LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, message -> { });
+
+        LlmProviderConfig unchanged = store.getProviders().get(0).copy();
+        unchanged.setApiKey(null);
+        store.saveProviders(List.of(unchanged));
+        assertEquals(SECRET_A, storage.keys.get("provider")); //$NON-NLS-1$
+
+        LlmProviderConfig cleared = store.getProviders().get(0).copy();
+        cleared.setApiKey(""); //$NON-NLS-1$
+        store.saveProviders(List.of(cleared));
+
+        assertFalse(storage.keys.containsKey("provider")); //$NON-NLS-1$
+        assertEquals("", store.getProviders().get(0).getApiKey()); //$NON-NLS-1$
+        assertEquals("", LlmProviderConfigStore.resolveApiKey( //$NON-NLS-1$
+                store.getProviders().get(0), storage));
+    }
+
+    @Test
+    public void providerTypeOrEndpointTransitionCannotReuseOldSecureKey() {
+        for (boolean typeTransition : new boolean[] { false, true }) {
+            String id = typeTransition ? "type-transition" : "endpoint-transition"; //$NON-NLS-1$ //$NON-NLS-2$
+            FakePreferences preferences = legacyPreferences(2, configured(id, null));
+            FakeApiKeyStorage storage = new FakeApiKeyStorage();
+            storage.keys.put(id, SECRET_A);
+            LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, message -> { });
+
+            LlmProviderConfig changed = store.getProviders().get(0).copy();
+            if (typeTransition) changed.setType(ProviderType.ANTHROPIC);
+            else changed.setBaseUrl("https://other.example/v1"); //$NON-NLS-1$
+            // This is the value pre-populated by an edit form, not a newly entered credential.
+            assertEquals(SECRET_A, changed.getApiKey());
+            store.saveProviders(List.of(changed));
+
+            assertFalse(storage.keys.containsKey(id));
+            assertEquals("", store.getProviders().get(0).getApiKey()); //$NON-NLS-1$
+            assertEquals("", LlmProviderConfigStore.resolveApiKey( //$NON-NLS-1$
+                    store.getProviders().get(0), storage));
+        }
+    }
+
+    @Test
+    public void endpointTransitionAcceptsExplicitDifferentReplacementKey() {
+        FakePreferences preferences = legacyPreferences(2, configured("replacement", null)); //$NON-NLS-1$
+        FakeApiKeyStorage storage = new FakeApiKeyStorage();
+        storage.keys.put("replacement", SECRET_A); //$NON-NLS-1$
+        LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, message -> { });
+
+        LlmProviderConfig changed = store.getProviders().get(0).copy();
+        changed.setBaseUrl("https://other.example/v1"); //$NON-NLS-1$
+        changed.setApiKey(SECRET_B);
+        store.saveProviders(List.of(changed));
+
+        assertEquals(SECRET_B, storage.keys.get("replacement")); //$NON-NLS-1$
+        assertEquals(SECRET_B, store.getProviders().get(0).getApiKey());
+        assertFalse(preferences.providersJson().contains(SECRET_A));
+        assertFalse(preferences.providersJson().contains(SECRET_B));
+    }
+
+    @Test
+    public void failedClearRollsBackWithoutLosingOldKeyOrPreferences() {
+        FakePreferences preferences = legacyPreferences(2, configured("rollback", null)); //$NON-NLS-1$
+        FakeApiKeyStorage storage = new FakeApiKeyStorage();
+        storage.keys.put("rollback", SECRET_A); //$NON-NLS-1$
+        List<String> warnings = new ArrayList<>();
+        LlmProviderConfigStore store = new LlmProviderConfigStore(preferences, storage, warnings::add);
+        String beforeJson = preferences.providersJson();
+
+        LlmProviderConfig cleared = store.getProviders().get(0).copy();
+        cleared.setApiKey(""); //$NON-NLS-1$
+        storage.failRemoves.add("rollback"); //$NON-NLS-1$
+        store.saveProviders(List.of(cleared));
+
+        assertEquals(SECRET_A, storage.keys.get("rollback")); //$NON-NLS-1$
+        assertEquals(SECRET_A, store.getProviders().get(0).getApiKey());
+        assertEquals(beforeJson, preferences.providersJson());
+        assertEquals(1, warnings.size());
+    }
+
+    @Test
     public void storageFailureDiagnosticsNeverContainSecretMaterial() {
         FakePreferences preferences = legacyPreferences(0, configured("diagnostic", SECRET_A)); //$NON-NLS-1$
         FakeApiKeyStorage storage = new FakeApiKeyStorage();
@@ -222,6 +305,7 @@ public class LlmProviderConfigStoreMigrationTest {
         final Map<String, Integer> storeAttempts = new HashMap<>();
         final Set<String> failStores = new HashSet<>();
         final List<String> removeAttempts = new ArrayList<>();
+        final Set<String> failRemoves = new HashSet<>();
         RuntimeException throwOnStore;
 
         @Override
@@ -245,6 +329,7 @@ public class LlmProviderConfigStoreMigrationTest {
         @Override
         public boolean removeApiKey(String providerId) {
             removeAttempts.add(providerId);
+            if (failRemoves.contains(providerId)) return false;
             keys.remove(providerId);
             return true;
         }

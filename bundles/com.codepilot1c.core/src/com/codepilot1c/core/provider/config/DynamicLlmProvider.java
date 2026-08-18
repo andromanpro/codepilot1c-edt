@@ -172,16 +172,16 @@ public class DynamicLlmProvider implements ILlmProvider {
         String correlationId = LogSanitizer.newCorrelationId();
 
         if (!isConfigured()) {
-            LOG.warn("[%s] Provider not configured: %s", correlationId, config.getName()); //$NON-NLS-1$
+            LOG.warn("[%s] Provider is not configured", correlationId); //$NON-NLS-1$
             return CompletableFuture.failedFuture(
-                    new LlmProviderException("Provider not configured: " + config.getName())); //$NON-NLS-1$
+                    new LlmProviderException("Provider is not configured")); //$NON-NLS-1$
         }
 
         cancelled.set(false);
         currentLlmRequest = request; // Store for tool support
 
-        LOG.info("[%s] DynamicProvider complete: provider=%s, model=%s, messages=%d", //$NON-NLS-1$
-                correlationId, config.getName(), config.getModel(), request.getMessages().size());
+        LOG.info("[%s] DynamicProvider complete: messages=%d", //$NON-NLS-1$
+                correlationId, request.getMessages().size());
 
         ProviderExecutionPlan executionPlan = buildExecutionPlan(request, false);
         return completeWithPlan(request, executionPlan, startTime, correlationId);
@@ -197,8 +197,8 @@ public class DynamicLlmProvider implements ILlmProvider {
         String correlationId = LogSanitizer.newCorrelationId();
 
         if (!isConfigured()) {
-            LOG.warn("[%s] Provider not configured: %s (stream)", correlationId, config.getName()); //$NON-NLS-1$
-            throw new LlmProviderException("Provider not configured: " + config.getName()); //$NON-NLS-1$
+            LOG.warn("[%s] Provider is not configured for streaming", correlationId); //$NON-NLS-1$
+            throw new LlmProviderException("Provider is not configured"); //$NON-NLS-1$
         }
 
         cancelled.set(false);
@@ -219,11 +219,10 @@ public class DynamicLlmProvider implements ILlmProvider {
                 ? openAiSession.getSummary()
                 : new ProviderStreamProcessingSummary(correlationId, request.hasTools());
 
-        LOG.info("[%s] DynamicProvider streamComplete: provider=%s, model=%s, messages=%d", //$NON-NLS-1$
-                correlationId, config.getName(), config.getModel(), request.getMessages().size());
+        LOG.info("[%s] DynamicProvider streamComplete: messages=%d", //$NON-NLS-1$
+                correlationId, request.getMessages().size());
         if (!executionPlan.isStreaming()) {
-            LOG.info("[%s] Using non-stream execution plan for streaming request: %s", correlationId, //$NON-NLS-1$
-                    executionPlan.getReason() != null ? executionPlan.getReason() : "compatibility policy"); //$NON-NLS-1$
+            LOG.info("[%s] Using non-stream execution plan for streaming request", correlationId); //$NON-NLS-1$
             replayResponseAsStream(request, consumer, correlationId, executionPlan);
             return;
         }
@@ -241,11 +240,10 @@ public class DynamicLlmProvider implements ILlmProvider {
             }
 
             if (response.statusCode() != 200) {
-                // For error case, collect body for error message
-                String errorBody = sanitizeDiagnostic(
-                        response.body().collect(java.util.stream.Collectors.joining("\n"))); //$NON-NLS-1$
+                response.body().close();
                 LOG.error("[%s] Stream API error: status=%d", correlationId, response.statusCode()); //$NON-NLS-1$
-                throw new LlmProviderException("API error: " + response.statusCode() + " - " + errorBody); //$NON-NLS-1$ //$NON-NLS-2$
+                throw new LlmProviderException("Provider returned an HTTP error", null, //$NON-NLS-1$
+                        response.statusCode(), null);
             }
 
             // Track finish reason from stream
@@ -271,8 +269,7 @@ public class DynamicLlmProvider implements ILlmProvider {
 
             if (!cancelled.get() && summary.hasTerminalError()) {
                 logStreamSummary(summary, openAiSession);
-                LOG.warn("[%s] Structured stream error: %s", correlationId, //$NON-NLS-1$
-                        sanitizeDiagnostic(summary.getTerminalErrorMessage()));
+                LOG.warn("[%s] Structured stream error", correlationId); //$NON-NLS-1$
                 return;
             }
 
@@ -301,10 +298,9 @@ public class DynamicLlmProvider implements ILlmProvider {
         } catch (IOException | InterruptedException e) {
             long duration = System.currentTimeMillis() - startTime;
             if (!cancelled.get()) {
-                String safeMessage = sanitizeDiagnostic(e.getMessage());
-                LOG.error("[%s] DynamicProvider stream failed after %s: %s", //$NON-NLS-1$
-                        correlationId, LogSanitizer.formatDuration(duration), safeMessage);
-                throw new LlmProviderException("Stream request failed: " + safeMessage); //$NON-NLS-1$
+                LOG.error("[%s] DynamicProvider stream failed after %s", //$NON-NLS-1$
+                        correlationId, LogSanitizer.formatDuration(duration));
+                throw new LlmProviderException("Stream request failed", e); //$NON-NLS-1$
             }
         }
     }
@@ -344,8 +340,7 @@ public class DynamicLlmProvider implements ILlmProvider {
 
             } catch (Exception e) {
                 summary.getParseFailures().incrementAndGet();
-                LOG.debug("[%s] Failed to parse stream chunk: %s", summary.getCorrelationId(), //$NON-NLS-1$
-                        sanitizeDiagnostic(e.getMessage()));
+                LOG.debug("[%s] Failed to parse stream chunk", summary.getCorrelationId()); //$NON-NLS-1$
             }
         }
         return null;
@@ -473,12 +468,6 @@ public class DynamicLlmProvider implements ILlmProvider {
         String url = config.getChatEndpointUrl();
         int timeoutSeconds = resolveRequestTimeoutSeconds(body);
 
-        LOG.info("=== HTTP REQUEST BUILD ==="); //$NON-NLS-1$
-        LOG.info("URL: %s", sanitizeDiagnostic(url)); //$NON-NLS-1$
-        LOG.info("Base URL from config: %s", sanitizeDiagnostic(config.getBaseUrl())); //$NON-NLS-1$
-        LOG.info("Provider type: %s", config.getType()); //$NON-NLS-1$
-        LOG.info("Request timeout (seconds): %d", timeoutSeconds); //$NON-NLS-1$
-
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
@@ -486,22 +475,20 @@ public class DynamicLlmProvider implements ILlmProvider {
 
         // Add authorization header based on provider type
         String apiKey = apiKeyResolver.apply(config);
-        if (apiKey != null && !apiKey.isEmpty()) {
+        boolean authenticated = config.getType().requiresStaticApiKey()
+                && apiKey != null && !apiKey.isEmpty();
+        if (authenticated) {
             switch (config.getType()) {
                 case ANTHROPIC:
                     builder.header("x-api-key", apiKey); //$NON-NLS-1$
                     builder.header("anthropic-version", "2023-06-01"); //$NON-NLS-1$ //$NON-NLS-2$
-                    LOG.info("Auth: x-api-key header (Anthropic)"); //$NON-NLS-1$
                     break;
                 case OPENAI_COMPATIBLE:
-                case OLLAMA:
+                case CODEPILOT_BACKEND:
                 default:
                     builder.header("Authorization", "Bearer " + apiKey); //$NON-NLS-1$ //$NON-NLS-2$
-                    LOG.info("Auth: Bearer token (OpenAI compatible)"); //$NON-NLS-1$
                     break;
             }
-        } else {
-            LOG.warn("No API key configured!"); //$NON-NLS-1$
         }
 
         if (ProviderUtils.supportsPromptCacheHeaders(config)) {
@@ -510,12 +497,13 @@ public class DynamicLlmProvider implements ILlmProvider {
 
         // Add custom headers
         config.getCustomHeaders().forEach((key, value) -> {
-            LOG.info("Custom header configured: %s", key); //$NON-NLS-1$
             builder.header(key, value);
         });
 
         builder.POST(HttpRequest.BodyPublishers.ofString(body));
-        LOG.info("=== END HTTP REQUEST BUILD ==="); //$NON-NLS-1$
+        LOG.debug("HTTP request built: bodyChars=%d, timeoutSeconds=%d, authenticated=%b, customHeaders=%d", //$NON-NLS-1$
+                body != null ? body.length() : 0, timeoutSeconds, authenticated,
+                config.getCustomHeaders().size());
         return builder.build();
     }
 
@@ -526,18 +514,6 @@ public class DynamicLlmProvider implements ILlmProvider {
     private int loadRequestTimeoutSeconds() {
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
         return prefs.getInt(VibePreferenceConstants.PREF_REQUEST_TIMEOUT, 60);
-    }
-
-    private String sanitizeDiagnostic(String diagnostic) {
-        String sanitized = LogSanitizer.redactSecrets(diagnostic);
-        if (sanitized == null || sanitized.isEmpty()) {
-            return sanitized;
-        }
-        String apiKey = apiKeyResolver.apply(config);
-        if (apiKey != null && !apiKey.isEmpty()) {
-            sanitized = sanitized.replace(apiKey, "[REDACTED]"); //$NON-NLS-1$
-        }
-        return sanitized;
     }
 
     private int resolveRequestTimeoutSeconds(String body) {
@@ -557,13 +533,12 @@ public class DynamicLlmProvider implements ILlmProvider {
     private CompletableFuture<LlmResponse> completeWithPlan(LlmRequest request,
             ProviderExecutionPlan executionPlan, long startTime, String correlationId) {
         if (executionPlan.getReason() != null) {
-            LOG.debug("[%s] Provider execution plan: stream=%b, reason=%s", correlationId, //$NON-NLS-1$
-                    executionPlan.isStreaming(), executionPlan.getReason());
+            LOG.debug("[%s] Provider execution plan: stream=%b", correlationId, //$NON-NLS-1$
+                    executionPlan.isStreaming());
         }
 
         String requestBody = buildRequestBody(request, executionPlan);
-        LOG.debug("[%s] Request body: %s", correlationId, //$NON-NLS-1$
-                requestBody.length() < 5000 ? requestBody : "(truncated, length=" + requestBody.length() + ")"); //$NON-NLS-1$
+        LOG.debug("[%s] Request body size: chars=%d", correlationId, requestBody.length()); //$NON-NLS-1$
 
         HttpRequest httpRequest = buildHttpRequest(requestBody);
 
@@ -575,17 +550,15 @@ public class DynamicLlmProvider implements ILlmProvider {
                     long duration = System.currentTimeMillis() - startTime;
                     LOG.debug("[%s] Response status: %d in %s", correlationId, response.statusCode(), //$NON-NLS-1$
                             LogSanitizer.formatDuration(duration));
-                    String safeBody = sanitizeDiagnostic(response.body());
-                    LOG.debug("[%s] Response body: %s", correlationId, //$NON-NLS-1$
-                            safeBody.length() < 5000 ? safeBody : "(truncated, length=" + safeBody.length() + ")"); //$NON-NLS-1$
+                    LOG.debug("[%s] Response body size: chars=%d", correlationId, //$NON-NLS-1$
+                            response.body() != null ? response.body().length() : 0);
                     return parseResponse(response);
                 })
                 .whenComplete((result, error) -> {
                     long duration = System.currentTimeMillis() - startTime;
                     if (error != null) {
-                        LOG.error("[%s] DynamicProvider request failed after %s: %s", //$NON-NLS-1$
-                                correlationId, LogSanitizer.formatDuration(duration),
-                                sanitizeDiagnostic(error.getMessage()));
+                        LOG.error("[%s] DynamicProvider request failed after %s", //$NON-NLS-1$
+                                correlationId, LogSanitizer.formatDuration(duration));
                     } else {
                         LOG.info("[%s] DynamicProvider response received in %s", //$NON-NLS-1$
                                 correlationId, LogSanitizer.formatDuration(duration));
@@ -619,11 +592,10 @@ public class DynamicLlmProvider implements ILlmProvider {
             return;
         }
 
-        LOG.info("[%s] Non-stream replay completed: hasContent=%b, toolCalls=%d, finishReason=%s", //$NON-NLS-1$
+        LOG.info("[%s] Non-stream replay completed: hasContent=%b, toolCalls=%d", //$NON-NLS-1$
                 correlationId,
                 response.getContent() != null && !response.getContent().isEmpty(),
-                response.getToolCalls().size(),
-                response.getFinishReason());
+                response.getToolCalls().size());
 
         if (response.hasReasoningField() && !cancelled.get()) {
             consumer.accept(LlmStreamChunk.reasoning(response.getReasoningContent()));
@@ -785,8 +757,8 @@ public class DynamicLlmProvider implements ILlmProvider {
             builder.append(content, content.length() - tailChars, content.length());
         }
 
-        LOG.info("Truncated outbound tool result for %s: original=%d chars, outbound=%d chars", //$NON-NLS-1$
-                message.getToolCallId(), content.length(), builder.length());
+        LOG.info("Truncated outbound tool result: original=%d chars, outbound=%d chars", //$NON-NLS-1$
+                content.length(), builder.length());
         return builder.toString();
     }
 
@@ -946,7 +918,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         try {
             return Base64.getEncoder().encodeToString(Files.readAllBytes(Path.of(effectivePath)));
         } catch (IOException | RuntimeException e) {
-            LOG.warn("Failed to read Ollama image attachment %s: %s", effectivePath, e.getMessage()); //$NON-NLS-1$
+            LOG.warn("Failed to read Ollama image attachment"); //$NON-NLS-1$
             return null;
         }
     }
@@ -963,8 +935,8 @@ public class DynamicLlmProvider implements ILlmProvider {
      */
     private LlmResponse parseResponse(HttpResponse<String> response) {
         if (response.statusCode() != 200) {
-            throw new LlmProviderException("API error: " + response.statusCode() + " - " //$NON-NLS-1$ //$NON-NLS-2$
-                    + sanitizeDiagnostic(response.body()));
+            throw new LlmProviderException("Provider returned an HTTP error", null, //$NON-NLS-1$
+                    response.statusCode(), null);
         }
 
         try {
@@ -979,8 +951,8 @@ public class DynamicLlmProvider implements ILlmProvider {
                 default:
                     return parseOpenAiResponse(json);
             }
-        } catch (Exception e) {
-            throw new LlmProviderException("Failed to parse response: " + sanitizeDiagnostic(e.getMessage())); //$NON-NLS-1$
+        } catch (Exception ignored) {
+            throw new LlmProviderException("Failed to parse provider response"); //$NON-NLS-1$
         }
     }
 
@@ -1003,7 +975,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
 
         // Log message structure for debugging
-        LOG.debug("Message keys: %s", sanitizeDiagnostic(message.keySet().toString())); //$NON-NLS-1$
+        LOG.debug("Response message field count: %d", message.keySet().size()); //$NON-NLS-1$
 
         // Handle content - may be null when tool_calls are present
         String content = null;
@@ -1032,11 +1004,6 @@ public class DynamicLlmProvider implements ILlmProvider {
             toolCalls = parseToolCalls(toolCallsJson);
 
             LOG.debug("Parsed %d tool calls", toolCalls.size()); //$NON-NLS-1$
-            for (ToolCall tc : toolCalls) {
-                LOG.debug("  Tool call: %s(%s)", sanitizeDiagnostic(tc.getName()), //$NON-NLS-1$
-                        sanitizeDiagnostic(tc.getArguments()));
-            }
-
             // Set finish reason to tool_use if we have tool calls
             if (!toolCalls.isEmpty() && !LlmResponse.FINISH_REASON_TOOL_USE.equals(finishReason)) { //$NON-NLS-1$
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
@@ -1070,9 +1037,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                 && ContentToolCallFallbackParser.hasToolCallMarkers(contentToCheck)) {
             List<ToolCall> fallbackCalls = ContentToolCallFallbackParser.extractFromContent(contentToCheck);
             if (!fallbackCalls.isEmpty()) {
-                LOG.info("Content fallback: extracted %d tool call(s) from %s", //$NON-NLS-1$
-                        fallbackCalls.size(),
-                        contentToCheck == reasoningContent ? "reasoning_content" : "content"); //$NON-NLS-1$ //$NON-NLS-2$
+                LOG.info("Content fallback: extracted %d tool call(s)", fallbackCalls.size()); //$NON-NLS-1$
                 toolCalls = fallbackCalls;
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
                 // Strip tool call blocks from whichever field contained them
@@ -1083,8 +1048,8 @@ public class DynamicLlmProvider implements ILlmProvider {
             }
         }
 
-        LOG.debug("Response parsed: finishReason=%s, hasContent=%b, hasReasoning=%b, toolCalls=%d", //$NON-NLS-1$
-                sanitizeDiagnostic(finishReason), content != null && !content.isEmpty(),
+        LOG.debug("Response parsed: hasContent=%b, hasReasoning=%b, toolCalls=%d", //$NON-NLS-1$
+                content != null && !content.isEmpty(),
                 reasoningContent != null && !reasoningContent.isEmpty(),
                 toolCalls != null ? toolCalls.size() : 0);
 
@@ -1133,13 +1098,11 @@ public class DynamicLlmProvider implements ILlmProvider {
             Optional<ToolCallArguments.Normalized> arguments =
                     ToolCallArguments.normalizeWithStatus(function.get("arguments")); //$NON-NLS-1$
             if (arguments.isEmpty()) {
-                LOG.warn("Dropping tool call %s (%s): arguments is not a JSON object", //$NON-NLS-1$
-                        sanitizeDiagnostic(id), sanitizeDiagnostic(name));
+                LOG.warn("Dropping tool call because arguments are not a JSON object"); //$NON-NLS-1$
                 continue;
             }
             if (arguments.get().repaired()) {
-                LOG.warn("Tool call %s (%s): arguments repaired from malformed payload", //$NON-NLS-1$
-                        sanitizeDiagnostic(id), sanitizeDiagnostic(name));
+                LOG.warn("Tool call arguments repaired from malformed payload"); //$NON-NLS-1$
             }
             toolCalls.add(new ToolCall(id, name, arguments.get().json(), arguments.get().repaired()));
         }
