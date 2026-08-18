@@ -2,7 +2,10 @@ package com.codepilot1c.core.edt.observability.eventlog;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PushbackReader;
+import java.nio.channels.Channels;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -115,10 +118,127 @@ public final class EventLogService {
         return result;
     }
 
+    /**
+     * Byte offset of the first record whose stamp is at or after {@code sinceRaw}.
+     *
+     * <p>Why this exists: partitions are visited newest first, but INSIDE a
+     * partition the parse used to start at byte zero. A single busy day easily
+     * exceeds {@link #DEFAULT_SCAN_CAP}, so the budget was spent on records far
+     * older than the requested window and the scan never reached the tail — the
+     * query answered "nothing found" for a window that was full of records.
+     * Observed 2026-08-18 on a 76 MB daily partition: a {@code since} one hour
+     * back returned empty while the log kept growing.</p>
+     *
+     * <p>Records are append-ordered and every top-level record starts a line
+     * with <code>{yyyyMMddHHmmss,</code>, so a plain binary search over byte
+     * offsets finds the window start without parsing the prefix at all.</p>
+     *
+     * @return offset to start parsing at; file size when nothing is in window.
+     */
+    private static long windowStartOffset(Path lgp, long sinceRaw) throws IOException {
+        long size = Files.size(lgp);
+        if (sinceRaw <= 0 || size == 0) {
+            return 0L;
+        }
+        try (SeekableByteChannel channel = Files.newByteChannel(lgp)) {
+            // Границы двигаются по mid, а НЕ по найденному смещению записи:
+            // найденное смещение >= mid и может совпасть с hi, тогда интервал
+            // перестаёт сужаться и поиск зацикливается (поймано при первом
+            // прогоне правки — запрос уходил в таймаут вместо ответа).
+            long lo = 0L;
+            long hi = size;
+            while (lo < hi) {
+                long mid = lo + (hi - lo) / 2;
+                long[] found = recordAtOrAfter(channel, mid, size);
+                if (found == null || found[1] >= sinceRaw) {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            long[] window = recordAtOrAfter(channel, lo, size);
+            // Начать чуть раньше окна безопасно: лишние записи отсечёт matches().
+            return window == null ? size : window[0];
+        }
+    }
+
+    /**
+     * First top-level record start at or after {@code from}.
+     *
+     * @return {@code [offset, stamp]} or {@code null} when none is left.
+     */
+    private static long[] recordAtOrAfter(SeekableByteChannel channel, long from, long size)
+            throws IOException {
+        final int window = 64 * 1024;
+        long position = from;
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(window);
+        StringBuilder carry = new StringBuilder();
+        long carryOffset = from;
+        while (position < size) {
+            channel.position(position);
+            buffer.clear();
+            int read = channel.read(buffer);
+            if (read <= 0) {
+                return null;
+            }
+            String chunk = new String(buffer.array(), 0, read, StandardCharsets.ISO_8859_1);
+            carry.append(chunk);
+            int lineStart = 0;
+            while (true) {
+                int newline = carry.indexOf("\n", lineStart); //$NON-NLS-1$
+                if (newline < 0) {
+                    break;
+                }
+                int candidate = newline + 1;
+                // Заголовок записи - 16 символов; если они ещё не дочитаны, кандидата
+                // НЕ отбрасываем, а оставляем в carry до следующего блока: иначе
+                // граница записи, попавшая на стык чтений, теряется молча.
+                if (candidate + 16 > carry.length()) {
+                    break;
+                }
+                Long stamp = stampAt(carry, candidate);
+                if (stamp != null) {
+                    return new long[] { carryOffset + candidate, stamp };
+                }
+                lineStart = candidate;
+            }
+            carry.delete(0, lineStart);
+            carryOffset += lineStart;
+            position += read;
+        }
+        return null;
+    }
+
+    /** Stamp of a record header line {@code {yyyyMMddHHmmss,} at {@code index}, or null. */
+    private static Long stampAt(CharSequence text, int index) {
+        if (index + 16 > text.length()) {
+            return null;
+        }
+        if (text.charAt(index) != '{' || text.charAt(index + 15) != ',') {
+            return null;
+        }
+        long stamp = 0;
+        for (int i = index + 1; i < index + 15; i++) {
+            char c = text.charAt(i);
+            if (c < '0' || c > '9') {
+                return null;
+            }
+            stamp = stamp * 10 + (c - '0');
+        }
+        return stamp;
+    }
+
     /** @return true when the partition tail was torn mid-record (active file). */
     private boolean scanPartition(Path lgp, LgfCatalog refs, Query q, Result result,
             List<EventLogRecord> sink) throws IOException {
-        try (BufferedReader br = Files.newBufferedReader(lgp, StandardCharsets.UTF_8);
+        long start = windowStartOffset(lgp, q.sinceRaw);
+        if (start >= Files.size(lgp) && q.sinceRaw > 0) {
+            return false; // whole partition is older than the window
+        }
+        SeekableByteChannel channel = Files.newByteChannel(lgp);
+        channel.position(start);
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(Channels.newInputStream(channel), StandardCharsets.UTF_8));
                 PushbackReader reader = new PushbackReader(br, 1)) {
             skipHeader(reader);
             while (result.scanned < scanCap) {
