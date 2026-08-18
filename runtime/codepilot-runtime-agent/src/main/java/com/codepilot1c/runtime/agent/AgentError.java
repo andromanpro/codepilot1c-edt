@@ -14,6 +14,7 @@ public record AgentError(Code code, String message) {
         TIMEOUT,
         STEP_LIMIT,
         PROVIDER_TRANSPORT,
+        PROVIDER_AUTH,
         PROVIDER_HTTP,
         PROVIDER_RESPONSE,
         TOOL_CATALOG

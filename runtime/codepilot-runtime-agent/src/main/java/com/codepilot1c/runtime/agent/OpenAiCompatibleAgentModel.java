@@ -56,7 +56,7 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
             if (!value.isSuccessful()) {
                 throw new CompletionException(new AgentModelException(
                         AgentModelException.Kind.HTTP,
-                        "Provider returned HTTP status " + value.statusCode())); //$NON-NLS-1$
+                        "Provider returned an HTTP error", value.statusCode())); //$NON-NLS-1$
             }
             return parse(value.body());
         });

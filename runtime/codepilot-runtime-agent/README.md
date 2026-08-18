@@ -12,6 +12,13 @@ expected failures are represented by a stable `AgentError.Code`. A step
 includes its requested tool executions, so a tool-producing final allowed
 step is executed before the `STEP_LIMIT` result is returned.
 
+OpenAI-compatible HTTP 401/403 responses are retained as the provider-neutral
+`PROVIDER_AUTH` terminal code without retaining or exposing the response body.
+Other provider HTTP failures remain `PROVIDER_HTTP`; malformed successful
+responses remain `PROVIDER_RESPONSE`. This lets a standalone host map auth to
+a distinct process result while keeping endpoint and credential policy outside
+the runtime.
+
 `AgentRuntime.close()` atomically stops admission, returns `CANCELLED/CLOSED`
 for every active run, and propagates cancellation to the current provider or
 tool request. Cancelling the `CompletableFuture` returned by `run(...)` also

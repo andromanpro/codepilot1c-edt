@@ -345,8 +345,12 @@ public final class AgentRuntime implements AutoCloseable {
             if (failure instanceof AgentModelException modelFailure) {
                 switch (modelFailure.kind()) {
                     case HTTP:
-                        code = AgentError.Code.PROVIDER_HTTP;
-                        message = "Provider returned an HTTP error"; //$NON-NLS-1$
+                        boolean authenticationFailed = modelFailure.httpStatus() == 401
+                                || modelFailure.httpStatus() == 403;
+                        code = authenticationFailed ? AgentError.Code.PROVIDER_AUTH
+                                : AgentError.Code.PROVIDER_HTTP;
+                        message = authenticationFailed ? "Provider authentication failed" //$NON-NLS-1$
+                                : "Provider returned an HTTP error"; //$NON-NLS-1$
                         break;
                     case MALFORMED_RESPONSE:
                         code = AgentError.Code.PROVIDER_RESPONSE;

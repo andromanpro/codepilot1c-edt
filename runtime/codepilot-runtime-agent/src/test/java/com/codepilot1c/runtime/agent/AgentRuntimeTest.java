@@ -400,6 +400,19 @@ public class AgentRuntimeTest {
         assertFalse(events.stream().anyMatch(event -> event.cause().isPresent()));
     }
 
+    @Test
+    public void providerAuthenticationHasDistinctTerminalCode() throws Exception {
+        AgentModel model = (request, cancellation) -> CompletableFuture.failedFuture(
+                new AgentModelException(AgentModelException.Kind.HTTP,
+                        "Provider returned an HTTP error", 401)); //$NON-NLS-1$
+        try (AgentRuntime runtime = runtime(model, emptyTools(), 2, Duration.ofSeconds(2))) {
+            AgentResult result = runtime.run(request("authenticate")).get(2, TimeUnit.SECONDS); //$NON-NLS-1$
+            assertEquals(AgentResult.Status.FAILED, result.status());
+            assertEquals(AgentError.Code.PROVIDER_AUTH, result.error().orElseThrow().code());
+            assertEquals("Provider authentication failed", result.error().orElseThrow().message()); //$NON-NLS-1$
+        }
+    }
+
     private static AgentRequest request(String text) {
         return new AgentRequest("test-op", List.of(new AgentMessage.Text(AgentMessage.Role.USER, text))); //$NON-NLS-1$
     }
