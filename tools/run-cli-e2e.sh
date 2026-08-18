@@ -18,14 +18,16 @@ KEEP_ARTIFACTS="${CODEPILOT_E2E_KEEP_ARTIFACTS:-false}"
 START_TIMEOUT="${CODEPILOT_E2E_START_TIMEOUT:-30}"
 
 TMP_ROOT=""
-TMP_BASE="${TMPDIR:-/tmp}"
-TMP_BASE="${TMP_BASE%/}"
+TMP_MARKER=""
 RUN_HOME=""
 WORKSPACE=""
 REGISTRY_DIR=""
 INSTANCE_ID=""
 INSTANCE_PID=""
 INSTANCE_LOG=""
+START_CLI_PID=""
+START_STDOUT=""
+START_STDERR=""
 STOPPED="false"
 
 usage() {
@@ -43,7 +45,9 @@ Environment:
   CODEPILOT_E2E_START_TIMEOUT=30    Readiness timeout passed to edt start.
 
 The harness is intentionally not wired into Maven. It always uses a temporary
-Java user.home, registry, and workspace and a loopback ephemeral port.
+Java user.home, registry, and workspace and a loopback ephemeral port. Python
+3.10+ is required by the local fake host; start retries are bounded to three
+attempts for port/process races.
 EOF
 }
 
@@ -91,6 +95,8 @@ esac
 
 command -v java >/dev/null 2>&1 || fail "java 17+ is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required for the local fake host and port selection"
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+    || fail "python3 3.10+ is required"
 [[ -x "$FAKE_LAUNCHER" ]] || fail "fake launcher is not executable: $FAKE_LAUNCHER"
 
 if bool_true "$BUILD_CLI"; then
@@ -99,19 +105,39 @@ if bool_true "$BUILD_CLI"; then
 fi
 [[ -f "$CLI_JAR" && -r "$CLI_JAR" ]] || fail "packaged CLI jar not found: $CLI_JAR (build it or pass --jar)"
 
-TMP_ROOT=$(mktemp -d "$TMP_BASE/codepilot-cli-e2e.XXXXXX")
+TMP_ROOT=$(env -u TMPDIR -u TMP -u TEMP mktemp -d -t codepilot-cli-e2e)
+TMP_ROOT=$(CDPATH= cd -- "$TMP_ROOT" && pwd -P)
+TMP_MARKER="$TMP_ROOT/.codepilot-cli-e2e-owned"
 RUN_HOME="$TMP_ROOT/home"
 WORKSPACE="$TMP_ROOT/workspace"
 REGISTRY_DIR="$RUN_HOME/.codepilot1c/instances"
 mkdir -p "$RUN_HOME" "$WORKSPACE"
+printf '%s\n' "$TMP_ROOT" >"$TMP_MARKER"
+chmod 600 "$TMP_MARKER"
+
+path_is_within() {
+    local child=$1
+    local parent=$2
+    [[ "$child" == "$parent" || "$child" == "$parent"/* ]]
+}
+
+USER_HOME_REAL=$(CDPATH= cd -- "${HOME:-/}" && pwd -P)
+path_is_within "$TMP_ROOT" "$ROOT_DIR" && fail "temp root overlaps repository"
+path_is_within "$TMP_ROOT" "$USER_HOME_REAL" && fail "temp root overlaps user home"
+[[ "$TMP_ROOT" != "/" && "$TMP_ROOT" != "." ]] || fail "unsafe temp root"
 
 # The guard is intentionally narrow so cleanup cannot remove an arbitrary path.
 remove_temp_tree() {
     [[ -n "$TMP_ROOT" ]] || return 0
-    case "$TMP_ROOT" in
-        "$TMP_BASE"/codepilot-cli-e2e.*) ;;
-        *) log "Refusing to remove unexpected temp path: $TMP_ROOT"; return 1 ;;
-    esac
+    [[ -d "$TMP_ROOT" && ! -L "$TMP_ROOT" ]] || { log "Refusing to remove unsafe temp root: $TMP_ROOT"; return 1; }
+    [[ -f "$TMP_MARKER" && ! -L "$TMP_MARKER" ]] || { log "Temp ownership marker missing"; return 1; }
+    local actual marker_value
+    actual=$(CDPATH= cd -- "$TMP_ROOT" && pwd -P) || return 1
+    marker_value=$(<"$TMP_MARKER")
+    [[ "$actual" == "$TMP_ROOT" && "$marker_value" == "$TMP_ROOT" ]] || {
+        log "Refusing to remove temp root whose canonical path/marker changed"
+        return 1
+    }
     rm -rf -- "$TMP_ROOT"
 }
 
@@ -132,6 +158,22 @@ pid_matches_instance() {
     marker="-Dcodepilot.instance.id=$instance"
     command_line=$(ps -p "$pid" -o command= 2>/dev/null || true)
     [[ -n "$command_line" && "$command_line" == *"$marker"* ]]
+}
+
+pid_command_line() {
+    local pid=${1:-}
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    ps -p "$pid" -o command= 2>/dev/null || true
+}
+
+pid_matches_start() {
+    local pid=${1:-}
+    local command_line
+    command_line=$(pid_command_line "$pid")
+    [[ "$command_line" == *"-Duser.home=$RUN_HOME"* \
+        && "$command_line" == *"-jar $CLI_JAR"* \
+        && "$command_line" == *"edt start"* \
+        && "$command_line" == *"--workspace $WORKSPACE"* ]]
 }
 
 wait_for_exit() {
@@ -163,29 +205,111 @@ kill_exact_process() {
     fi
 }
 
+kill_exact_start_process() {
+    [[ -n "$START_CLI_PID" ]] || return 0
+    if ! pid_is_alive "$START_CLI_PID"; then START_CLI_PID=""; return 0; fi
+    if ! pid_matches_start "$START_CLI_PID"; then
+        log "Refusing fallback termination: start PID identity changed ($START_CLI_PID)"
+        return 1
+    fi
+    log "Terminating exact interrupted CLI start PID $START_CLI_PID"
+    kill "$START_CLI_PID" 2>/dev/null || true
+    if wait_for_exit "$START_CLI_PID" 100; then START_CLI_PID=""; return 0; fi
+    if pid_matches_start "$START_CLI_PID"; then
+        kill -9 "$START_CLI_PID" 2>/dev/null || true
+        wait_for_exit "$START_CLI_PID" 100 || return 1
+        START_CLI_PID=""
+    else
+        log "Refusing force termination: start PID identity changed"
+        return 1
+    fi
+}
+
+registry_record_lines() {
+    python3 - "$REGISTRY_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+if not root.is_dir() or root.is_symlink():
+    raise SystemExit(0)
+for path in sorted(root.glob("*.json")):
+    if path.is_symlink() or not path.is_file():
+        print(f"invalid\t{path}")
+        continue
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        print("ok\t{}\t{}\t{}\t{}".format(
+            value["instanceId"], value["pid"], value["owner"], value["workspace"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        print(f"invalid\t{path}")
+PY
+}
+
+reconcile_temp_instances() {
+    local unsafe=0 valid id pid owner workspace
+    [[ -d "$REGISTRY_DIR" && ! -L "$REGISTRY_DIR" ]] || return 0
+    while IFS=$'\t' read -r valid id pid owner workspace; do
+        [[ -n "$valid" ]] || continue
+        if [[ "$valid" != ok || "$owner" != cli || "$workspace" != "$WORKSPACE" \
+            || ! "$id" =~ ^[0-9a-fA-F-]{36}$ || ! "$pid" =~ ^[0-9]+$ ]]; then
+            log "Refusing to mutate unexpected temp registry record"
+            unsafe=1
+            continue
+        fi
+        if pid_is_alive "$pid" && ! pid_matches_instance "$pid" "$id"; then
+            log "Refusing to terminate registry PID with mismatched identity: $pid/$id"
+            unsafe=1
+            continue
+        fi
+        run_cli --output json edt stop --id "$id" --force --timeout 5 \
+            >"$TMP_ROOT/reconcile-$id.json" 2>"$TMP_ROOT/reconcile-$id.err" || unsafe=1
+    done < <(registry_record_lines)
+    return "$unsafe"
+}
+
+temp_live_processes_remain() {
+    local valid id pid owner workspace
+    while IFS=$'\t' read -r valid id pid owner workspace; do
+        [[ "$valid" == ok ]] || return 0
+        [[ "$owner" == cli && "$workspace" == "$WORKSPACE" ]] || return 0
+        if pid_is_alive "$pid"; then return 0; fi
+    done < <(registry_record_lines)
+    return 1
+}
+
 cleanup() {
     local exit_code=$?
     trap - EXIT INT TERM HUP
-    if [[ -n "$INSTANCE_ID" && "$STOPPED" != "true" ]]; then
-        log "Cleanup: asking CLI to stop instance $INSTANCE_ID"
-        run_cli --output json edt stop --id "$INSTANCE_ID" --force --timeout 5 \
-            >"$TMP_ROOT/cleanup-stop.json" 2>"$TMP_ROOT/cleanup-stop.err" || true
+    local unsafe=0
+    reconcile_temp_instances || unsafe=1
+    kill_exact_start_process || unsafe=1
+    reconcile_temp_instances || unsafe=1
+    kill_exact_process || unsafe=1
+    temp_live_processes_remain && unsafe=1 || true
+    if [[ "$unsafe" -ne 0 ]]; then
+        log "Cleanup could not prove all temp-owned processes are stopped; preserving root"
+        exit_code=1
     fi
-    kill_exact_process || exit_code=1
     if [[ "$exit_code" -ne 0 ]]; then
         if [[ -n "$INSTANCE_LOG" && -f "$INSTANCE_LOG" ]]; then
             log "EDT log tail:"
             tail -n 80 "$INSTANCE_LOG" >&2 || true
         fi
     fi
-    if bool_true "$KEEP_ARTIFACTS"; then
+    if bool_true "$KEEP_ARTIFACTS" || [[ "$unsafe" -ne 0 ]]; then
         log "Keeping temporary artifacts at $TMP_ROOT"
     else
         remove_temp_tree || exit_code=1
     fi
     exit "$exit_code"
 }
-trap cleanup EXIT INT TERM HUP
+# Preserve a non-zero interruption status while still running EXIT cleanup.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap cleanup EXIT
 
 run_cli() {
     # user.home is explicit because Java's user.home derivation differs across
@@ -246,9 +370,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
-PORT=$(reserve_loopback_port)
-[[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || fail "invalid ephemeral port: $PORT"
-
 if [[ "$MODE" == fake ]]; then
     EDT_HOME="$TMP_ROOT/fake-edt"
     mkdir -p "$EDT_HOME"
@@ -263,9 +384,46 @@ else
     log "Real EDT mode is enabled explicitly: $EDT_HOME"
 fi
 
-log "Starting $MODE CLI-owned headless host on loopback port $PORT"
-START_JSON=$(run_cli --output json edt start --workspace "$WORKSPACE" --edt-home "$EDT_HOME" \
-    --port "$PORT" --timeout "$START_TIMEOUT") || fail "edt start failed"
+start_cli_once() {
+    PORT=$(reserve_loopback_port)
+    [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] \
+        || fail "invalid ephemeral port: $PORT"
+    START_STDOUT="$TMP_ROOT/start.stdout"
+    START_STDERR="$TMP_ROOT/start.stderr"
+    : >"$START_STDOUT"
+    : >"$START_STDERR"
+    log "Starting $MODE CLI-owned headless host on loopback port $PORT"
+    set +e
+    HOME="$RUN_HOME" java -Duser.home="$RUN_HOME" -jar "$CLI_JAR" --output json edt start \
+        --workspace "$WORKSPACE" --edt-home "$EDT_HOME" --port "$PORT" --timeout "$START_TIMEOUT" \
+        >"$START_STDOUT" 2>"$START_STDERR" &
+    START_CLI_PID=$!
+    wait "$START_CLI_PID"
+    local rc=$?
+    set -e
+    # The PID is cleared only after wait; an interruption trap sees it and can
+    # verify/terminate exactly this start command.
+    START_CLI_PID=""
+    START_JSON=$(<"$START_STDOUT")
+    return "$rc"
+}
+
+START_OK="false"
+for attempt in 1 2 3; do
+    if start_cli_once; then
+        START_OK="true"
+        break
+    fi
+    if ! grep -Eq 'port_unavailable|process_start_failed|process_exited' "$START_STDOUT" "$START_STDERR"; then
+        break
+    fi
+    log "Retrying bounded start after possible port race (attempt $attempt/3)"
+    reconcile_temp_instances || fail "unsafe temp registry after start retry"
+done
+[[ "$START_OK" == true ]] || {
+    cat "$START_STDOUT" "$START_STDERR" >&2 || true
+    fail "edt start failed"
+}
 [[ "$(json_field "$START_JSON" status)" == ready ]] || fail "start did not report ready: $START_JSON"
 INSTANCE_ID=$(json_field "$START_JSON" instance.instanceId)
 INSTANCE_PID=$(json_field "$START_JSON" instance.pid)
@@ -312,8 +470,12 @@ if [[ -d "$REGISTRY_DIR" ]] && [[ -n "$(find "$REGISTRY_DIR" -type f -name '*.js
 fi
 [[ -s "$INSTANCE_LOG" ]] || fail "supervisor log is empty: $INSTANCE_LOG"
 if [[ "$MODE" == fake ]]; then
+    grep -F "fake-edt-contract-ok application=com.codepilot1c.core.headless workspace=$WORKSPACE port=$PORT bind=127.0.0.1 instance=$INSTANCE_ID owner=cli registry=$REGISTRY_DIR" "$INSTANCE_LOG" >/dev/null \
+        || fail "fake launcher contract diagnostics missing from log"
     grep -F "fake-edt-ready instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "fake host readiness diagnostics missing from log"
+    grep -F "fake-edt-session-delete instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
+        || fail "MCP session DELETE diagnostics missing from log"
     grep -F "fake-edt-shutdown instance=$INSTANCE_ID" "$INSTANCE_LOG" >/dev/null \
         || fail "fake host shutdown diagnostics missing from log"
 fi

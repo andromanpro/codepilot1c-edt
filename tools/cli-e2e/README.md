@@ -24,6 +24,17 @@ fallback is limited to the same PID plus the same instance marker. No
 port-wide or name-wide process termination is used. Failed runs print the
 fake-host log tail and remove the temporary root too; set
 `CODEPILOT_E2E_KEEP_ARTIFACTS=true` when preserving it for investigation.
+The fake-host helper requires Python 3.10+; the packaged CLI itself remains
+Java 17-only.
+
+The start command is a tracked background process, so an interrupt during
+readiness does not lose ownership before the registry record is available.
+Cleanup reconciles only records in this run's temporary registry, checks the
+record UUID/PID command marker, stops the exact instance, and then terminates
+the exact start PID if still needed. It preserves the root rather than
+deleting it whenever a live or mismatched process cannot be proven safe.
+`TMPDIR`, `TMP`, and `TEMP` are ignored for allocation; OS-default `mktemp`
+is canonicalized and marked with an ownership file before cleanup.
 
 ## Explicit real EDT smoke
 
