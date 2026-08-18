@@ -38,6 +38,9 @@ public final class McpClient implements AutoCloseable {
     private final Object stateLock = new Object();
     private volatile String sessionId;
     private volatile String negotiatedProtocol;
+    /** A server-created session that must be deleted even when initialize parsing fails. */
+    private volatile String cleanupSessionId;
+    private volatile String cleanupProtocol;
     private volatile boolean closed;
     private InitializationOperation initialization;
 
@@ -75,6 +78,9 @@ public final class McpClient implements AutoCloseable {
             if (closed) return failed(stateError("MCP client is closed"));
             if (sessionId != null) {
                 return failed(stateError("MCP client is already initialized"));
+            }
+            if (cleanupSessionId != null) {
+                return failed(stateError("MCP client must be closed after failed initialize"));
             }
             if (initialization != null) return initialization.future;
             operation = new InitializationOperation(
@@ -118,8 +124,8 @@ public final class McpClient implements AutoCloseable {
         synchronized (stateLock) {
             if (closed) return CompletableFuture.completedFuture(null);
             closed = true;
-            session = sessionId;
-            protocol = negotiatedProtocol;
+            session = sessionId != null ? sessionId : cleanupSessionId;
+            protocol = sessionId != null ? negotiatedProtocol : cleanupProtocol;
             activeInitialization = initialization;
         }
         if (activeInitialization != null) activeInitialization.cancel(true);
@@ -219,7 +225,8 @@ public final class McpClient implements AutoCloseable {
                 .POST(HttpRequest.BodyPublishers.ofString(request.toString(), java.nio.charset.StandardCharsets.UTF_8));
         if (session != null && !session.isBlank()) builder.header(SESSION_HEADER, session);
         addAuthorization(builder);
-        return mapCancellable(execute(builder.build()), response -> parseRpcResponse(response, session));
+        return mapCancellable(execute(builder.build()),
+                response -> parseRpcResponse(response, session, protocol));
     }
 
     private CompletableFuture<HttpResponse<String>> execute(HttpRequest request) {
@@ -240,8 +247,14 @@ public final class McpClient implements AutoCloseable {
         return result;
     }
 
-    private HttpEnvelope parseRpcResponse(HttpResponse<String> response, String requestedSession)
+    private HttpEnvelope parseRpcResponse(HttpResponse<String> response, String requestedSession,
+            String requestedProtocol)
             throws CompletionException {
+        String responseSession = response.headers().firstValue(SESSION_HEADER).orElse(requestedSession);
+        if (response.statusCode() >= 200 && response.statusCode() < 300
+                && requestedSession == null && responseSession != null && !responseSession.isBlank()) {
+            rememberCleanupSession(responseSession, requestedProtocol);
+        }
         String body = response.body() == null ? "" : response.body().trim();
         JsonObject object = parseObject(body);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -257,7 +270,6 @@ public final class McpClient implements AutoCloseable {
             throw new CompletionException(new McpClientException(McpClientException.Kind.MALFORMED_RESPONSE,
                     "MCP JSON-RPC response has no result", response.statusCode(), Integer.MIN_VALUE, null));
         }
-        String responseSession = response.headers().firstValue(SESSION_HEADER).orElse(requestedSession);
         return new HttpEnvelope(response.statusCode(), object.get("result"), responseSession);
     }
 
@@ -349,6 +361,16 @@ public final class McpClient implements AutoCloseable {
     private void forgetSession() {
         sessionId = null;
         negotiatedProtocol = null;
+        cleanupSessionId = null;
+        cleanupProtocol = null;
+    }
+
+    private void rememberCleanupSession(String session, String protocol) {
+        synchronized (stateLock) {
+            if (closed || sessionId != null) return;
+            cleanupSessionId = session;
+            cleanupProtocol = protocol;
+        }
     }
 
     private static List<String> protocolCandidates(List<String> preferences) {
@@ -523,6 +545,8 @@ public final class McpClient implements AutoCloseable {
                 terminal = true;
                 sessionId = envelope.sessionId();
                 negotiatedProtocol = result.protocolVersion();
+                cleanupSessionId = null;
+                cleanupProtocol = null;
                 activeRequest = null;
                 initialization = null;
             }
