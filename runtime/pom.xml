@@ -29,6 +29,7 @@
 
     <modules>
         <module>codepilot-runtime-kernel</module>
+        <module>codepilot-runtime-config</module>
         <module>codepilot-runtime-provider</module>
         <module>codepilot-runtime-mcp-client</module>
         <module>codepilot-runtime-agent</module>

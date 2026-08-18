@@ -4,6 +4,7 @@ The `runtime` reactor contains plain-Java 17 modules that can be used by a CLI
 or another non-Eclipse host:
 
 - `codepilot-runtime-kernel` — host service-provider interfaces;
+- `codepilot-runtime-config` — secure, typed provider/MCP/agent configuration;
 - `codepilot-runtime-provider` — OpenAI-compatible HTTP transport;
 - `codepilot-runtime-mcp-client` — Streamable HTTP MCP client;
 - `codepilot-runtime-agent` — provider-neutral bounded agent/tool loop and
