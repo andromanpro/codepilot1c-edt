@@ -101,6 +101,15 @@ public class RuntimeConfigurationLoaderTest {
     }
 
     @Test
+    public void rejectsOversizedSecretBeforeReadingIt() throws Exception {
+        Path secret = Files.createTempFile("runtime-secret-", ".txt"); //$NON-NLS-1$ //$NON-NLS-2$
+        Files.writeString(secret, "x".repeat(8 * 1024 + 1), StandardCharsets.UTF_8); //$NON-NLS-1$
+        Path config = config("provider.apiKeyFile=" + secret + "\n"); //$NON-NLS-1$ //$NON-NLS-2$
+        expect(ConfigurationErrorCode.SECRET_TOO_LARGE, RuntimeSetting.PROVIDER_API_KEY_FILE.key(),
+                () -> RuntimeConfigurationLoader.builder().configFile(config).load());
+    }
+
+    @Test
     public void rejectsSymlinkedConfigAndSecretFilesWhenSupported() throws Exception {
         Path target = config("provider.model=target-model\n"); //$NON-NLS-1$
         Path link = target.resolveSibling(target.getFileName() + ".link"); //$NON-NLS-1$
@@ -158,6 +167,9 @@ public class RuntimeConfigurationLoaderTest {
         expect(ConfigurationErrorCode.INVALID_VALUE, "config", //$NON-NLS-1$
                 () -> RuntimeConfigurationLoader.builder().configFile(empty)
                         .systemProperties(Map.of("codepilot.provider.Token", "not-allowed")).load()); //$NON-NLS-1$ //$NON-NLS-2$
+        Path disguisedSecret = config("openai.apiKey=raw-secret-value\n"); //$NON-NLS-1$
+        expect(ConfigurationErrorCode.INVALID_CONFIG_FILE, "config", //$NON-NLS-1$
+                () -> RuntimeConfigurationLoader.builder().configFile(disguisedSecret).load());
 
         Path secret = Files.createTempFile("runtime-secret-", ".txt"); //$NON-NLS-1$ //$NON-NLS-2$
         Files.writeString(secret, "snapshot-secret", StandardCharsets.UTF_8); //$NON-NLS-1$
@@ -220,6 +232,8 @@ public class RuntimeConfigurationLoaderTest {
             assertEquals(code, exception.code());
             assertEquals(setting, exception.setting());
             assertFalse("error must not include a secret", exception.getMessage().contains("super-secret-value")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertFalse("error must not include a secret", exception.getMessage().contains("not-allowed")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertFalse("error must not include a secret", exception.getMessage().contains("raw-secret-value")); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
 
