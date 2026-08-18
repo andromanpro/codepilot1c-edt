@@ -165,6 +165,36 @@ Plain HTTP is accepted automatically only for loopback endpoints. Use
 `--allow-insecure-http` only for a trusted non-loopback HTTP endpoint; HTTPS
 needs no override.
 
+## Connected shell LLM broker
+
+The shell module contains a provider-neutral client for the authenticated EDT
+LLM broker at `/llm/v1/capabilities` and `/llm/v1/chat`. This slice supplies
+the transport and `StreamingAgentModel` adapter only; shell/controller mode
+selection and root-command wiring are separate work.
+
+`BrokerClient` is constructed with the MCP endpoint and bearer token already
+selected by the MCP connection path. It deliberately defines no additional
+property, environment, instance, or token-file precedence. It applies the same
+`McpClientConfig` endpoint safety checks, derives the two broker paths from the
+validated MCP origin, and sends the same bearer credential. Its private token
+copy is wiped on close.
+
+The client implements schema version 1 without exposing provider credentials:
+the capability probe returns only `BrokerInfo`'s allowlisted provider fields,
+and the chat adapter sends provider-neutral messages/tools without a client-side
+model override. It consumes `delta`, `reasoning`, `tool_calls`, `usage`, `done`,
+and `error` SSE events through the runtime-provider framing parser. SSE comments
+and keepalives are ignored. Text/reasoning fragments are forwarded in order;
+visible text and complete tool calls form the final agent `Assistant`.
+
+HTTP 401/403 remain typed authentication failures, 409 identifies a retriable
+single-flight busy response, and 503 instructs the caller to configure an
+active provider in EDT. Schema/protocol failures and incomplete streams are
+typed separately from transport failures. Response bodies, request bodies,
+bearer values, and server diagnostics are never placed in exception messages.
+Cancelling a completion cancels its own root HTTP request and closes its owned
+response stream; closing the client cancels all of its remaining streams.
+
 ## Agent run
 
 `agent run` is a one-shot host over the standalone `runtime-provider`,

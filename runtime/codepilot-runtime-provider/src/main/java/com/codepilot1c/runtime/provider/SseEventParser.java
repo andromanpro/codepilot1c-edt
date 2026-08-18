@@ -11,9 +11,9 @@ import java.util.Objects;
 import java.util.function.Consumer;
 
 /** Incremental, dependency-free SSE line and frame parser. */
-final class SseEventParser {
+public final class SseEventParser {
 
-    record Event(String type, String data) {
+    public record Event(String type, String data) {
     }
 
     private final Consumer<Event> consumer;
@@ -23,11 +23,11 @@ final class SseEventParser {
     private boolean hasData;
     private boolean pendingCarriageReturn;
 
-    SseEventParser(Consumer<Event> consumer) {
+    public SseEventParser(Consumer<Event> consumer) {
         this.consumer = Objects.requireNonNull(consumer, "consumer"); //$NON-NLS-1$
     }
 
-    void accept(char[] characters, int offset, int length) {
+    public void accept(char[] characters, int offset, int length) {
         Objects.checkFromIndexSize(offset, length, characters.length);
         int end = offset + length;
         for (int index = offset; index < end; index++) {
@@ -44,7 +44,7 @@ final class SseEventParser {
     }
 
     /** Dispatches a final unterminated line/frame when the response reaches EOF. */
-    void finish() {
+    public void finish() {
         if (pendingCarriageReturn) {
             pendingCarriageReturn = false;
             endLine();

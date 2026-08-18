@@ -18,6 +18,8 @@ The public boundary consists of:
 - `ProviderStreamListener` and `ProviderStreamEvent` — ordered text,
   reasoning, completed tool-call, usage, done, and error events without an
   agent/core dependency.
+- `SseEventParser` — the shared incremental SSE framing parser for other
+  standalone transports already carrying this module.
 
 The provider also accepts a Gson `JsonObject` through `completeRaw(...)` for
 the standalone agent wire adapter. This remains a body-only boundary: endpoint,
