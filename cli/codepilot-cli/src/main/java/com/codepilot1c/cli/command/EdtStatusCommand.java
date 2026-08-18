@@ -30,7 +30,7 @@ final class EdtStatusCommand implements Callable<Integer> {
             CommandOutput.print(root,
                     (probe.reachable() ? "ready" : "unavailable") + ": " + endpoint + " (" + probe.detail() + ")",
                     result);
-            return probe.reachable() ? ExitCodes.OK : ExitCodes.UNAVAILABLE;
+            return probe.reachable() ? ExitCodes.OK : ExitCodes.EDT_UNAVAILABLE;
         } catch (Exception exception) {
             result.put("endpoint", "<invalid>");
             result.put("status", "invalid_configuration");

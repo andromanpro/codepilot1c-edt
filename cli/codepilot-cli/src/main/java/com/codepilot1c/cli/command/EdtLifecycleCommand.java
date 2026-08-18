@@ -23,6 +23,6 @@ final class EdtLifecycleCommand implements Callable<Integer> {
         result.put("message", "EDT process supervision is not implemented in this build.");
         CommandOutput.print(root,
                 "error[supervisor_unavailable]: EDT process supervision is not implemented in this build.", result);
-        return ExitCodes.NOT_IMPLEMENTED;
+        return ExitCodes.EDT_UNAVAILABLE;
     }
 }

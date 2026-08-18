@@ -41,5 +41,5 @@ Exit codes:
 | 0 | Success |
 | 1 | Internal command failure |
 | 2 | Invalid arguments or configuration |
-| 3 | Required service or prerequisite unavailable |
-| 4 | Recognized capability not implemented |
+| 3 | Authentication failure (reserved for provider commands) |
+| 4 | EDT unavailable, not ready, or unable to perform the operation |

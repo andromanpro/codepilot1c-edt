@@ -12,6 +12,14 @@ import com.codepilot1c.cli.EndpointProbe.ProbeResult;
 import com.codepilot1c.cli.discovery.EdtInstallationDiscovery;
 
 public class CodePilotCliTest {
+    @Test public void exitCodeContractIsStable() {
+        assertEquals(0, ExitCodes.OK);
+        assertEquals(1, ExitCodes.FAILURE);
+        assertEquals(2, ExitCodes.USAGE);
+        assertEquals(3, ExitCodes.AUTH);
+        assertEquals(4, ExitCodes.EDT_UNAVAILABLE);
+    }
+
     @Test public void parsesVersionInTextAndJson() {
         Fixture fixture = new Fixture();
         assertEquals(ExitCodes.OK, fixture.execute("version"));
@@ -28,7 +36,7 @@ public class CodePilotCliTest {
         assertTrue(fixture.err().startsWith("error[usage]:"));
 
         fixture.reset();
-        assertEquals(ExitCodes.NOT_IMPLEMENTED, fixture.execute("--output", "json", "edt", "start"));
+        assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("--output", "json", "edt", "start"));
         assertEquals("{\"command\":\"edt start\",\"status\":\"not_implemented\","
                 + "\"error\":\"supervisor_unavailable\","
                 + "\"message\":\"EDT process supervision is not implemented in this build.\"}\n", fixture.out());
@@ -61,7 +69,7 @@ public class CodePilotCliTest {
         fixture.host.java = "11.0.24";
         fixture.probe = endpoint -> new ProbeResult(false, 0, "ConnectException");
 
-        assertEquals(ExitCodes.UNAVAILABLE, fixture.execute("doctor"));
+        assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("doctor"));
         assertTrue(fixture.out().contains("java FAIL java_too_old"));
         assertTrue(fixture.out().contains("edt FAIL edt_not_found"));
         assertTrue(fixture.out().contains("endpoint FAIL endpoint_unavailable"));
@@ -70,7 +78,7 @@ public class CodePilotCliTest {
     @Test public void statusDoesNotClaimRunningWhenEndpointIsDown() {
         Fixture fixture = new Fixture();
         fixture.probe = endpoint -> new ProbeResult(false, 503, "HTTP 503");
-        assertEquals(ExitCodes.UNAVAILABLE, fixture.execute("edt", "status"));
+        assertEquals(ExitCodes.EDT_UNAVAILABLE, fixture.execute("edt", "status"));
         assertTrue(fixture.out().startsWith("unavailable:"));
     }
 

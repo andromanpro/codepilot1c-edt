@@ -6,7 +6,9 @@ public final class ExitCodes {
     public static final int OK = 0;
     public static final int FAILURE = 1;
     public static final int USAGE = 2;
-    public static final int UNAVAILABLE = 3;
-    public static final int NOT_IMPLEMENTED = 4;
+    /** Reserved for missing or rejected provider credentials. */
+    public static final int AUTH = 3;
+    /** EDT is absent, not ready, or cannot perform the requested operation. */
+    public static final int EDT_UNAVAILABLE = 4;
     private ExitCodes() { }
 }

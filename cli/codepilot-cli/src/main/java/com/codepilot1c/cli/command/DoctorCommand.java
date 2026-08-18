@@ -34,7 +34,7 @@ final class DoctorCommand implements Callable<Integer> {
         String text = checks.stream().map(Check::text)
                 .reduce((left, right) -> left + System.lineSeparator() + right).orElse("");
         CommandOutput.print(root, text, result);
-        return healthy ? ExitCodes.OK : ExitCodes.UNAVAILABLE;
+        return healthy ? ExitCodes.OK : ExitCodes.EDT_UNAVAILABLE;
     }
 
     private Check javaCheck() {
