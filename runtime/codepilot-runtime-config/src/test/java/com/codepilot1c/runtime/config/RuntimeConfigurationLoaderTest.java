@@ -63,9 +63,9 @@ public class RuntimeConfigurationLoaderTest {
     @Test
     public void portablePathsKeepPlatformConventions() {
         assertEquals("/xdg/codepilot/runtime.properties", //$NON-NLS-1$
-                PortableConfigPath.resolve("Linux", Map.of("XDG_CONFIG_HOME", "/xdg"), "/home/a").toString()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        assertEquals("/home/a/Library/Application Support/CodePilot/runtime.properties", //$NON-NLS-1$
-                PortableConfigPath.resolve("Mac OS X", Map.of(), "/home/a").toString()); //$NON-NLS-1$ //$NON-NLS-2$
+                PortableConfigPath.resolve("Linux", Map.of("XDG_CONFIG_HOME", "/xdg"), "/project/user").toString()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("/project/user/Library/Application Support/CodePilot/runtime.properties", //$NON-NLS-1$
+                PortableConfigPath.resolve("Mac OS X", Map.of(), "/project/user").toString()); //$NON-NLS-1$ //$NON-NLS-2$
         String windows = PortableConfigPath.resolve("Windows 11", Map.of("APPDATA", "C:\\Users\\a\\AppData\\Roaming"), "C:\\Users\\a").toString(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertTrue(windows.contains("\\CodePilot\\runtime.properties")); //$NON-NLS-1$
         assertFalse(windows.contains("/CodePilot/runtime.properties")); //$NON-NLS-1$
