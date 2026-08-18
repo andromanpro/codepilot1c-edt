@@ -268,6 +268,43 @@ public class AgentRuntimeTest {
     }
 
     @Test
+    public void externalFutureCompletionMutationCannotDetachActiveRun() throws Exception {
+        CompletableFuture<AgentMessage.Assistant> inFlight = new CompletableFuture<>();
+        AgentRuntime runtime = runtime((request, cancellation) -> inFlight,
+                emptyTools(), 2, Duration.ofSeconds(5));
+        CompletableFuture<AgentResult> running = runtime.run(request("owned future")); //$NON-NLS-1$
+        AgentResult fake = new AgentResult(AgentResult.Status.COMPLETED, Optional.of("fake"), //$NON-NLS-1$
+                request("fake").messages(), 0, Optional.empty()); //$NON-NLS-1$
+        AtomicInteger suppliers = new AtomicInteger();
+
+        assertFalse(running.complete(fake));
+        assertFalse(running.completeExceptionally(new IllegalStateException("fake"))); //$NON-NLS-1$
+        assertUnsupported(() -> running.obtrudeValue(fake));
+        assertUnsupported(() -> running.obtrudeException(new IllegalStateException("fake"))); //$NON-NLS-1$
+        assertUnsupported(() -> running.completeAsync(() -> {
+            suppliers.incrementAndGet();
+            return fake;
+        }));
+        assertUnsupported(() -> running.completeAsync(() -> {
+            suppliers.incrementAndGet();
+            return fake;
+        }, Runnable::run));
+        assertUnsupported(() -> running.orTimeout(1, TimeUnit.MILLISECONDS));
+        assertUnsupported(() -> running.completeOnTimeout(fake, 1, TimeUnit.MILLISECONDS));
+
+        assertEquals(0, suppliers.get());
+        assertFalse(running.isDone());
+        assertEquals(1, runtime.activeRunCount());
+
+        runtime.close();
+        AgentResult result = running.get(2, TimeUnit.SECONDS);
+        assertEquals(AgentResult.Status.CANCELLED, result.status());
+        assertEquals(AgentError.Code.CLOSED, result.error().orElseThrow().code());
+        assertTrue(inFlight.isCancelled());
+        assertEquals(0, runtime.activeRunCount());
+    }
+
+    @Test
     public void runAfterCloseReturnsTypedClosedResult() throws Exception {
         AgentRuntime runtime = runtime((request, cancellation) ->
                 CompletableFuture.completedFuture(AgentMessage.Assistant.text("unused")), //$NON-NLS-1$
@@ -402,6 +439,15 @@ public class AgentRuntimeTest {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new AssertionError(interrupted);
+        }
+    }
+
+    private static void assertUnsupported(Runnable mutation) {
+        try {
+            mutation.run();
+            throw new AssertionError("Expected external completion mutation to be rejected"); //$NON-NLS-1$
+        } catch (UnsupportedOperationException expected) {
+            assertTrue(expected.getMessage().contains("AgentRuntime")); //$NON-NLS-1$
         }
     }
 

@@ -18,6 +18,11 @@ tool request. Cancelling the `CompletableFuture` returned by `run(...)` also
 cancels that run's current work. Tool-call IDs are unique for the entire run,
 not only within one assistant response.
 
+The returned `CompletableFuture` is a runtime-owned observation handle.
+Callers may compose dependent stages or call `cancel(...)`, but cannot replace
+the terminal value with `complete*`, `obtrude*`, or timeout-mutation methods.
+This keeps lifecycle cleanup coupled to the actual run terminal state.
+
 The module contains two boundary adapters:
 
 - `OpenAiCompatibleAgentModel` maps neutral messages and JSON schemas to the

@@ -21,6 +21,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import com.codepilot1c.runtime.spi.LogSink;
 import com.codepilot1c.runtime.spi.LogSink.Event;
@@ -68,16 +69,25 @@ public final class AgentRuntime implements AutoCloseable {
         this(model, tools, config, null);
     }
 
+    /**
+     * Starts a run and returns a runtime-owned completion handle.
+     * External completion/timeout mutation is rejected; {@link CompletableFuture#cancel(boolean)}
+     * remains supported and propagates into the active provider or tool request.
+     */
     public CompletableFuture<AgentResult> run(AgentRequest request) {
         return run(request, CancellationToken.none());
     }
 
+    /**
+     * Starts a run with host cancellation and returns a runtime-owned completion handle.
+     * External completion/timeout mutation is rejected; cancellation remains supported.
+     */
     public CompletableFuture<AgentResult> run(AgentRequest request, CancellationToken cancellation) {
         Objects.requireNonNull(request, "request"); //$NON-NLS-1$
         Objects.requireNonNull(cancellation, "cancellation"); //$NON-NLS-1$
         RunContext context;
         synchronized (lifecycleLock) {
-            if (closed) return CompletableFuture.completedFuture(closedResult(request));
+            if (closed) return completedHandle(closedResult(request));
             context = new RunContext(request, cancellation);
             activeRuns.add(context);
             context.arm();
@@ -364,7 +374,7 @@ public final class AgentRuntime implements AutoCloseable {
                     completedSteps, Optional.ofNullable(error));
             try {
                 cleanupAndRemove();
-                result.complete(terminalResult);
+                result.completeInternal(terminalResult);
             } finally {
                 terminalOwner.set(null);
                 terminalPublished.countDown();
@@ -435,6 +445,12 @@ public final class AgentRuntime implements AutoCloseable {
                 Optional.of(new AgentError(AgentError.Code.CLOSED, "Agent runtime is closed"))); //$NON-NLS-1$
     }
 
+    private CompletableFuture<AgentResult> completedHandle(AgentResult value) {
+        RunFuture future = new RunFuture();
+        future.completeInternal(value);
+        return future;
+    }
+
     private static final class RunFuture extends CompletableFuture<AgentResult> {
         private volatile java.util.function.Predicate<Boolean> cancelAction = ignored -> false;
 
@@ -447,8 +463,60 @@ public final class AgentRuntime implements AutoCloseable {
             return cancelAction.test(mayInterruptIfRunning);
         }
 
+        @Override
+        public boolean complete(AgentResult value) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable failure) {
+            return false;
+        }
+
+        @Override
+        public void obtrudeValue(AgentResult value) {
+            throw externalMutation();
+        }
+
+        @Override
+        public void obtrudeException(Throwable failure) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<AgentResult> completeAsync(
+                Supplier<? extends AgentResult> supplier) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<AgentResult> completeAsync(
+                Supplier<? extends AgentResult> supplier, java.util.concurrent.Executor executor) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<AgentResult> orTimeout(long timeout, TimeUnit unit) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<AgentResult> completeOnTimeout(
+                AgentResult value, long timeout, TimeUnit unit) {
+            throw externalMutation();
+        }
+
         boolean cancelDirect(boolean mayInterruptIfRunning) {
             return super.cancel(mayInterruptIfRunning);
+        }
+
+        boolean completeInternal(AgentResult value) {
+            return super.complete(value);
+        }
+
+        private UnsupportedOperationException externalMutation() {
+            return new UnsupportedOperationException(
+                    "Agent run completion is owned by AgentRuntime; use cancel() to stop it"); //$NON-NLS-1$
         }
     }
 
