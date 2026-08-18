@@ -7,6 +7,8 @@
  */
 package com.codepilot1c.ui.preferences;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletionException;
 
 import org.eclipse.jface.dialogs.MessageDialog;
@@ -184,27 +186,25 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
     private boolean ensureActiveCodexProvider(String model, String reasoningEffort) {
         String effectiveModel = model != null && !model.isBlank() ? model : CodexOAuthConstants.DEFAULT_MODEL;
         LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
-        LlmProviderConfig codex = store.getProviders().stream()
-            .filter(config -> config.getType() == ProviderType.OPENAI_CODEX)
-            .findFirst()
-            .orElse(null);
+        List<LlmProviderConfig> candidateProviders = new ArrayList<>();
+        LlmProviderConfig codex = null;
+        for (LlmProviderConfig stored : store.getProviders()) {
+            LlmProviderConfig candidate = stored.copy();
+            candidateProviders.add(candidate);
+            if (codex == null && candidate.getType() == ProviderType.OPENAI_CODEX) {
+                codex = candidate;
+            }
+        }
         if (codex == null) {
             codex = new LlmProviderConfig(null, "OpenAI Codex (ChatGPT)", ProviderType.OPENAI_CODEX, //$NON-NLS-1$
                 CodexOAuthConstants.CODEX_BASE_URL, "", effectiveModel, 4096); //$NON-NLS-1$
             codex.setStreamingEnabled(true);
-            codex.setReasoningEffort(reasoningEffort);
-            if (!store.addProvider(codex)) {
-                return false;
-            }
-        } else {
-            codex.setBaseUrl(CodexOAuthConstants.CODEX_BASE_URL);
-            codex.setModel(effectiveModel);
-            codex.setReasoningEffort(reasoningEffort);
-            if (!store.updateProvider(codex)) {
-                return false;
-            }
+            candidateProviders.add(codex);
         }
-        return store.setActiveProviderId(codex.getId());
+        codex.setBaseUrl(CodexOAuthConstants.CODEX_BASE_URL);
+        codex.setModel(effectiveModel);
+        codex.setReasoningEffort(reasoningEffort);
+        return store.saveProviders(candidateProviders, codex.getId());
     }
 
     private void refreshStatus() {
@@ -260,8 +260,14 @@ public class CodexAccountPreferencePage extends PreferencePage implements IWorkb
     @Override
     public boolean performOk() {
         if (codexOAuthService.isLoggedIn()) {
-            ensureActiveCodexProvider(modelCombo.getText().trim(), reasoningEffortCombo.getText());
+            boolean saved = ensureActiveCodexProvider(
+                    modelCombo.getText().trim(), reasoningEffortCombo.getText());
+            if (!saved) {
+                setErrorMessage(Messages.ProvidersPreferencePage_SaveError);
+                return false;
+            }
         }
+        setErrorMessage(null);
         return super.performOk();
     }
 

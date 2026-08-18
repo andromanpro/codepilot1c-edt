@@ -317,10 +317,14 @@ public class AccountPreferencePage extends PreferencePage implements IWorkbenchP
             BackendService.getInstance().clearCredentials();
             VibeCorePlugin.clearBackendLlmProvider();
             ILlmProvider fallbackProvider = LlmProviderRegistry.getInstance().getActiveProvider();
+            boolean fallbackSelected = true;
             if (fallbackProvider != null && fallbackProvider.isConfigured()) {
-                LlmProviderRegistry.getInstance().setActiveProvider(fallbackProvider.getId());
+                fallbackSelected = LlmProviderRegistry.getInstance().setActiveProvider(fallbackProvider.getId());
             }
             showNotConfiguredMode();
+            if (!fallbackSelected) {
+                setErrorMessage(Messages.ProvidersPreferencePage_SaveError);
+            }
         }
     }
 

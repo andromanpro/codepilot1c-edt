@@ -50,15 +50,31 @@ public class ProvidersPreferencePagePersistenceContractTest {
     }
 
     @Test
-    public void codexProviderMutationAlsoChecksPersistenceOutcome() throws Exception {
+    public void codexPerformOkStaysOpenAndShowsFixedErrorWhenSaveAborts() throws Exception {
+        String source = readRepoFile(
+                "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/preferences/CodexAccountPreferencePage.java"); //$NON-NLS-1$
+        String performOk = extractMethod(source, "public boolean performOk()"); //$NON-NLS-1$
+
+        assertTrue(performOk.contains("boolean saved = ensureActiveCodexProvider(")); //$NON-NLS-1$
+        assertTrue(performOk.contains("if (!saved)")); //$NON-NLS-1$
+        assertTrue(performOk.contains("setErrorMessage(Messages.ProvidersPreferencePage_SaveError);")); //$NON-NLS-1$
+        assertTrue(performOk.contains("return false;")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void codexProviderUsesCopiedCandidatesAndOneCombinedSave() throws Exception {
         String source = readRepoFile(
                 "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/preferences/CodexAccountPreferencePage.java"); //$NON-NLS-1$
         String ensureActive = extractMethod(source,
                 "private boolean ensureActiveCodexProvider(String model, String reasoningEffort)"); //$NON-NLS-1$
 
-        assertTrue(ensureActive.contains("if (!store.addProvider(codex))")); //$NON-NLS-1$
-        assertTrue(ensureActive.contains("if (!store.updateProvider(codex))")); //$NON-NLS-1$
-        assertTrue(ensureActive.contains("return store.setActiveProviderId(codex.getId());")); //$NON-NLS-1$
+        assertTrue(ensureActive.contains("LlmProviderConfig candidate = stored.copy();")); //$NON-NLS-1$
+        assertTrue(ensureActive.contains("candidateProviders.add(candidate);")); //$NON-NLS-1$
+        assertTrue(ensureActive.contains("return store.saveProviders(candidateProviders, codex.getId());")); //$NON-NLS-1$
+        assertTrue(countOccurrences(ensureActive, "store.saveProviders(") == 1); //$NON-NLS-1$
+        assertFalse(ensureActive.contains("store.addProvider(")); //$NON-NLS-1$
+        assertFalse(ensureActive.contains("store.updateProvider(")); //$NON-NLS-1$
+        assertFalse(ensureActive.contains("store.setActiveProviderId(")); //$NON-NLS-1$
     }
 
     private static String readRepoFile(String relativePath) throws Exception {
@@ -84,6 +100,16 @@ public class ProvidersPreferencePagePersistenceContractTest {
             }
         }
         throw new AssertionError("Method end not found: " + signature); //$NON-NLS-1$
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private static Path repoRoot() {
