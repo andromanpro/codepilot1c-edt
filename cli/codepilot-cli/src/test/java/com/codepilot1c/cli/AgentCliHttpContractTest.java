@@ -33,7 +33,7 @@ import com.sun.net.httpserver.HttpServer;
 
 /** End-to-end CLI agent contract across independent provider and MCP HTTP servers. */
 public class AgentCliHttpContractTest {
-    private enum ProviderMode { TOOL_THEN_TEXT, FINAL_TEXT, AUTH, MALFORMED, SLOW, ALWAYS_TOOL }
+    private enum ProviderMode { TOOL_THEN_TEXT, FINAL_TEXT, ECHO_AUTH_TEXT, AUTH, MALFORMED, SLOW, ALWAYS_TOOL }
     private enum McpMode { NORMAL, AUTH }
 
     private HttpServer providerServer;
@@ -81,7 +81,7 @@ public class AgentCliHttpContractTest {
                 "--mcp-bearer-token-file", fixture.mcpTokenFile().toString());
 
         assertEquals(ExitCodes.OK, exit);
-        assertEquals("{\"command\":\"agent run\",\"status\":\"completed\",\"terminalReason\":\"completed\",\"steps\":2,\"text\":\"tool-finished\"}\n",
+        assertEquals("{\"command\":\"agent run\",\"status\":\"completed\",\"terminalReason\":\"completed\",\"steps\":2,\"text\":\"prefix-<redacted>-mid-<redacted>-suffix password=hunter2\"}\n",
                 fixture.out());
         assertEquals(2, providerCalls.get());
         assertEquals(1, toolCalls.get());
@@ -90,6 +90,7 @@ public class AgentCliHttpContractTest {
         assertEquals("Bearer mcp-secret", mcpAuthorization.get());
         assertFalse(fixture.out().contains("provider-secret"));
         assertFalse(fixture.out().contains("mcp-secret"));
+        assertTrue(fixture.out().contains("password=hunter2"));
     }
 
     @Test public void explicitProviderFlagsOverridePropertyAndEnvironment() {
@@ -116,6 +117,16 @@ public class AgentCliHttpContractTest {
         assertEquals(ExitCodes.OK, fixture.execute("agent", "run", "--prompt", "hello", "--no-tools"));
         assertEquals("Bearer property-secret", providerAuthorization.get());
         assertEquals("property-model", providerModel.get());
+    }
+
+    @Test public void textOutputRedactsEmbeddedConfiguredProviderSecretOnly() {
+        providerMode = ProviderMode.ECHO_AUTH_TEXT;
+        Fixture fixture = configured("");
+        assertEquals(ExitCodes.OK, fixture.execute("agent", "run", "--prompt", "hello", "--no-tools",
+                "--provider-endpoint", providerEndpoint, "--model", "test-model",
+                "--provider-api-key-file", fixture.providerTokenFile().toString()));
+        assertEquals("status=completed reason=completed steps=1\nbefore <redacted> after password=hunter2\n",
+                fixture.out());
     }
 
     @Test public void providerAndMcpAuthenticationFailuresUseExitThree() {
@@ -267,6 +278,9 @@ public class AgentCliHttpContractTest {
             sendIgnoringDisconnect(exchange, 200, assistantText("late"));
         }
         case FINAL_TEXT -> send(exchange, 200, assistantText("final"));
+        case ECHO_AUTH_TEXT -> send(exchange, 200, assistantText("before "
+                + providerAuthorization.get().substring("Bearer ".length())
+                + " after password=hunter2"));
         case ALWAYS_TOOL -> send(exchange, 200, assistantTool("call-" + call));
         case TOOL_THEN_TEXT -> {
             if (call == 1) {
@@ -276,7 +290,8 @@ public class AgentCliHttpContractTest {
                 String serialized = request.toString();
                 assertTrue(serialized.contains("tool_call_id"));
                 assertTrue(serialized.contains("Tool completed"));
-                send(exchange, 200, assistantText("tool-finished"));
+                send(exchange, 200, assistantText(
+                        "prefix-provider-secret-mid-mcp-secret-suffix password=hunter2"));
             }
         }
         }

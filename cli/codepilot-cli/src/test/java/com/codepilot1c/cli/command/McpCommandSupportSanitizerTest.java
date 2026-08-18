@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 package com.codepilot1c.cli.command;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -64,12 +63,9 @@ public class McpCommandSupportSanitizerTest {
         assertFalse(McpCommandSupport.isSensitiveCredentialKey("publicKey"));
         assertFalse(McpCommandSupport.isSensitiveCredentialKey("tokenCount"));
         assertFalse(McpCommandSupport.isSensitiveCredentialKey("monkey"));
-        assertEquals("Bearer docs example", McpCommandSupport.safeText("Bearer docs example"));
-    }
-
-    @Test public void redactsOnlyACompletePlausibleBearerAuthorizationValue() {
-        assertEquals("<redacted>", McpCommandSupport.safeText("Bearer abc.def-_"));
-        assertEquals("<redacted>", McpCommandSupport.safeText("Authorization: Bearer abc.def-_"));
-        assertEquals("See Bearer docs example", McpCommandSupport.safeText("See Bearer docs example"));
+        JsonObject value = new JsonObject();
+        value.addProperty("note", "Bearer docs example password=hunter2");
+        assertTrue(JsonWriter.write(McpCommandSupport.jsonValue(value))
+                .contains("Bearer docs example password=hunter2"));
     }
 }

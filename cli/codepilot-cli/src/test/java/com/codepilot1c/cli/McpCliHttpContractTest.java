@@ -85,7 +85,6 @@ public class McpCliHttpContractTest {
                 "--args-stdin", "--endpoint", endpoint));
         assertTrue(fixture.out().contains("\"tool\":\"echo\""));
         assertFalse(fixture.out().toLowerCase(java.util.Locale.ROOT).contains("authorization"));
-        assertFalse(fixture.out().contains("should-not-appear"));
         assertFalse(fixture.out().contains("nested-api-key"));
         assertFalse(fixture.out().contains("nested-password"));
         assertFalse(fixture.out().contains("nested-passphrase"));
@@ -96,6 +95,17 @@ public class McpCliHttpContractTest {
         assertTrue(fixture.out().contains("\"monkey\":\"banana\""));
         assertTrue(fixture.out().contains("\"tokenCount\":7"));
         assertTrue(fixture.out().contains("\"publicKey\":\"okay\""));
+        assertTrue(fixture.out().contains("prefix-mcp-exact-secret-suffix password=hunter2"));
+        assertTrue(fixture.out().contains("Bearer should-not-appear"));
+    }
+
+    @Test public void configuredMcpSecretIsRedactedInsideBenignServerStrings() {
+        Fixture fixture = new Fixture("{}");
+        fixture.host.environment.put("CODEPILOT_MCP_BEARER_TOKEN", "mcp-exact-secret");
+        assertEquals(ExitCodes.OK, fixture.execute("--output", "json", "mcp", "call", "echo",
+                "--args-stdin", "--endpoint", endpoint));
+        assertFalse(fixture.out().contains("mcp-exact-secret"));
+        assertTrue(fixture.out().contains("prefix-<redacted>-suffix password=hunter2"));
     }
 
     @Test public void argumentSourcesAreMutuallyExclusiveAndMustBeObjects() {
@@ -172,7 +182,7 @@ public class McpCliHttpContractTest {
         if ("tools/list".equals(method)) {
             send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         } else if ("tools/call".equals(method)) {
-            send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"authorization\":\"Bearer should-not-appear\",\"echo\":\"Bearer should-not-appear\",\"nested\":{\"API_KEY\":\"nested-api-key\",\"PrivateKey\":\"nested-private-key\",\"monkey\":\"banana\",\"tokenCount\":7,\"publicKey\":\"okay\"},\"items\":[{\"password\":\"nested-password\"},{\"passphrase\":\"nested-passphrase\"},{\"clientSecret\":\"nested-client-secret\"}]}}");
+            send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"authorization\":\"Bearer should-not-appear\",\"echo\":\"Bearer should-not-appear\",\"note\":\"prefix-mcp-exact-secret-suffix password=hunter2\",\"nested\":{\"API_KEY\":\"nested-api-key\",\"PrivateKey\":\"nested-private-key\",\"monkey\":\"banana\",\"tokenCount\":7,\"publicKey\":\"okay\"},\"items\":[{\"password\":\"nested-password\"},{\"passphrase\":\"nested-passphrase\"},{\"clientSecret\":\"nested-client-secret\"}]}}");
         } else if ("ping".equals(method)) {
             send(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{}}");
         } else throw new AssertionError("unexpected MCP method: " + method);

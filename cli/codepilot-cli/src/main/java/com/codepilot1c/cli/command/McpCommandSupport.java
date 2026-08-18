@@ -5,9 +5,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,15 +39,13 @@ final class McpCommandSupport {
             "authorization", "credential", "credentials", "bearer", "bearertoken",
             "consumersecret", "clientsecret", "apisecret", "secretkey", "privatekey", "apikey",
             "password", "passphrase", "token", "authtoken", "accesstoken", "refreshtoken", "idtoken");
-    /** Complete header value only; prose mentioning Bearer must remain observable tool output. */
-    private static final Pattern BEARER_AUTHORIZATION_VALUE = Pattern.compile(
-            "(?i)^\\s*(?:authorization\\s*:\\s*)?bearer\\s+[A-Za-z0-9._~+/=-]{8,}\\s*$");
-
     private McpCommandSupport() { }
 
     static int health(RootCommand root, McpCommand options) {
         String command = "mcp health";
-        try (Connection connection = connect(root, options)) {
+        Connection connection = null;
+        try {
+            connection = connect(root, options);
             var result = await(connection.client().healthReady());
             Map<String, Object> output = base(command, connection.endpoint());
             boolean authenticationFailed = result.statusCode() == 401 || result.statusCode() == 403;
@@ -59,27 +55,30 @@ final class McpCommandSupport {
             output.put("httpStatus", result.statusCode());
             if (result.body() != null) output.put("body", jsonValue(result.body()));
             CommandOutput.print(root, authenticationFailed ? "error[authentication_failed]"
-                    : result.ready() ? "ready" : "not ready", output);
+                    : result.ready() ? "ready" : "not ready", output, connection.redactor());
             if (authenticationFailed) return ExitCodes.AUTH;
             return result.ready() ? ExitCodes.OK : ExitCodes.EDT_UNAVAILABLE;
         } catch (McpUsageException exception) {
             return usage(root, command, exception.code());
         } catch (RuntimeException exception) {
-            return failure(root, command, endpointForError(root, options), exception);
+            return failure(root, command, endpointForError(root, options), exception,
+                    connection == null ? null : connection.redactor());
+        } finally {
+            if (connection != null) connection.close();
         }
     }
 
     static int initialize(RootCommand root, McpCommand options) {
-        return session(root, options, "mcp initialize", (client, initialized, endpoint) -> {
+        return session(root, options, "mcp initialize", (client, initialized, endpoint, redactor) -> {
             Map<String, Object> output = initialized(command("mcp initialize", endpoint), initialized);
             output.put("status", "initialized");
-            CommandOutput.print(root, "initialized: " + initialized.protocolVersion(), output);
+            CommandOutput.print(root, "initialized: " + initialized.protocolVersion(), output, redactor);
             return ExitCodes.OK;
         });
     }
 
     static int tools(RootCommand root, McpCommand options) {
-        return session(root, options, "mcp tools", (client, initialized, endpoint) -> {
+        return session(root, options, "mcp tools", (client, initialized, endpoint, redactor) -> {
             var result = await(client.listTools());
             Map<String, Object> output = initialized(command("mcp tools", endpoint), initialized);
             output.put("status", "ok");
@@ -88,57 +87,62 @@ final class McpCommandSupport {
             result.tools().forEach(tool -> {
                 Map<String, Object> value = new LinkedHashMap<>();
                 value.put("name", tool.name());
-                if (tool.description() != null) value.put("description", safeText(tool.description()));
+                if (tool.description() != null) value.put("description", tool.description());
                 if (tool.inputSchema() != null) value.put("inputSchema", jsonValue(tool.inputSchema()));
                 tools.add(value);
             });
             output.put("tools", tools);
-            CommandOutput.print(root, result.tools().size() + " tool(s)", output);
+            CommandOutput.print(root, result.tools().size() + " tool(s)", output, redactor);
             return ExitCodes.OK;
         });
     }
 
     static int call(RootCommand root, McpCommand options, String name, JsonObject arguments) {
-        return session(root, options, "mcp call", (client, initialized, endpoint) -> {
+        return session(root, options, "mcp call", (client, initialized, endpoint, redactor) -> {
             var result = await(client.callTool(name, arguments));
             Map<String, Object> output = initialized(command("mcp call", endpoint), initialized);
             output.put("status", result.isError() ? "tool_error" : "ok");
             output.put("tool", name);
             output.put("isError", result.isError());
             output.put("result", jsonValue(result.rawResult()));
-            CommandOutput.print(root, result.isError() ? "tool returned an error" : "ok", output);
+            CommandOutput.print(root, result.isError() ? "tool returned an error" : "ok", output, redactor);
             return result.isError() ? ExitCodes.FAILURE : ExitCodes.OK;
         });
     }
 
     static int ping(RootCommand root, McpCommand options) {
-        return session(root, options, "mcp ping", (client, initialized, endpoint) -> {
+        return session(root, options, "mcp ping", (client, initialized, endpoint, redactor) -> {
             await(client.ping());
             Map<String, Object> output = initialized(command("mcp ping", endpoint), initialized);
             output.put("status", "ok");
-            CommandOutput.print(root, "pong", output);
+            CommandOutput.print(root, "pong", output, redactor);
             return ExitCodes.OK;
         });
     }
 
     static int close(RootCommand root, McpCommand options) {
-        return session(root, options, "mcp close", (client, initialized, endpoint) -> {
+        return session(root, options, "mcp close", (client, initialized, endpoint, redactor) -> {
             await(client.closeAsync());
             Map<String, Object> output = initialized(command("mcp close", endpoint), initialized);
             output.put("status", "closed");
-            CommandOutput.print(root, "closed", output);
+            CommandOutput.print(root, "closed", output, redactor);
             return ExitCodes.OK;
         });
     }
 
     private static int session(RootCommand root, McpCommand options, String command, SessionAction action) {
-        try (Connection connection = connect(root, options)) {
+        Connection connection = null;
+        try {
+            connection = connect(root, options);
             InitializeResult initialized = await(connection.client().initialize());
-            return action.run(connection.client(), initialized, connection.endpoint());
+            return action.run(connection.client(), initialized, connection.endpoint(), connection.redactor());
         } catch (McpUsageException exception) {
             return usage(root, command, exception.code());
         } catch (RuntimeException exception) {
-            return failure(root, command, endpointForError(root, options), exception);
+            return failure(root, command, endpointForError(root, options), exception,
+                    connection == null ? null : connection.redactor());
+        } finally {
+            if (connection != null) connection.close();
         }
     }
 
@@ -181,18 +185,28 @@ final class McpCommandSupport {
     static Connection connect(RootCommand root, McpConnectionOptions options) {
         URI endpoint = resolveEndpoint(root, options);
         char[] token = readBearerToken(root, options);
+        ExactSecretRedactor redactor = null;
+        McpClientConfig config = null;
+        boolean success = false;
         try {
-            McpClientConfig config = McpClientConfig.builder(endpoint)
+            redactor = ExactSecretRedactor.of(token);
+            config = McpClientConfig.builder(endpoint)
                     .connectTimeout(Duration.ofSeconds(10))
                     .requestTimeout(Duration.ofSeconds(60))
                     .allowInsecureHttp(options.allowInsecureHttp())
                     .bearerToken(token)
                     .build();
-            return new Connection(endpoint, new McpClient(config));
+            Connection connection = new Connection(endpoint, new McpClient(config), redactor);
+            success = true;
+            return connection;
         } catch (IllegalArgumentException exception) {
             throw new McpUsageException("invalid_endpoint");
         } finally {
             if (token != null) java.util.Arrays.fill(token, '\0');
+            if (!success) {
+                if (config != null) config.close();
+                if (redactor != null) redactor.close();
+            }
         }
     }
 
@@ -242,51 +256,18 @@ final class McpCommandSupport {
     }
 
     private static char[] readBearerToken(RootCommand root, McpConnectionOptions options) {
-        String token;
         if (options.bearerTokenFile() != null) {
             try {
-                Path path = Path.of(options.bearerTokenFile());
-                token = readPrivateUtf8Secret(path, MAX_BEARER_FILE_BYTES,
-                        "bearer_token_file_unreadable");
-            } catch (McpUsageException exception) {
-                throw exception;
+                return PrivateUtf8SecretReader.read(Path.of(options.bearerTokenFile()),
+                        Math.toIntExact(MAX_BEARER_FILE_BYTES));
             } catch (RuntimeException exception) {
                 throw new McpUsageException("bearer_token_file_unreadable");
             }
-        } else {
-            token = first(root.services().host().systemProperty("codepilot.mcp.bearerToken"),
-                    root.services().host().environment("CODEPILOT_MCP_BEARER_TOKEN"));
         }
+        String token = first(root.services().host().systemProperty("codepilot.mcp.bearerToken"),
+                root.services().host().environment("CODEPILOT_MCP_BEARER_TOKEN"));
         if (token == null || token.isBlank()) return null;
         return token.toCharArray();
-    }
-
-    static String readPrivateUtf8Secret(Path path, long maximumBytes, String errorCode) {
-        try {
-            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
-                    || Files.size(path) > maximumBytes || isBroadlyReadable(path)) {
-                throw new McpUsageException(errorCode);
-            }
-            String value = Files.readString(path, StandardCharsets.UTF_8).trim();
-            if (value.isEmpty()) throw new McpUsageException(errorCode);
-            return value;
-        } catch (McpUsageException failure) {
-            throw failure;
-        } catch (IOException | RuntimeException failure) {
-            throw new McpUsageException(errorCode);
-        }
-    }
-
-    private static boolean isBroadlyReadable(Path path) throws IOException {
-        try {
-            var permissions = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS);
-            return permissions.contains(PosixFilePermission.GROUP_READ)
-                    || permissions.contains(PosixFilePermission.GROUP_WRITE)
-                    || permissions.contains(PosixFilePermission.OTHERS_READ)
-                    || permissions.contains(PosixFilePermission.OTHERS_WRITE);
-        } catch (UnsupportedOperationException ignored) {
-            return false;
-        }
     }
 
     private static String first(String property, String environment) {
@@ -316,7 +297,8 @@ final class McpCommandSupport {
         return ExitCodes.USAGE;
     }
 
-    private static int failure(RootCommand root, String command, String endpoint, RuntimeException exception) {
+    private static int failure(RootCommand root, String command, String endpoint,
+            RuntimeException exception, ExactSecretRedactor redactor) {
         McpClientException mcp = exception instanceof McpClientException value ? value : null;
         int exit = mcp != null && (mcp.httpStatus() == 401 || mcp.httpStatus() == 403)
                 ? ExitCodes.AUTH : unavailable(mcp) ? ExitCodes.EDT_UNAVAILABLE : ExitCodes.FAILURE;
@@ -333,7 +315,8 @@ final class McpCommandSupport {
         }
         String text = exit == ExitCodes.AUTH ? "error[authentication_failed]"
                 : exit == ExitCodes.EDT_UNAVAILABLE ? "error[edt_unavailable]" : "error[mcp_failed]";
-        CommandOutput.print(root, text, output);
+        if (redactor == null) CommandOutput.print(root, text, output);
+        else CommandOutput.print(root, text, output, redactor);
         return exit;
     }
 
@@ -388,7 +371,7 @@ final class McpCommandSupport {
         JsonPrimitive primitive = value.getAsJsonPrimitive();
         if (primitive.isBoolean()) return primitive.getAsBoolean();
         if (primitive.isNumber()) return primitive.getAsNumber();
-        return safeText(primitive.getAsString());
+        return primitive.getAsString();
     }
 
     static boolean isSensitiveCredentialKey(String key) {
@@ -397,18 +380,16 @@ final class McpCommandSupport {
         return SENSITIVE_CREDENTIAL_KEYS.contains(normalized);
     }
 
-    static String safeText(String value) {
-        if (value == null) return null;
-        return BEARER_AUTHORIZATION_VALUE.matcher(value).matches() ? "<redacted>" : value;
-    }
-
-    record Connection(URI endpoint, McpClient client) implements AutoCloseable {
-        @Override public void close() { client.close(); }
+    record Connection(URI endpoint, McpClient client, ExactSecretRedactor redactor) implements AutoCloseable {
+        @Override public void close() {
+            try { client.close(); }
+            finally { redactor.close(); }
+        }
     }
 
     @FunctionalInterface
     private interface SessionAction {
-        int run(McpClient client, InitializeResult initialized, URI endpoint);
+        int run(McpClient client, InitializeResult initialized, URI endpoint, ExactSecretRedactor redactor);
     }
 
     static final class McpUsageException extends RuntimeException {

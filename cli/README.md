@@ -145,14 +145,21 @@ HTTP 401/403 as `status: "failed"` with `error: "authentication_failed"`, not
 as readiness failure. Server JSON recursively omits credential keys such as
 `apiKey`/`api-key`, API/client/consumer secrets, `secretKey`, `password`,
 `passphrase`, `privateKey`, and auth/access/refresh/id token or authorization/
-credential fields; complete bearer authorization values are redacted. The CLI never emits the
-configured bearer token or an `Authorization` header. Prefer
+credential fields. The exact configured MCP bearer token is also replaced with
+`<redacted>` wherever it occurs inside any emitted text or JSON string,
+including benign server fields and embedded prefix/suffix text. The CLI does
+not guess whether unrelated server text such as `password=hunter2` is secret;
+such text remains observable unless it is under a structurally sensitive key.
+The CLI never emits its configured bearer token or an `Authorization` header. Prefer
 `--bearer-token-file` over placing a token in a shell command or process list;
 it has precedence over the property and environment variable.
 
 Bearer files are read as UTF-8, trimmed, limited to 64 KiB, must be regular
 non-symlink files, and on POSIX systems must not be group/other readable or
-writable (use mode `0600`).
+writable (use mode `0600`). File bytes and decoder backing characters are
+wiped after decoding; the returned character buffer is wiped after connection
+setup. Windows filesystems do not expose POSIX mode bits through this check, so
+the operator remains responsible for a restrictive Windows ACL.
 
 Plain HTTP is accepted automatically only for loopback endpoints. Use
 `--allow-insecure-http` only for a trusted non-loopback HTTP endpoint; HTTPS
@@ -206,8 +213,11 @@ production entry point installs a shutdown hook for Ctrl-C cancellation.
 Text and JSON output always include terminal status/reason and completed step
 count. JSON keys are stable: `command`, `status`, `terminalReason`, `steps`,
 and `text` when a final assistant response exists. Prompts, transcripts, tool
-arguments/results, headers, and credentials are not emitted. Complete bearer
-authorization text is passed through the shared sanitizer.
+arguments/results, and headers are not emitted. Exact configured provider and
+MCP secrets are replaced recursively in every emitted text/JSON string,
+including embedded final-model text. Structural credential-key filtering is
+retained for MCP JSON. Arbitrary unknown strings are not heuristically
+classified as credentials.
 
 Exit codes:
 

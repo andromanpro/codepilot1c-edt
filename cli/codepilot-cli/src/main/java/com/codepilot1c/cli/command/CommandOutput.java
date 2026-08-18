@@ -14,4 +14,10 @@ final class CommandOutput {
         else root.services().out().println(text);
         root.services().out().flush();
     }
+
+    @SuppressWarnings("unchecked")
+    static void print(RootCommand root, String text, Map<String, Object> json,
+            ExactSecretRedactor redactor) {
+        print(root, redactor.redact(text), (Map<String, Object>) redactor.redact(json));
+    }
 }

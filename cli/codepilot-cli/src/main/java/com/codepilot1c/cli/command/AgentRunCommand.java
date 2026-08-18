@@ -94,7 +94,7 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
 
     @Override public Integer call() {
         final String prompt;
-        final ProviderConfiguration provider;
+        final ProviderSetup provider;
         try {
             validateBounds();
             validateToolOptions();
@@ -106,21 +106,29 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
 
         long deadline = deadline(timeoutSeconds);
         CancellationSource cancellation = new CancellationSource();
-        Thread shutdownHook = new Thread(cancellation::cancel, "codepilot-agent-cancel");
-        boolean hookInstalled = installShutdownHook(shutdownHook);
+        Thread shutdownHook = null;
+        boolean hookInstalled = false;
         boolean interrupted = false;
+        ExactSecretRedactor redactor = null;
         try {
+            redactor = ExactSecretRedactor.of(provider.apiKey());
+            shutdownHook = new Thread(cancellation::cancel, "codepilot-agent-cancel");
+            hookInstalled = installShutdownHook(shutdownHook);
             ToolRuntime tools = NoToolsRuntime.INSTANCE;
             McpCommandSupport.Connection connection = null;
             try {
                 if (!noTools) {
                     connection = McpCommandSupport.connect(root, this);
+                    ExactSecretRedactor combined = ExactSecretRedactor.combine(redactor, connection.redactor());
+                    redactor.close();
+                    redactor = combined;
                     tools = awaitMcpTools(connection, cancellation, deadline);
                 }
                 Duration remaining = remaining(deadline);
-                if (remaining == null) return terminalWithoutRun("timed_out", "timeout", 0);
+                if (remaining == null) return terminalWithoutRun("timed_out", "timeout", 0, redactor);
 
-                var modelAdapter = new OpenAiCompatibleAgentModel(new RuntimeProviderFactory().create(provider));
+                var modelAdapter = new OpenAiCompatibleAgentModel(
+                        new RuntimeProviderFactory().create(provider.configuration()));
                 try (AgentRuntime runtime = new AgentRuntime(modelAdapter, tools,
                         new AgentRunConfig(maxSteps, remaining))) {
                     AgentRequest request = new AgentRequest(UUID.randomUUID().toString(),
@@ -135,30 +143,32 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
                         Thread.interrupted();
                         result = run.get();
                     }
-                    return printResult(result);
+                    return printResult(result, redactor);
                 }
             } catch (InterruptedException interrupt) {
                 interrupted = true;
                 cancellation.cancel();
                 Thread.interrupted();
-                return terminalWithoutRun("cancelled", "cancelled", 0);
+                return terminalWithoutRun("cancelled", "cancelled", 0, redactor);
             } catch (TimeoutException timeout) {
                 cancellation.cancel();
-                return terminalWithoutRun("timed_out", "timeout", 0);
+                return terminalWithoutRun("timed_out", "timeout", 0, redactor);
             } catch (CancellationException cancelled) {
-                return terminalWithoutRun("cancelled", "cancelled", 0);
+                return terminalWithoutRun("cancelled", "cancelled", 0, redactor);
             } catch (ExecutionException failure) {
-                return connectionFailure(unwrap(failure));
+                return connectionFailure(unwrap(failure), redactor);
             } catch (McpCommandSupport.McpUsageException failure) {
-                return usage(failure.code());
+                return usage(failure.code(), redactor);
             } catch (RuntimeException failure) {
-                return connectionFailure(unwrap(failure));
+                return connectionFailure(unwrap(failure), redactor);
             } finally {
                 if (connection != null) connection.close();
             }
         } finally {
-            if (hookInstalled) removeShutdownHook(shutdownHook);
+            if (hookInstalled && shutdownHook != null) removeShutdownHook(shutdownHook);
             if (interrupted) Thread.currentThread().interrupt();
+            if (redactor != null) redactor.close();
+            provider.close();
         }
     }
 
@@ -185,7 +195,7 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
         }
     }
 
-    private ProviderConfiguration providerConfiguration() {
+    private ProviderSetup providerConfiguration() {
         String endpoint = first(providerEndpoint,
                 root.services().host().systemProperty("codepilot.provider.endpoint"),
                 root.services().host().environment("CODEPILOT_PROVIDER_ENDPOINT"));
@@ -194,30 +204,41 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
                 root.services().host().environment("CODEPILOT_PROVIDER_MODEL"));
         if (endpoint == null) throw new AgentUsageException("provider_endpoint_required");
         if (selectedModel == null) throw new AgentUsageException("provider_model_required");
+        URI providerUri = validatedProviderEndpoint(endpoint);
 
         char[] apiKey = readProviderApiKey();
+        boolean success = false;
         try {
-            return ProviderConfiguration.builder()
+            ProviderConfiguration configuration = ProviderConfiguration.builder()
                     .id("cli-openai-compatible")
                     .displayName("CLI OpenAI-compatible provider")
-                    .baseUri(validatedProviderEndpoint(endpoint))
+                    .baseUri(providerUri)
                     .defaultModel(selectedModel)
                     .connectTimeout(Duration.ofSeconds(Math.min(timeoutSeconds, 30)))
                     // The agent deadline owns the global terminal reason; this is only a backstop.
                     .requestTimeout(Duration.ofSeconds(timeoutSeconds + 1))
                     .apiKey(apiKey)
                     .build();
-        } catch (IllegalArgumentException failure) {
+            ProviderSetup setup = new ProviderSetup(configuration, apiKey);
+            success = true;
+            return setup;
+        } catch (RuntimeException failure) {
+            if (failure instanceof AgentUsageException usage) throw usage;
             throw new AgentUsageException("invalid_provider_configuration");
         } finally {
-            Arrays.fill(apiKey, '\0');
+            if (!success) Arrays.fill(apiKey, '\0');
         }
     }
 
     private char[] readProviderApiKey() {
         String value;
         if (providerApiKeyFile != null) {
-            value = readSecretFile(providerApiKeyFile, "provider_api_key_file_unreadable");
+            try {
+                return PrivateUtf8SecretReader.read(Path.of(providerApiKeyFile),
+                        Math.toIntExact(MAX_SECRET_FILE_BYTES));
+            } catch (RuntimeException failure) {
+                throw new AgentUsageException("provider_api_key_file_unreadable");
+            }
         } else {
             value = first(null, root.services().host().systemProperty("codepilot.provider.apiKey"),
                     root.services().host().environment("CODEPILOT_PROVIDER_API_KEY"));
@@ -239,14 +260,6 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
             throw new AgentUsageException("prompt_too_large");
         }
         return value;
-    }
-
-    private String readSecretFile(String value, String code) {
-        try {
-            return McpCommandSupport.readPrivateUtf8Secret(Path.of(value), MAX_SECRET_FILE_BYTES, code);
-        } catch (RuntimeException failure) {
-            throw new AgentUsageException(code);
-        }
     }
 
     private String readTextFile(String value, long maximumBytes, String code) {
@@ -320,14 +333,14 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
         }
     }
 
-    private int printResult(AgentResult result) {
+    private int printResult(AgentResult result, ExactSecretRedactor redactor) {
         String status = result.status().name().toLowerCase(Locale.ROOT);
         String reason = result.error().map(error -> error.code().name().toLowerCase(Locale.ROOT))
                 .orElse("completed");
-        String text = result.text().map(McpCommandSupport::safeText).orElse(null);
+        String text = result.text().orElse(null);
         Map<String, Object> output = terminal(status, reason, result.steps());
         if (text != null) output.put("text", text);
-        CommandOutput.print(root, terminalText(status, reason, result.steps(), text), output);
+        CommandOutput.print(root, terminalText(status, reason, result.steps(), text), output, redactor);
         if (result.status() == AgentResult.Status.COMPLETED) return ExitCodes.OK;
         if (result.error().map(AgentError::code).orElse(null) == AgentError.Code.PROVIDER_AUTH) {
             return ExitCodes.AUTH;
@@ -335,22 +348,23 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
         return ExitCodes.FAILURE;
     }
 
-    private int terminalWithoutRun(String status, String reason, int steps) {
-        CommandOutput.print(root, terminalText(status, reason, steps, null), terminal(status, reason, steps));
+    private int terminalWithoutRun(String status, String reason, int steps, ExactSecretRedactor redactor) {
+        CommandOutput.print(root, terminalText(status, reason, steps, null),
+                terminal(status, reason, steps), redactor);
         return ExitCodes.FAILURE;
     }
 
-    private int connectionFailure(Throwable failure) {
+    private int connectionFailure(Throwable failure, ExactSecretRedactor redactor) {
         McpClientException mcp = findMcpFailure(failure);
         if (mcp == null) {
-            return terminalWithoutRun("failed", "agent_setup_failed", 0);
+            return terminalWithoutRun("failed", "agent_setup_failed", 0, redactor);
         }
         boolean auth = mcp.httpStatus() == 401 || mcp.httpStatus() == 403;
         String reason = auth ? "authentication_failed" : "mcp_unavailable";
         Map<String, Object> output = terminal("failed", reason, 0);
         output.put("failureKind", mcp.kind().name().toLowerCase(Locale.ROOT));
         if (mcp.httpStatus() >= 0) output.put("httpStatus", mcp.httpStatus());
-        CommandOutput.print(root, terminalText("failed", reason, 0, null), output);
+        CommandOutput.print(root, terminalText("failed", reason, 0, null), output, redactor);
         return auth ? ExitCodes.AUTH : ExitCodes.EDT_UNAVAILABLE;
     }
 
@@ -358,6 +372,13 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
         Map<String, Object> output = terminal("failed", code, 0);
         output.put("error", code);
         CommandOutput.print(root, "error[usage]: " + code, output);
+        return ExitCodes.USAGE;
+    }
+
+    private int usage(String code, ExactSecretRedactor redactor) {
+        Map<String, Object> output = terminal("failed", code, 0);
+        output.put("error", code);
+        CommandOutput.print(root, "error[usage]: " + code, output, redactor);
         return ExitCodes.USAGE;
     }
 
@@ -435,6 +456,15 @@ final class AgentRunCommand implements java.util.concurrent.Callable<Integer>, M
         @Option(names = "--prompt", description = "Inline prompt.") String inline;
         @Option(names = "--prompt-file", description = "Read the UTF-8 prompt from a file.") String file;
         @Option(names = "--prompt-stdin", description = "Read the prompt from standard input.") boolean stdin;
+    }
+
+    /** Owns the CLI source copy; the current runtime configuration owns its separate provider-lifetime copy. */
+    private record ProviderSetup(ProviderConfiguration configuration, char[] apiKey) implements AutoCloseable {
+        ProviderSetup {
+            apiKey = apiKey == null ? new char[0] : apiKey;
+        }
+        @Override public char[] apiKey() { return apiKey; }
+        @Override public void close() { Arrays.fill(apiKey, '\0'); }
     }
 
     private enum NoToolsRuntime implements ToolRuntime {
