@@ -2,6 +2,7 @@
 package com.codepilot1c.cli.shell;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -57,6 +58,12 @@ public final class McpShellToolSession implements ShellToolSession {
     @Override public boolean isExpired(Throwable failure) {
         Throwable value = unwrap(failure);
         if (!(value instanceof McpClientException mcp)) return false;
+        if (mcp.kind() == McpClientException.Kind.JSON_RPC) {
+            String message = mcp.getMessage() == null ? "" : mcp.getMessage().toLowerCase(Locale.ROOT);
+            return message.contains("session") && (message.contains("invalid")
+                    || message.contains("expired") || message.contains("not found")
+                    || message.contains("not_found"));
+        }
         return mcp.kind() == McpClientException.Kind.STATE
                 || (mcp.kind() == McpClientException.Kind.HTTP
                         && (mcp.httpStatus() == 404 || mcp.httpStatus() == 410));

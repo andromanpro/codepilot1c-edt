@@ -10,6 +10,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.codepilot1c.runtime.agent.AgentCompletionMode;
 import com.codepilot1c.runtime.agent.AgentEventListener;
@@ -21,6 +23,9 @@ import com.codepilot1c.runtime.agent.AgentRuntime;
 import com.codepilot1c.runtime.agent.CancellationSource;
 import com.codepilot1c.runtime.agent.ToolApprover;
 import com.codepilot1c.runtime.agent.ToolDefinition;
+import com.codepilot1c.runtime.agent.ToolExecutionResult;
+import com.codepilot1c.runtime.agent.ToolRuntime;
+import com.google.gson.JsonObject;
 
 /** Per-turn runtime owner with one-shot expired-MCP recovery and refresh. */
 public final class TurnRunner implements AutoCloseable {
@@ -64,7 +69,8 @@ public final class TurnRunner implements AutoCloseable {
         CompletableFuture<AgentResult> future;
         synchronized (lock) {
             ensureOpen();
-            runtime = runtimeFactory.create(environment, tools,
+            runtime = runtimeFactory.create(environment,
+                    new TurnToolSession(new RecoveringToolRuntime()),
                     new AgentRunConfig(config.maxSteps(), remaining), listener, approver);
             activeRuntime = runtime;
             future = runtime.run(new AgentRequest(operationId, messages), cancellation);
@@ -206,6 +212,246 @@ public final class TurnRunner implements AutoCloseable {
 
     private void ensureOpen() {
         if (closed) throw new IllegalStateException("turn runner is closed");
+    }
+
+    private ShellToolSession currentTools() {
+        synchronized (lock) {
+            ensureOpen();
+            return tools;
+        }
+    }
+
+    /**
+     * Per-turn tool boundary. Only the first expired tools/call may replace the
+     * session; the retry is deliberately direct and therefore cannot recurse.
+     */
+    private final class RecoveringToolRuntime implements ToolRuntime {
+        private final AtomicBoolean recoveryAttempted = new AtomicBoolean();
+
+        @Override public List<ToolDefinition> tools() {
+            return currentTools().runtime().tools();
+        }
+
+        @Override public java.util.concurrent.CompletionStage<ToolExecutionResult> execute(
+                String name, JsonObject arguments,
+                com.codepilot1c.runtime.agent.CancellationToken cancellation) {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(arguments, "arguments");
+            Objects.requireNonNull(cancellation, "cancellation");
+            if (cancellation.isCancelled()) return cancelledTool();
+            ShellToolSession expected = currentTools();
+            final CompletableFuture<ToolExecutionResult> first;
+            try {
+                first = expected.runtime().execute(name, arguments, cancellation)
+                        .toCompletableFuture();
+            } catch (RuntimeException failure) {
+                RecoveryExecution operation = new RecoveryExecution(expected, name,
+                        arguments.deepCopy(), cancellation,
+                        CompletableFuture.failedFuture(failure));
+                operation.start();
+                return operation.result;
+            }
+            RecoveryExecution operation = new RecoveryExecution(expected, name,
+                    arguments.deepCopy(), cancellation, first);
+            operation.start();
+            return operation.result;
+        }
+
+        private final class RecoveryExecution {
+            private final ShellToolSession expected;
+            private final String name;
+            private final JsonObject arguments;
+            private final com.codepilot1c.runtime.agent.CancellationToken cancellation;
+            private final CompletableFuture<ToolExecutionResult> first;
+            private final CompletableFuture<ToolExecutionResult> result = new CompletableFuture<>();
+            private final AtomicReference<CompletableFuture<?>> active = new AtomicReference<>();
+            private final AtomicReference<com.codepilot1c.runtime.agent.CancellationToken.Registration>
+                    registration = new AtomicReference<>();
+
+            RecoveryExecution(ShellToolSession expected, String name, JsonObject arguments,
+                    com.codepilot1c.runtime.agent.CancellationToken cancellation,
+                    CompletableFuture<ToolExecutionResult> first) {
+                this.expected = expected;
+                this.name = name;
+                this.arguments = arguments;
+                this.cancellation = cancellation;
+                this.first = first;
+                active.set(first);
+                result.whenComplete((ignored, failure) -> {
+                    var registered = registration.getAndSet(null);
+                    if (registered != null) registered.close();
+                    if (result.isCancelled()) cancelActive();
+                });
+            }
+
+            void start() {
+                var registered = cancellation.onCancel(this::cancel);
+                registration.set(registered);
+                if (result.isDone() && registration.compareAndSet(registered, null)) {
+                    registered.close();
+                    return;
+                }
+                first.whenComplete((value, failure) -> {
+                    if (result.isDone()) return;
+                    if (failure == null) {
+                        result.complete(value);
+                        return;
+                    }
+                    Throwable cause = unwrap(failure);
+                    if (cancellation.isCancelled()) {
+                        cancel();
+                    } else if (expected.isExpired(cause)
+                            && recoveryAttempted.compareAndSet(false, true)) {
+                        reinitialize();
+                    } else {
+                        result.completeExceptionally(cause);
+                    }
+                });
+            }
+
+            void reinitialize() {
+                final CompletableFuture<ShellToolSession> initializing;
+                try {
+                    initializing = expected.reinitialize().toCompletableFuture();
+                } catch (RuntimeException failure) {
+                    result.completeExceptionally(failure);
+                    return;
+                }
+                setActive(initializing);
+                initializing.whenComplete((replacement, failure) -> {
+                    if (failure != null) {
+                        result.completeExceptionally(unwrap(failure));
+                        return;
+                    }
+                    if (result.isDone() || cancellation.isCancelled()) {
+                        replacement.close();
+                        cancel();
+                        return;
+                    }
+                    refreshReplacement(replacement);
+                });
+            }
+
+            void refreshReplacement(ShellToolSession replacement) {
+                final CompletableFuture<List<ToolDefinition>> refreshing;
+                try {
+                    refreshing = replacement.refresh().toCompletableFuture();
+                } catch (RuntimeException failure) {
+                    replacement.close();
+                    result.completeExceptionally(failure);
+                    return;
+                }
+                setActive(refreshing);
+                refreshing.whenComplete((definitions, failure) -> {
+                    if (failure != null) {
+                        replacement.close();
+                        result.completeExceptionally(unwrap(failure));
+                        return;
+                    }
+                    if (result.isDone() || cancellation.isCancelled()) {
+                        replacement.close();
+                        cancel();
+                        return;
+                    }
+                    ShellToolSession retrySession = publishReplacement(replacement);
+                    if (retrySession == null) return;
+                    boolean available = retrySession.runtime().tools().stream()
+                            .anyMatch(tool -> tool.name().equals(name));
+                    if (!available) {
+                        result.complete(ToolExecutionResult.failure(
+                                "UNKNOWN_TOOL", "Requested tool is not available"));
+                        return;
+                    }
+                    retry(retrySession);
+                });
+            }
+
+            ShellToolSession publishReplacement(ShellToolSession replacement) {
+                ShellToolSession retrySession;
+                boolean published = false;
+                try {
+                    synchronized (lock) {
+                        ensureOpen();
+                        if (tools == expected) {
+                            tools = replacement;
+                            published = true;
+                            retrySession = replacement;
+                        } else {
+                            retrySession = tools;
+                        }
+                    }
+                } catch (RuntimeException failure) {
+                    replacement.close();
+                    result.completeExceptionally(failure);
+                    return null;
+                }
+                if (published) expected.close();
+                else replacement.close();
+                return retrySession;
+            }
+
+            void retry(ShellToolSession replacement) {
+                if (cancellation.isCancelled()) {
+                    cancel();
+                    return;
+                }
+                final CompletableFuture<ToolExecutionResult> retrying;
+                try {
+                    retrying = replacement.runtime().execute(name, arguments, cancellation)
+                            .toCompletableFuture();
+                } catch (RuntimeException failure) {
+                    result.completeExceptionally(failure);
+                    return;
+                }
+                setActive(retrying);
+                retrying.whenComplete((value, failure) -> {
+                    if (failure == null) result.complete(value);
+                    else if (cancellation.isCancelled()) cancel();
+                    else result.completeExceptionally(unwrap(failure));
+                });
+            }
+
+            void setActive(CompletableFuture<?> future) {
+                active.set(future);
+                if (result.isDone() || cancellation.isCancelled()) future.cancel(true);
+            }
+
+            void cancel() {
+                result.cancel(false);
+                cancelActive();
+            }
+
+            void cancelActive() {
+                CompletableFuture<?> future = active.get();
+                if (future != null && !future.isDone()) future.cancel(true);
+            }
+        }
+    }
+
+    private static java.util.concurrent.CompletionStage<ToolExecutionResult> cancelledTool() {
+        CompletableFuture<ToolExecutionResult> future = new CompletableFuture<>();
+        future.cancel(false);
+        return future;
+    }
+
+    /** RuntimeFactory compatibility wrapper; ownership remains with TurnRunner. */
+    private final class TurnToolSession implements ShellToolSession {
+        private final ToolRuntime runtime;
+        TurnToolSession(ToolRuntime runtime) { this.runtime = runtime; }
+        @Override public ToolRuntime runtime() { return runtime; }
+        @Override public java.util.concurrent.CompletionStage<List<ToolDefinition>> refresh() {
+            return currentTools().refresh();
+        }
+        @Override public java.util.concurrent.CompletionStage<Void> ping() {
+            return currentTools().ping();
+        }
+        @Override public java.util.concurrent.CompletionStage<ShellToolSession> reinitialize() {
+            return currentTools().reinitialize();
+        }
+        @Override public boolean isExpired(Throwable failure) {
+            return currentTools().isExpired(failure);
+        }
+        @Override public void close() { /* TurnRunner owns the actual session. */ }
     }
 
     private static Exception exception(Throwable failure) {

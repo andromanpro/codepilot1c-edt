@@ -111,6 +111,114 @@ public class TurnRunnerLifecycleTest {
         }
     }
 
+    @Test public void expiredToolCallReinitializesRefreshesAndRetriesExactlyOnce() throws Exception {
+        ToolSession replacement = new ToolSession(true, null);
+        ToolSession expired = new ToolSession(true, new ExpiredFailure());
+        expired.replacement = replacement;
+        try (TurnRunner runner = new TurnRunner(environment(new CallingModel(), expired),
+                4, Duration.ofSeconds(5))) {
+            AgentResult result = runner.run("tool-recovery", List.of(user()), //$NON-NLS-1$
+                    new CancellationSource(), AgentEventListener.NOOP, ToolApprover.ALLOW);
+
+            assertEquals(AgentResult.Status.COMPLETED, result.status());
+            assertEquals(1, expired.executions.get());
+            assertEquals(1, expired.reinitializations.get());
+            assertEquals(1, expired.closes.get());
+            assertEquals(1, replacement.refreshes.get());
+            assertEquals(1, replacement.executions.get());
+        }
+        assertEquals(1, replacement.closes.get());
+    }
+
+    @Test public void expiredRetryDoesNotTriggerUnboundedSecondRecovery() throws Exception {
+        ToolSession replacement = new ToolSession(true, new ExpiredFailure());
+        ToolSession expired = new ToolSession(true, new ExpiredFailure());
+        expired.replacement = replacement;
+        try (TurnRunner runner = new TurnRunner(environment(new CallingModel(), expired),
+                4, Duration.ofSeconds(5))) {
+            AgentResult result = runner.run("single-recovery", List.of(user()), //$NON-NLS-1$
+                    new CancellationSource(), AgentEventListener.NOOP, ToolApprover.ALLOW);
+
+            assertEquals(AgentResult.Status.COMPLETED, result.status());
+            assertEquals(1, expired.reinitializations.get());
+            assertEquals(0, replacement.reinitializations.get());
+            assertEquals(1, replacement.executions.get());
+            AgentMessage.Tool tool = result.transcript().stream()
+                    .filter(AgentMessage.Tool.class::isInstance)
+                    .map(AgentMessage.Tool.class::cast).findFirst().orElseThrow();
+            assertTrue(tool.result().error());
+        }
+    }
+
+    @Test public void recoveredCatalogMustStillContainRequestedToolBeforeRetry() throws Exception {
+        ToolSession replacement = new ToolSession(false, null);
+        ToolSession expired = new ToolSession(true, new ExpiredFailure());
+        expired.replacement = replacement;
+        try (TurnRunner runner = new TurnRunner(environment(new CallingModel(), expired),
+                4, Duration.ofSeconds(5))) {
+            AgentResult result = runner.run("removed-tool", List.of(user()), //$NON-NLS-1$
+                    new CancellationSource(), AgentEventListener.NOOP, ToolApprover.ALLOW);
+
+            assertEquals(AgentResult.Status.COMPLETED, result.status());
+            assertEquals(0, replacement.executions.get());
+            AgentMessage.Tool tool = result.transcript().stream()
+                    .filter(AgentMessage.Tool.class::isInstance)
+                    .map(AgentMessage.Tool.class::cast).findFirst().orElseThrow();
+            assertEquals("UNKNOWN_TOOL", tool.result().code()); //$NON-NLS-1$
+        }
+    }
+
+    @Test public void cancellationDuringRecoveryCancelsReinitializeUnderOriginalToken()
+            throws Exception {
+        CompletableFuture<ShellToolSession> pending = new CompletableFuture<>();
+        CountDownLatch recoveryStarted = new CountDownLatch(1);
+        ToolSession expired = new ToolSession(true, new ExpiredFailure()) {
+            @Override public CompletionStage<ShellToolSession> reinitialize() {
+                reinitializations.incrementAndGet();
+                recoveryStarted.countDown();
+                return pending;
+            }
+        };
+        TurnRunner runner = new TurnRunner(environment(new CallingModel(), expired),
+                4, Duration.ofSeconds(30));
+        CancellationSource cancellation = new CancellationSource();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            var running = executor.submit(() -> runner.run("cancel-recovery", List.of(user()), //$NON-NLS-1$
+                    cancellation, AgentEventListener.NOOP, ToolApprover.ALLOW));
+            assertTrue(recoveryStarted.await(2, TimeUnit.SECONDS));
+            cancellation.cancel();
+            assertEquals(AgentResult.Status.CANCELLED, running.get(2, TimeUnit.SECONDS).status());
+            assertTrue(pending.isCancelled());
+        } finally {
+            runner.close();
+            executor.shutdownNow();
+        }
+        assertEquals(1, expired.closes.get());
+    }
+
+    @Test public void timeoutDuringRecoveryUsesOriginalGlobalTurnDeadline() throws Exception {
+        CompletableFuture<ShellToolSession> pending = new CompletableFuture<>();
+        ToolSession expired = new ToolSession(true, new ExpiredFailure()) {
+            @Override public CompletionStage<ShellToolSession> reinitialize() {
+                reinitializations.incrementAndGet();
+                return pending;
+            }
+        };
+        long started = System.nanoTime();
+        try (TurnRunner runner = new TurnRunner(environment(new CallingModel(), expired),
+                4, Duration.ofMillis(150))) {
+            AgentResult result = runner.run("timeout-recovery", List.of(user()), //$NON-NLS-1$
+                    new CancellationSource(), AgentEventListener.NOOP, ToolApprover.ALLOW);
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertEquals(AgentResult.Status.TIMED_OUT, result.status());
+            assertTrue("turn exceeded original deadline: " + elapsedMillis, elapsedMillis < 1500);
+            assertTrue(pending.isCancelled());
+            assertEquals(1, expired.reinitializations.get());
+        }
+    }
+
     @Test public void closeRacingExpiredReinitializeClosesLateReplacement() throws Exception {
         CompletableFuture<ShellToolSession> pending = new CompletableFuture<>();
         CountDownLatch reinitializeStarted = new CountDownLatch(1);
@@ -210,10 +318,10 @@ public class TurnRunnerLifecycleTest {
     private static class FakeSession implements ShellToolSession {
         private final boolean expireRefresh;
         private final FakeSession replacement;
-        private final AtomicInteger refreshes = new AtomicInteger();
+        protected final AtomicInteger refreshes = new AtomicInteger();
         protected final AtomicInteger reinitializations = new AtomicInteger();
         private final AtomicInteger pings = new AtomicInteger();
-        private final AtomicInteger closes = new AtomicInteger();
+        protected final AtomicInteger closes = new AtomicInteger();
         private final AtomicBoolean closed = new AtomicBoolean();
         private boolean expirePing;
         FakeSession(boolean expireRefresh, FakeSession replacement) {
@@ -239,6 +347,43 @@ public class TurnRunnerLifecycleTest {
         @Override public boolean isExpired(Throwable failure) { return failure instanceof ExpiredFailure; }
         @Override public void close() {
             if (closed.compareAndSet(false, true)) closes.incrementAndGet();
+        }
+    }
+
+    private static class ToolSession extends FakeSession {
+        private final boolean toolAvailable;
+        private final RuntimeException executionFailure;
+        private final AtomicInteger executions = new AtomicInteger();
+        private ToolSession replacement;
+
+        ToolSession(boolean toolAvailable, RuntimeException executionFailure) {
+            super(false, null);
+            this.toolAvailable = toolAvailable;
+            this.executionFailure = executionFailure;
+        }
+
+        @Override public ToolRuntime runtime() {
+            return new ToolRuntime() {
+                @Override public List<ToolDefinition> tools() {
+                    return toolAvailable
+                            ? List.of(new ToolDefinition("write", "", schema())) : List.of(); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                @Override public CompletionStage<ToolExecutionResult> execute(String name,
+                        JsonObject arguments, CancellationToken cancellation) {
+                    executions.incrementAndGet();
+                    return executionFailure == null
+                            ? CompletableFuture.completedFuture(
+                                    ToolExecutionResult.success(new JsonObject()))
+                            : CompletableFuture.failedFuture(executionFailure);
+                }
+            };
+        }
+
+        @Override public CompletionStage<ShellToolSession> reinitialize() {
+            reinitializations.incrementAndGet();
+            return replacement == null
+                    ? CompletableFuture.failedFuture(new AssertionError("unexpected reinitialize"))
+                    : CompletableFuture.completedFuture(replacement);
         }
     }
 
