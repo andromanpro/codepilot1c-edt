@@ -7,6 +7,7 @@ package com.codepilot1c.runtime.agent;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -48,16 +49,21 @@ public final class AgentRuntime implements AutoCloseable {
     private final ToolRuntime tools;
     private final AgentRunConfig config;
     private final LogSink logSink;
+    private final AgentEventListener eventListener;
+    private final ToolApprover approver;
     private final ScheduledExecutorService scheduler;
     private final Object lifecycleLock = new Object();
     private final Set<RunContext> activeRuns = new HashSet<>();
     private boolean closed;
 
-    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink) {
+    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink,
+            AgentEventListener eventListener, ToolApprover approver) {
         this.model = Objects.requireNonNull(model, "model"); //$NON-NLS-1$
         this.tools = Objects.requireNonNull(tools, "tools"); //$NON-NLS-1$
         this.config = Objects.requireNonNull(config, "config"); //$NON-NLS-1$
         this.logSink = logSink == null ? NO_LOG : logSink;
+        this.eventListener = eventListener == null ? AgentEventListener.NOOP : eventListener;
+        this.approver = approver == null ? ToolApprover.ALLOW : approver;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "codepilot-agent-timeout"); //$NON-NLS-1$
             thread.setDaemon(true);
@@ -65,8 +71,17 @@ public final class AgentRuntime implements AutoCloseable {
         });
     }
 
+    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config,
+            AgentEventListener eventListener, ToolApprover approver) {
+        this(model, tools, config, null, eventListener, approver);
+    }
+
+    public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config, LogSink logSink) {
+        this(model, tools, config, logSink, AgentEventListener.NOOP, ToolApprover.ALLOW);
+    }
+
     public AgentRuntime(AgentModel model, ToolRuntime tools, AgentRunConfig config) {
-        this(model, tools, config, null);
+        this(model, tools, config, null, AgentEventListener.NOOP, ToolApprover.ALLOW);
     }
 
     /**
@@ -86,11 +101,24 @@ public final class AgentRuntime implements AutoCloseable {
         Objects.requireNonNull(request, "request"); //$NON-NLS-1$
         Objects.requireNonNull(cancellation, "cancellation"); //$NON-NLS-1$
         RunContext context;
+        AgentResult rejected = null;
         synchronized (lifecycleLock) {
-            if (closed) return completedHandle(closedResult(request));
-            context = new RunContext(request, cancellation);
-            activeRuns.add(context);
-            context.arm();
+            if (closed) {
+                context = null;
+                rejected = closedResult(request);
+            } else {
+                context = new RunContext(request, cancellation);
+                activeRuns.add(context);
+                context.arm();
+            }
+        }
+        if (rejected != null) {
+            try {
+                eventListener.onTurnFinished(request.operationId(), rejected);
+            } catch (RuntimeException ignored) {
+                // Observation hooks cannot alter admission results.
+            }
+            return completedHandle(rejected);
         }
         context.begin();
         return context.result;
@@ -124,8 +152,9 @@ public final class AgentRuntime implements AutoCloseable {
         private final AtomicBoolean terminal = new AtomicBoolean();
         private final AtomicReference<Thread> terminalOwner = new AtomicReference<>();
         private final CountDownLatch terminalPublished = new CountDownLatch(1);
+        private final Object eventLock = new Object();
         private int steps;
-        private Set<String> availableTools = Set.of();
+        private Map<String, ToolDefinition> availableTools = Map.of();
         private ScheduledFuture<?> timeoutTask;
         private CancellationToken.Registration externalRegistration;
 
@@ -162,8 +191,11 @@ public final class AgentRuntime implements AutoCloseable {
             if (!terminal.compareAndSet(false, true)) return false;
             terminalOwner.set(Thread.currentThread());
             cancellation.cancel();
+            AgentResult terminalResult = terminalResult(AgentResult.Status.CANCELLED, null,
+                    new AgentError(AgentError.Code.CANCELLED, "Agent run was cancelled")); //$NON-NLS-1$
             try {
                 cleanupAndRemove();
+                publishTurnFinished(terminalResult);
                 return result.cancelDirect(mayInterruptIfRunning);
             } finally {
                 terminalOwner.set(null);
@@ -199,21 +231,39 @@ public final class AgentRuntime implements AutoCloseable {
             synchronized (this) {
                 steps++;
                 availableTools = definitions.stream()
-                        .map(ToolDefinition::name)
-                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                ToolDefinition::name, definition -> definition));
                 modelRequest = new AgentModel.Request(List.copyOf(transcript), definitions);
             }
+            publishStepStarted();
+            if (result.isDone() || cancellation.isCancelled()) return;
             log(Level.DEBUG, "model step=" + steps + "; tools=" + definitions.size()); //$NON-NLS-1$ //$NON-NLS-2$
 
             CompletionStage<AgentMessage.Assistant> stage;
+            StepStreamObserver streamObserver = null;
             try {
-                stage = Objects.requireNonNull(model.complete(modelRequest, cancellation),
-                        "model completion stage"); //$NON-NLS-1$
+                if (model instanceof StreamingAgentModel streaming) {
+                    streamObserver = new StepStreamObserver(steps);
+                    stage = Objects.requireNonNull(
+                            streaming.complete(modelRequest, cancellation, streamObserver),
+                            "model completion stage"); //$NON-NLS-1$
+                } else {
+                    stage = Objects.requireNonNull(model.complete(modelRequest, cancellation),
+                            "model completion stage"); //$NON-NLS-1$
+                }
             } catch (RuntimeException failure) {
+                if (streamObserver != null) streamObserver.close();
                 providerFailure(failure);
                 return;
             }
-            observe(stage, this::acceptAssistant, this::providerFailure);
+            StepStreamObserver observer = streamObserver;
+            observe(stage, assistant -> {
+                if (observer != null) observer.close();
+                acceptAssistant(assistant);
+            }, failure -> {
+                if (observer != null) observer.close();
+                providerFailure(failure);
+            });
         }
 
         void acceptAssistant(AgentMessage.Assistant assistant) {
@@ -231,6 +281,8 @@ public final class AgentRuntime implements AutoCloseable {
             synchronized (this) {
                 transcript.add(assistant);
             }
+            publishAssistantMessage(assistant);
+            if (result.isDone() || cancellation.isCancelled()) return;
             if (assistant.toolCalls().isEmpty()) {
                 finish(AgentResult.Status.COMPLETED, assistant.text().orElse(""), null); //$NON-NLS-1$
                 return;
@@ -245,6 +297,8 @@ public final class AgentRuntime implements AutoCloseable {
                 return;
             }
             ToolCall call = calls.get(index);
+            publishToolCallStarted(call);
+            if (result.isDone() || cancellation.isCancelled()) return;
             JsonObject arguments = parseArguments(call.argumentsJson());
             if (arguments == null) {
                 appendTool(call, ToolExecutionResult.failure(
@@ -252,12 +306,43 @@ public final class AgentRuntime implements AutoCloseable {
                 executeCall(calls, index + 1);
                 return;
             }
-            if (!toolExists(call.name())) {
+            ToolDefinition definition = toolDefinition(call.name());
+            if (definition == null) {
                 appendTool(call, ToolExecutionResult.failure("UNKNOWN_TOOL", "Requested tool is not available")); //$NON-NLS-1$ //$NON-NLS-2$
                 executeCall(calls, index + 1);
                 return;
             }
 
+            CompletionStage<ToolApprover.Decision> approval;
+            try {
+                approval = Objects.requireNonNull(
+                        approver.approve(call, definition, cancellation),
+                        "tool approval stage"); //$NON-NLS-1$
+            } catch (RuntimeException failure) {
+                approvalFailure(failure);
+                return;
+            }
+            observe(approval, decision -> acceptApproval(call, arguments,
+                    calls, index, decision), this::approvalFailure);
+        }
+
+        void acceptApproval(ToolCall call, JsonObject arguments,
+                List<ToolCall> calls, int index, ToolApprover.Decision decision) {
+            if (result.isDone() || cancellation.isCancelled()) return;
+            if (decision == null) {
+                approvalFailure(new IllegalStateException("Tool approver returned no decision")); //$NON-NLS-1$
+                return;
+            }
+            if (!decision.allowed()) {
+                appendTool(call, ToolExecutionResult.failure(
+                        "CONFIRMATION_DENIED", decision.reason())); //$NON-NLS-1$
+                executeCall(calls, index + 1);
+                return;
+            }
+            executeApproved(call, arguments, calls, index);
+        }
+
+        void executeApproved(ToolCall call, JsonObject arguments, List<ToolCall> calls, int index) {
             CompletionStage<ToolExecutionResult> stage;
             try {
                 stage = Objects.requireNonNull(tools.execute(call.name(), arguments, cancellation),
@@ -274,6 +359,13 @@ public final class AgentRuntime implements AutoCloseable {
             }, failure -> toolFailure(call, calls, index));
         }
 
+        void approvalFailure(Throwable failure) {
+            if (result.isDone()) return;
+            if (failure instanceof CancellationException && cancellation.isCancelled()) return;
+            finish(AgentResult.Status.FAILED, null,
+                    new AgentError(AgentError.Code.TOOL_APPROVAL, "Tool approval failed")); //$NON-NLS-1$
+        }
+
         void toolFailure(ToolCall call, List<ToolCall> calls, int index) {
             if (result.isDone()) return;
             appendTool(call, ToolExecutionResult.failure(
@@ -285,13 +377,14 @@ public final class AgentRuntime implements AutoCloseable {
             synchronized (this) {
                 transcript.add(new AgentMessage.Tool(call.id(), call.name(), toolResult));
             }
+            publishToolCallResult(call, toolResult);
             log(toolResult.error() ? Level.WARN : Level.DEBUG,
                     "tool result; error=" + toolResult.error()); //$NON-NLS-1$
         }
 
-        boolean toolExists(String name) {
+        ToolDefinition toolDefinition(String name) {
             synchronized (this) {
-                return availableTools.contains(name);
+                return availableTools.get(name);
             }
         }
 
@@ -315,12 +408,20 @@ public final class AgentRuntime implements AutoCloseable {
                 cancellable = stage.toCompletableFuture();
             } catch (UnsupportedOperationException unsupported) {
                 cancellable = null;
+            } catch (RuntimeException registrationFailure) {
+                failure.accept(registrationFailure);
+                return;
             }
             CompletableFuture<?> delegate = cancellable;
-            stage.whenComplete((value, thrown) -> {
-                if (thrown == null) future.complete(value);
-                else future.completeExceptionally(thrown);
-            });
+            try {
+                stage.whenComplete((value, thrown) -> {
+                    if (thrown == null) future.complete(value);
+                    else future.completeExceptionally(thrown);
+                });
+            } catch (RuntimeException registrationFailure) {
+                if (!result.isDone()) failure.accept(registrationFailure);
+                return;
+            }
             CancellationToken.Registration registration = cancellation.onCancel(() -> {
                 if (delegate != null) delegate.cancel(true);
                 future.cancel(true);
@@ -368,23 +469,67 @@ public final class AgentRuntime implements AutoCloseable {
         void finish(AgentResult.Status status, String text, AgentError error) {
             if (!terminal.compareAndSet(false, true)) return;
             terminalOwner.set(Thread.currentThread());
-            final List<AgentMessage> snapshot;
-            final int completedSteps;
-            synchronized (this) {
-                snapshot = List.copyOf(transcript);
-                completedSteps = steps;
-            }
-            AgentResult terminalResult = new AgentResult(status, Optional.ofNullable(text), snapshot,
-                    completedSteps, Optional.ofNullable(error));
+            AgentResult terminalResult = terminalResult(status, text, error);
             try {
                 cleanupAndRemove();
+                publishTurnFinished(terminalResult);
                 result.completeInternal(terminalResult);
             } finally {
                 terminalOwner.set(null);
                 terminalPublished.countDown();
             }
             log(status == AgentResult.Status.COMPLETED ? Level.INFO : Level.WARN,
-                    "run finished; status=" + status + "; steps=" + completedSteps); //$NON-NLS-1$ //$NON-NLS-2$
+                    "run finished; status=" + status + "; steps=" + terminalResult.steps()); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        AgentResult terminalResult(AgentResult.Status status, String text, AgentError error) {
+            synchronized (this) {
+                return new AgentResult(status, Optional.ofNullable(text), List.copyOf(transcript),
+                        steps, Optional.ofNullable(error));
+            }
+        }
+
+        void publishStepStarted() {
+            publishActiveEvent(() -> eventListener.onStepStarted(request.operationId(), steps));
+        }
+
+        void publishAssistantMessage(AgentMessage.Assistant assistant) {
+            publishActiveEvent(() -> eventListener.onAssistantMessage(
+                    request.operationId(), steps, assistant));
+        }
+
+        void publishToolCallStarted(ToolCall call) {
+            publishActiveEvent(() -> eventListener.onToolCallStarted(request.operationId(), steps, call));
+        }
+
+        void publishToolCallResult(ToolCall call, ToolExecutionResult toolResult) {
+            publishActiveEvent(() -> eventListener.onToolCallResult(
+                    request.operationId(), steps, call, toolResult));
+        }
+
+        void publishTurnFinished(AgentResult terminalResult) {
+            publishEvent(() -> eventListener.onTurnFinished(request.operationId(), terminalResult));
+        }
+
+        void publishEvent(Runnable event) {
+            synchronized (eventLock) {
+                try {
+                    event.run();
+                } catch (RuntimeException ignored) {
+                    // Observation hooks cannot alter the agent loop.
+                }
+            }
+        }
+
+        void publishActiveEvent(Runnable event) {
+            synchronized (eventLock) {
+                if (terminal.get()) return;
+                try {
+                    event.run();
+                } catch (RuntimeException ignored) {
+                    // Observation hooks cannot alter the agent loop.
+                }
+            }
         }
 
         void cleanupAndRemove() {
@@ -419,6 +564,44 @@ public final class AgentRuntime implements AutoCloseable {
                         "opId=" + request.operationId() + "; " + message)); //$NON-NLS-1$ //$NON-NLS-2$
             } catch (RuntimeException ignored) {
                 // Logging is isolated from control flow and no failure cause is re-logged.
+            }
+        }
+
+        private final class StepStreamObserver implements StreamObserver {
+            private final int observedStep;
+            private boolean open = true;
+
+            StepStreamObserver(int observedStep) {
+                this.observedStep = observedStep;
+            }
+
+            @Override
+            public void onTextDelta(String delta) {
+                publishDelta(() -> eventListener.onAssistantTextDelta(
+                        request.operationId(), observedStep, delta));
+            }
+
+            @Override
+            public void onReasoningDelta(String delta) {
+                publishDelta(() -> eventListener.onAssistantReasoningDelta(
+                        request.operationId(), observedStep, delta));
+            }
+
+            void close() {
+                synchronized (eventLock) {
+                    open = false;
+                }
+            }
+
+            private void publishDelta(Runnable event) {
+                synchronized (eventLock) {
+                    if (!open || terminal.get()) return;
+                    try {
+                        event.run();
+                    } catch (RuntimeException ignored) {
+                        // Observation hooks cannot alter the model completion.
+                    }
+                }
             }
         }
     }
