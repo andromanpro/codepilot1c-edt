@@ -60,8 +60,14 @@ The module contains two boundary adapters:
   calls. It validates assistant roles and function call types, and it never
   selects an endpoint or authorization policy itself.
 - `McpToolRuntime.connect(...)` initializes an existing `McpClient`, snapshots
-  `tools/list`, and maps `tools/call` results into stable tool envelopes. A
-  failed tool-list snapshot closes the newly initialized MCP session.
+  `tools/list`, and maps `tools/call` results into stable tool envelopes. MCP
+  annotations and the `codepilot1c/requiresConfirmation` extension are mapped
+  into optional provider-neutral `ToolAnnotations`; legacy hosts keep the
+  annotation value absent. `refresh()` asynchronously validates a complete new
+  list before atomically publishing it. Calls already in progress continue
+  against the prior immutable snapshot, while failed, cancelled, superseded,
+  or close-raced refreshes cannot replace the visible catalog. A failed initial
+  tool-list snapshot closes the newly initialized MCP session.
 
 Logs intentionally contain only the caller-supplied operation ID, counters,
 and terminal status. Message content, tool arguments/results, HTTP bodies,

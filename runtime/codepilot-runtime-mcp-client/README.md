@@ -7,8 +7,10 @@ SWT, EDT, or the core bundle.
 
 The client performs readiness checks, MCP `initialize` negotiation, session
 bound `ping`, `tools/list`, and `tools/call` requests, and session `DELETE`.
-It preserves unknown server fields and raw JSON schemas so the CLI can expose
-provider-neutral tool data without coupling to the core MCP model.
+It preserves unknown server fields, raw JSON schemas, standard tool
+`annotations`, and tool `_meta` extension data so the CLI can expose
+provider-neutral tool data without coupling to the core MCP model. Returned
+JSON values are defensive copies.
 
 Security defaults reject URI user information, non-HTTP(S) endpoints, and
 non-loopback plain HTTP. Plain HTTP can be explicitly enabled for a trusted

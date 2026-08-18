@@ -73,7 +73,9 @@ public class McpClientHttpContractTest {
             }
             if ("tools/list".equals(method)) {
                 write(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{"
-                        + "\"name\":\"build\",\"description\":\"Build\",\"inputSchema\":{\"type\":\"object\",\"x-vendor\":{\"a\":1}}}]}}");
+                        + "\"name\":\"build\",\"description\":\"Build\",\"inputSchema\":{\"type\":\"object\",\"x-vendor\":{\"a\":1}},"
+                        + "\"annotations\":{\"title\":\"Build project\",\"destructiveHint\":true,\"x-vendor\":1},"
+                        + "\"_meta\":{\"codepilot1c/requiresConfirmation\":true,\"x-host\":{\"a\":1}}}]}}");
                 return;
             }
             write(exchange, 200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}");
@@ -90,6 +92,13 @@ public class McpClientHttpContractTest {
         assertEquals(1, listed.tools().size());
         assertEquals("{\"type\":\"object\",\"x-vendor\":{\"a\":1}}",
                 listed.tools().get(0).inputSchema().toString());
+        assertEquals("Build project", listed.tools().get(0).annotations().get("title").getAsString());
+        assertTrue(listed.tools().get(0).annotations().get("destructiveHint").getAsBoolean());
+        assertEquals(1, listed.tools().get(0).annotations().get("x-vendor").getAsInt());
+        assertTrue(listed.tools().get(0).metadata()
+                .get("codepilot1c/requiresConfirmation").getAsBoolean());
+        assertEquals(1, listed.tools().get(0).metadata()
+                .getAsJsonObject("x-host").get("a").getAsInt());
         client.callTool("build", new JsonObject()).join();
         client.ping().join();
 
