@@ -9,9 +9,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -62,7 +64,11 @@ public final class McpClient implements AutoCloseable {
         });
     }
 
-    /** Negotiates a protocol and captures the required server-created session. */
+    /**
+     * Negotiates a protocol and captures the required server-created session.
+     * The returned future is client-owned: callers may cancel it, but cannot
+     * externally complete, obtrude, or attach mutating timeout completion.
+     */
     public CompletableFuture<InitializeResult> initialize() {
         final InitializationOperation operation;
         synchronized (stateLock) {
@@ -489,12 +495,14 @@ public final class McpClient implements AutoCloseable {
             params.add("clientInfo", clientInfo);
 
             CompletableFuture<HttpEnvelope> request = request("initialize", params, protocol, null);
+            boolean discardRequest;
             synchronized (stateLock) {
-                if (closed || cancelled || terminal || initialization != this) {
-                    request.cancel(true);
-                    return;
-                }
-                activeRequest = request;
+                discardRequest = closed || cancelled || terminal || initialization != this;
+                if (!discardRequest) activeRequest = request;
+            }
+            if (discardRequest) {
+                request.cancel(true);
+                return;
             }
             request.whenComplete((envelope, failure) -> {
                 if (failure == null) completeSuccess(envelope, protocol);
@@ -570,6 +578,49 @@ public final class McpClient implements AutoCloseable {
             return cancelAction.test(mayInterruptIfRunning);
         }
 
+        @Override
+        public boolean complete(InitializeResult value) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable failure) {
+            return false;
+        }
+
+        @Override
+        public void obtrudeValue(InitializeResult value) {
+            throw externalMutation();
+        }
+
+        @Override
+        public void obtrudeException(Throwable failure) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<InitializeResult> completeAsync(
+                Supplier<? extends InitializeResult> supplier) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<InitializeResult> completeAsync(
+                Supplier<? extends InitializeResult> supplier, java.util.concurrent.Executor executor) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<InitializeResult> orTimeout(long timeout, TimeUnit unit) {
+            throw externalMutation();
+        }
+
+        @Override
+        public CompletableFuture<InitializeResult> completeOnTimeout(
+                InitializeResult value, long timeout, TimeUnit unit) {
+            throw externalMutation();
+        }
+
         boolean cancelInternal(boolean mayInterruptIfRunning) {
             return super.cancel(mayInterruptIfRunning);
         }
@@ -580,6 +631,11 @@ public final class McpClient implements AutoCloseable {
 
         boolean completeExceptionallyInternal(Throwable failure) {
             return super.completeExceptionally(failure);
+        }
+
+        private UnsupportedOperationException externalMutation() {
+            return new UnsupportedOperationException(
+                    "MCP initialization completion is owned by McpClient; use cancel() to stop it");
         }
     }
 
