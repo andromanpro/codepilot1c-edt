@@ -269,6 +269,41 @@ public class BrokerClientHttpTest {
         }
     }
 
+    @Test
+    public void probeThatNeverReceivesHeadersCancelsAndLeavesNoActiveOperation() throws Exception {
+        CountDownLatch accepted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer stale = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        stale.createContext("/llm/v1/capabilities", exchange -> {
+            accepted.countDown();
+            try {
+                release.await(3, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        stale.start();
+        URI endpoint = URI.create("http://127.0.0.1:" + stale.getAddress().getPort() + "/mcp");
+        long started = System.nanoTime();
+        try (BrokerClient client = new BrokerClient(HttpClient.newHttpClient(), endpoint,
+                null, false, Duration.ofMillis(200), Duration.ofMinutes(5))) {
+            Throwable failure = failure(client.probe().toCompletableFuture());
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertTrue(accepted.await(1, TimeUnit.SECONDS));
+            assertTrue(failure instanceof AgentModelException);
+            assertEquals(AgentModelException.Kind.TRANSPORT,
+                    ((AgentModelException) failure).kind());
+            assertTrue("probe used model-turn timeout: " + elapsedMillis, elapsedMillis < 1500);
+            assertEquals(0, client.activeProbeCount());
+        } finally {
+            release.countDown();
+            stale.stop(0);
+        }
+    }
+
     private static void assertHttpFailure(int status, String expectedMessage, String responseBody)
             throws Exception {
         try (Fixture fixture = new Fixture(exchange -> json(exchange, 200, CAPABILITIES),

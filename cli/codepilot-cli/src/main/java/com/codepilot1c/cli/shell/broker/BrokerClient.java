@@ -23,6 +23,9 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.codepilot1c.runtime.agent.AgentMessage;
@@ -52,16 +55,20 @@ import com.google.gson.JsonParser;
 public final class BrokerClient implements BrokerProbe, AutoCloseable {
     public static final int SCHEMA_VERSION = 1;
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    public static final Duration DEFAULT_PROBE_TIMEOUT = Duration.ofSeconds(2);
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofMinutes(5);
 
     private static final String JSON = "application/json";
     private static final String SSE = "text/event-stream";
+    private static final ScheduledThreadPoolExecutor PROBE_TIMEOUTS = probeTimeouts();
 
     private final HttpClient httpClient;
     private final URI capabilitiesEndpoint;
     private final URI chatEndpoint;
+    private final Duration probeTimeout;
     private final Duration requestTimeout;
     private final Set<StreamOperation> operations = ConcurrentHashMap.newKeySet();
+    private final Set<ProbeOperation> probes = ConcurrentHashMap.newKeySet();
     private char[] bearerToken;
     private boolean closed;
 
@@ -70,59 +77,47 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
      */
     public BrokerClient(URI mcpEndpoint, char[] bearerToken, boolean allowInsecureHttp) {
         this(HttpClient.newBuilder().connectTimeout(DEFAULT_CONNECT_TIMEOUT).build(),
-                mcpEndpoint, bearerToken, allowInsecureHttp, DEFAULT_REQUEST_TIMEOUT);
+                mcpEndpoint, bearerToken, allowInsecureHttp,
+                DEFAULT_PROBE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT);
     }
 
     /** Constructor with injectable transport and timeouts for focused hosts/tests. */
     public BrokerClient(HttpClient httpClient, URI mcpEndpoint, char[] bearerToken,
             boolean allowInsecureHttp, Duration requestTimeout) {
+        this(httpClient, mcpEndpoint, bearerToken, allowInsecureHttp,
+                DEFAULT_PROBE_TIMEOUT, requestTimeout);
+    }
+
+    /** Constructor with independently injectable probe and model-turn timeouts. */
+    public BrokerClient(HttpClient httpClient, URI mcpEndpoint, char[] bearerToken,
+            boolean allowInsecureHttp, Duration probeTimeout, Duration requestTimeout) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
+        Objects.requireNonNull(probeTimeout, "probeTimeout");
         Objects.requireNonNull(requestTimeout, "requestTimeout");
+        if (probeTimeout.isZero() || probeTimeout.isNegative()) {
+            throw new IllegalArgumentException("probeTimeout must be positive");
+        }
         if (requestTimeout.isZero() || requestTimeout.isNegative()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
         validateMcpEndpoint(mcpEndpoint, allowInsecureHttp);
         this.capabilitiesEndpoint = brokerEndpoint(mcpEndpoint, "/llm/v1/capabilities");
         this.chatEndpoint = brokerEndpoint(mcpEndpoint, "/llm/v1/chat");
+        this.probeTimeout = probeTimeout;
         this.requestTimeout = requestTimeout;
         this.bearerToken = bearerToken == null ? null : bearerToken.clone();
     }
 
     @Override
     public CompletionStage<BrokerInfo> probe() {
-        final HttpRequest request;
-        try {
-            request = authorized(HttpRequest.newBuilder(capabilitiesEndpoint)
-                    .timeout(requestTimeout)
-                    .header("Accept", JSON)
-                    .GET()).build();
-        } catch (RuntimeException failure) {
-            return failed(transport("EDT broker probe could not be started"));
+        ProbeOperation operation = new ProbeOperation();
+        synchronized (this) {
+            if (closed) return failed(transport("EDT broker client is closed"));
+            probes.add(operation);
         }
-        CompletableFuture<HttpResponse<String>> root;
-        try {
-            root = httpClient.sendAsync(request,
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (RuntimeException failure) {
-            return failed(transport("EDT broker probe could not be started"));
-        }
-        CompletableFuture<BrokerInfo> result = new CompletableFuture<>();
-        root.whenComplete((response, failure) -> {
-            if (failure != null) {
-                result.completeExceptionally(transport("EDT broker probe transport failed"));
-                return;
-            }
-            try {
-                requireSuccessful(response.statusCode());
-                result.complete(parseInfo(response.body()));
-            } catch (RuntimeException protocolFailure) {
-                result.completeExceptionally(protocolFailure);
-            }
-        });
-        result.whenComplete((value, failure) -> {
-            if (result.isCancelled()) root.cancel(true);
-        });
-        return result;
+        operation.result.whenComplete((value, failure) -> probes.remove(operation));
+        operation.start();
+        return operation.result;
     }
 
     CompletableFuture<AgentMessage.Assistant> complete(AgentModel.Request request,
@@ -147,14 +142,21 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
     @Override
     public void close() {
         List<StreamOperation> active;
+        List<ProbeOperation> activeProbes;
         synchronized (this) {
             if (closed) return;
             closed = true;
             if (bearerToken != null) Arrays.fill(bearerToken, '\0');
             bearerToken = null;
             active = List.copyOf(operations);
+            activeProbes = List.copyOf(probes);
         }
+        activeProbes.forEach(ProbeOperation::cancel);
         active.forEach(StreamOperation::cancel);
+    }
+
+    int activeProbeCount() {
+        return probes.size();
     }
 
     private HttpRequest.Builder authorized(HttpRequest.Builder builder) {
@@ -285,6 +287,89 @@ public final class BrokerClient implements BrokerProbe, AutoCloseable {
             return new URI(source.getScheme(), null, source.getHost(), source.getPort(), path, null, null);
         } catch (URISyntaxException failure) {
             throw new IllegalArgumentException("invalid MCP endpoint", failure);
+        }
+    }
+
+    private static ScheduledThreadPoolExecutor probeTimeouts() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, runnable -> {
+            Thread thread = new Thread(runnable, "codepilot-broker-probe-timeout");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.setRemoveOnCancelPolicy(true);
+        executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        return executor;
+    }
+
+    private final class ProbeOperation {
+        private final CompletableFuture<BrokerInfo> result = new CompletableFuture<>();
+        private final AtomicReference<CompletableFuture<HttpResponse<String>>> root =
+                new AtomicReference<>();
+        private final AtomicReference<ScheduledFuture<?>> timeout = new AtomicReference<>();
+
+        ProbeOperation() {
+            result.whenComplete((ignored, failure) -> {
+                ScheduledFuture<?> scheduled = timeout.getAndSet(null);
+                if (scheduled != null) scheduled.cancel(false);
+                if (result.isCancelled()) cancelRoot();
+            });
+        }
+
+        void start() {
+            final HttpRequest request;
+            try {
+                request = authorized(HttpRequest.newBuilder(capabilitiesEndpoint)
+                        .timeout(probeTimeout)
+                        .header("Accept", JSON)
+                        .GET()).build();
+            } catch (RuntimeException failure) {
+                result.completeExceptionally(transport("EDT broker probe could not be started"));
+                return;
+            }
+            final CompletableFuture<HttpResponse<String>> requestFuture;
+            try {
+                requestFuture = httpClient.sendAsync(request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                root.set(requestFuture);
+            } catch (RuntimeException failure) {
+                result.completeExceptionally(transport("EDT broker probe could not be started"));
+                return;
+            }
+            if (result.isDone()) {
+                requestFuture.cancel(true);
+                return;
+            }
+            ScheduledFuture<?> scheduled = PROBE_TIMEOUTS.schedule(() -> {
+                if (result.completeExceptionally(transport("EDT broker probe timed out"))) {
+                    requestFuture.cancel(true);
+                }
+            }, probeTimeout.toNanos(), TimeUnit.NANOSECONDS);
+            timeout.set(scheduled);
+            if (result.isDone() && timeout.compareAndSet(scheduled, null)) scheduled.cancel(false);
+
+            requestFuture.whenComplete((response, failure) -> {
+                if (result.isDone()) return;
+                if (failure != null) {
+                    result.completeExceptionally(transport("EDT broker probe transport failed"));
+                    return;
+                }
+                try {
+                    requireSuccessful(response.statusCode());
+                    result.complete(parseInfo(response.body()));
+                } catch (RuntimeException protocolFailure) {
+                    result.completeExceptionally(protocolFailure);
+                }
+            });
+        }
+
+        void cancel() {
+            result.cancel(true);
+            cancelRoot();
+        }
+
+        void cancelRoot() {
+            CompletableFuture<HttpResponse<String>> requestFuture = root.get();
+            if (requestFuture != null && !requestFuture.isDone()) requestFuture.cancel(true);
         }
     }
 

@@ -9,6 +9,8 @@ import com.codepilot1c.cli.shell.ShellOptions.Mode;
 
 /** Deterministic connected/standalone/auto selection over injectable discovery seams. */
 public final class ModeResolver {
+    /** Four default two-second broker probes bound stale-candidate resolution to about eight seconds. */
+    static final int MAX_CONNECTED_CANDIDATES = 4;
     private final CandidateDiscovery discovery;
     private final ConnectedFactory connected;
     private final StandaloneFactory standalone;
@@ -26,7 +28,7 @@ public final class ModeResolver {
         if (options.mode() == Mode.STANDALONE) return standalone(options, candidates);
 
         List<String> diagnostics = new ArrayList<>();
-        for (Candidate candidate : candidates) {
+        for (Candidate candidate : candidates.stream().limit(MAX_CONNECTED_CANDIDATES).toList()) {
             try {
                 ShellEnvironment environment = connected.connect(candidate, options);
                 if (!"connected".equals(environment.mode())) {
