@@ -1,13 +1,14 @@
 package com.codepilot1c.core.edt.forms;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.ParamSet;
 import com._1c.g5.v8.dt.mcore.Parameter;
+import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.Environments;
+import com._1c.g5.v8.dt.mcore.util.McoreUtil;
 import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 
 /**
@@ -16,7 +17,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
  * <p>Turns a resolved {@code mcore.Event} + a validated handler name + the
  * configuration {@link ScriptVariant} into a BSL procedure stub value:
  * {@code {directive, signatureText, procedureText}}. Directive derivation
- * (STUB-02/STUB-04) and verbatim widest-{@link ParamSet} signature reproduction
+ * (STUB-02/STUB-04) and EDT-compatible first-{@link ParamSet} signature reproduction
  * (STUB-03/STUB-05) live here, entirely as a pure text transform with zero I/O,
  * EMF-transaction, or OSGi-service dependency — every branch is unit-testable
  * against {@code McoreFactory} fakes (see {@code BslHandlerStubGeneratorTest}).</p>
@@ -28,6 +29,17 @@ import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
  * (Расширения) construct — that is Phase 8.</p>
  */
 public class BslHandlerStubGenerator {
+
+    private static final String ON_GET_DATA_AT_SERVER = "OnGetDataAtServer"; //$NON-NLS-1$
+    private static final String DYNAMIC_LIST_TABLE_EXTENSION_TYPE =
+            "FormTableExtensionForDynamicList"; //$NON-NLS-1$
+
+    /** Context used by EDT when it supplies the implicit first handler parameter. */
+    public enum TargetContext {
+        FORM,
+        VISUAL_ITEM,
+        COMMAND
+    }
 
     public BslHandlerStubGenerator() {
         // pure, stateless
@@ -45,9 +57,19 @@ public class BslHandlerStubGenerator {
      * @return the assembled {@link StubText} value object
      */
     public StubText generate(Event event, String handlerName, ScriptVariant variant) {
+        return generate(event, handlerName, variant, TargetContext.FORM);
+    }
+
+    /**
+     * Generates a stub with the same implicit target parameter rules as EDT's
+     * {@code BslModuleEventsLookup}.
+     *
+     * @param targetContext whether the event belongs to the form, a visual item, or a command
+     */
+    public StubText generate(Event event, String handlerName, ScriptVariant variant, TargetContext targetContext) {
         Directive directive = resolveDirective(event);
         String directiveLiteral = directiveLiteral(directive, variant);
-        String signatureText = buildParamList(event, variant);
+        String signatureText = buildParamList(event, variant, targetContext);
         String procedureText = buildProcedureText(directiveLiteral, handlerName, signatureText, variant);
         return new StubText(directiveLiteral, signatureText, procedureText);
     }
@@ -96,19 +118,24 @@ public class BslHandlerStubGenerator {
 
     /**
      * Builds the BSL parameter list text (e.g. {@code "Элемент, СтандартнаяОбработка"}) from
-     * the event's widest {@link ParamSet}, reproducing parameter names verbatim per
+     * the event's first {@link ParamSet}, reproducing parameter names verbatim per
      * {@link ScriptVariant}. Out-parameters ({@link Parameter#isOut()}) render as plain
      * parameter names (1C BSL has no explicit out/ref keyword in the procedure declaration
      * itself — the out behavior is a calling-convention contract, not BSL syntax).
      */
-    private String buildParamList(Event event, ScriptVariant variant) {
-        ParamSet widest = selectWidestParamSet(event);
-        if (widest == null) {
-            return ""; //$NON-NLS-1$
-        }
+    private String buildParamList(Event event, ScriptVariant variant, TargetContext targetContext) {
         boolean useRussian = BslKeywords.isRussian(variant);
         List<String> names = new ArrayList<>();
-        for (Parameter parameter : widest.getParams()) {
+        if (targetContext == TargetContext.COMMAND) {
+            names.add(useRussian ? "Команда" : "Command"); //$NON-NLS-1$ //$NON-NLS-2$
+        } else if (targetContext == TargetContext.VISUAL_ITEM && !isOnGetDataAtServer(event)) {
+            names.add(useRussian ? "Элемент" : "Item"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        ParamSet first = selectFirstParamSet(event);
+        if (first == null) {
+            return String.join(", ", names); //$NON-NLS-1$
+        }
+        for (Parameter parameter : first.getParams()) {
             String name = useRussian
                     ? firstNonBlank(parameter.getNameRu(), parameter.getName())
                     : firstNonBlank(parameter.getName(), parameter.getNameRu());
@@ -118,18 +145,21 @@ public class BslHandlerStubGenerator {
     }
 
     /**
-     * Selects the widest {@link ParamSet} by arity (largest {@link ParamSet#getMaxParams()}),
-     * per STUB-05. Returns the sole entry if only one exists, or {@code null} if the event
-     * declares no {@link ParamSet} at all.
+     * EDT's {@code BslModuleEventsLookup} always uses the first declared parameter set.
      */
-    private ParamSet selectWidestParamSet(Event event) {
+    private ParamSet selectFirstParamSet(Event event) {
         List<ParamSet> paramSets = event.getParamSet();
         if (paramSets == null || paramSets.isEmpty()) {
             return null;
         }
-        return paramSets.stream()
-                .max(Comparator.comparingInt(ParamSet::getMaxParams))
-                .orElse(paramSets.get(0));
+        return paramSets.get(0);
+    }
+
+    private boolean isOnGetDataAtServer(Event event) {
+        return event != null
+                && ON_GET_DATA_AT_SERVER.equals(event.getName())
+                && event.eContainer() instanceof TypeItem typeItem
+                && DYNAMIC_LIST_TABLE_EXTENSION_TYPE.equals(McoreUtil.getTypeName(typeItem));
     }
 
     private String buildProcedureText(String directiveLiteral, String handlerName, String signatureText,

@@ -19,6 +19,10 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
  */
 public class EventHandlerTargetResolver {
 
+    /** Resolved platform event together with the model object owning its handlers. */
+    public record ResolvedEvent(EventHandlerContainer owner, Event event) {
+    }
+
     private final EventHandlerCatalog catalog;
 
     public EventHandlerTargetResolver() {
@@ -66,16 +70,46 @@ public class EventHandlerTargetResolver {
      *         allowed event matches; the message enumerates the allowed names
      */
     public Event resolveConcreteEvent(EventHandlerContainer container, String requestedEvent) {
-        List<Event> allowed = catalog.allowedEvents((FormVisualEntity) container);
-        return allowed.stream()
-                .filter(event -> requestedEvent != null
-                        && (requestedEvent.equalsIgnoreCase(event.getName())
-                                || requestedEvent.equalsIgnoreCase(event.getNameRu())))
-                .findFirst()
-                .orElseThrow(() -> new MetadataOperationException(
-                        MetadataOperationCode.METADATA_NOT_FOUND,
-                        "Unknown event '" + requestedEvent + "' for this item. Available events: " //$NON-NLS-1$ //$NON-NLS-2$
-                                + allowed.stream().map(Event::getName).collect(Collectors.joining(", ")), //$NON-NLS-1$
-                        false));
+        return resolveEvent((FormVisualEntity) container, requestedEvent).event();
+    }
+
+    /**
+     * Resolves an event in EDT UI order and preserves its actual handler owner. Direct
+     * item events win over ExtInfo events with the same localized/name spelling.
+     */
+    public ResolvedEvent resolveEvent(FormVisualEntity item, String requestedEvent) {
+        List<EventHandlerCatalog.EventSurface> surfaces = catalog.eventSurfaces(item);
+        if (surfaces.isEmpty() && !(item instanceof EventHandlerContainer)) {
+            requireEventHandlerContainer(item);
+        }
+        for (EventHandlerCatalog.EventSurface surface : surfaces) {
+            for (Event event : surface.events()) {
+                if (matches(event, requestedEvent)) {
+                    return new ResolvedEvent(surface.owner(), event);
+                }
+            }
+        }
+        List<Event> allowed = surfaces.stream()
+                .flatMap(surface -> surface.events().stream())
+                .toList();
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Unknown event '" + requestedEvent + "' for this item. Available events: " //$NON-NLS-1$ //$NON-NLS-2$
+                        + allowed.stream().map(Event::getName).collect(Collectors.joining(", ")), //$NON-NLS-1$
+                false);
+    }
+
+    /** Returns all actual handler owners in EDT UI order for inspection. */
+    public List<EventHandlerContainer> resolveHandlerOwners(FormVisualEntity item) {
+        return catalog.eventSurfaces(item).stream()
+                .map(EventHandlerCatalog.EventSurface::owner)
+                .distinct()
+                .toList();
+    }
+
+    private boolean matches(Event event, String requestedEvent) {
+        return requestedEvent != null && event != null
+                && (requestedEvent.equalsIgnoreCase(event.getName())
+                        || requestedEvent.equalsIgnoreCase(event.getNameRu()));
     }
 }

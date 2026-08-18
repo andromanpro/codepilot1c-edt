@@ -90,32 +90,34 @@ public class EventHandlerStubIntegrationTest {
     }
 
     @Test
-    public void failingWriteTriggersRollbackAndHandlerSlotIsRemoved() {
+    public void failingWriteRestoresPreExistingHandlerSnapshot() {
         FailingModuleFileWriter writer = new FailingModuleFileWriter();
         writer.seed(MODULE_PATH, ""); //$NON-NLS-1$
         BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(writer);
         StubText stub = new BslHandlerStubGenerator().generate(onOpenEvent, HANDLER_NAME, ScriptVariant.RUSSIAN);
 
-        // Simulate the wired model slot exactly as wireEventHandler would upsert it.
+        // Simulate an upsert of a pre-existing model slot. Compensation must restore
+        // the old binding, not blindly remove it.
         FakeHandlerContainer container = new FakeHandlerContainer();
-        container.addHandler(HANDLER_NAME);
+        String previousHandlerName = "OldFormOnOpen"; //$NON-NLS-1$
+        container.addHandler(previousHandlerName);
+        container.renameHandler(previousHandlerName, HANDLER_NAME);
         assertTrue(container.hasHandler(HANDLER_NAME));
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
         assertEquals(StubWriteOutcome.WRITE_FAILURE, outcome);
 
-        // Mirrors writeHandlerStubs's WRITE_FAILURE branch: rollbackHandlerSlot removes the
-        // just-wired slot (re-resolving fresh in the real code, Pitfall 2) then re-exports and
-        // throws EDT_TRANSACTION_FAILED (STUB-01 both-or-neither) -- reproduced here at the
-        // seam boundary since a live BM transaction is not available headlessly.
+        // Mirrors writeHandlerStubs's outer compensation path: rollbackHandlerSlot restores
+        // the pre-upsert snapshot (re-resolving fresh in the real code, Pitfall 2), then the
+        // service re-exports and preserves EDT_TRANSACTION_FAILED as the original cause.
         boolean rolledBack = false;
         try {
             if (outcome == StubWriteOutcome.WRITE_FAILURE) {
-                container.removeHandler(HANDLER_NAME); // rollbackHandlerSlot's effect
+                container.renameHandler(HANDLER_NAME, previousHandlerName);
                 rolledBack = true;
                 throw new MetadataOperationException(
                         MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                        "Stub write failed for handler '" + HANDLER_NAME + "'; handler slot rolled back", //$NON-NLS-1$ //$NON-NLS-2$
+                        "Stub write failed for handler '" + HANDLER_NAME + "'", //$NON-NLS-1$ //$NON-NLS-2$
                         true);
             }
             fail("expected MetadataOperationException"); //$NON-NLS-1$
@@ -124,8 +126,9 @@ public class EventHandlerStubIntegrationTest {
         }
 
         assertTrue(rolledBack);
-        assertFalse("handler slot must be removed after rollback (STUB-01 both-or-neither)", //$NON-NLS-1$
-                container.hasHandler(HANDLER_NAME));
+        assertFalse(container.hasHandler(HANDLER_NAME));
+        assertTrue("pre-existing handler must be restored after rollback", //$NON-NLS-1$
+                container.hasHandler(previousHandlerName));
     }
 
     @Test
@@ -140,7 +143,9 @@ public class EventHandlerStubIntegrationTest {
         StubText stub = new BslHandlerStubGenerator().generate(onOpenEvent, HANDLER_NAME, ScriptVariant.RUSSIAN);
 
         FakeHandlerContainer container = new FakeHandlerContainer();
-        container.addHandler(HANDLER_NAME);
+        String previousHandlerName = "OldFormOnOpen"; //$NON-NLS-1$
+        container.addHandler(previousHandlerName);
+        container.renameHandler(previousHandlerName, HANDLER_NAME);
 
         StubWriteOutcome outcome = stubWriter.write(MODULE_PATH, HANDLER_NAME, stub, ScriptVariant.RUSSIAN);
         String summary = summarize(outcome, HANDLER_NAME, stub);
@@ -148,6 +153,8 @@ public class EventHandlerStubIntegrationTest {
         assertEquals(StubWriteOutcome.SKIPPED_EXISTING_WARN, outcome);
         assertEquals("model slot must stay wired on SKIPPED_EXISTING_WARN (Pitfall 3, no rollback)", //$NON-NLS-1$
                 true, container.hasHandler(HANDLER_NAME));
+        assertFalse("SKIPPED must not restore the pre-upsert snapshot", //$NON-NLS-1$
+                container.hasHandler(previousHandlerName));
         assertEquals(existingText, writer.read(MODULE_PATH));
         assertTrue(summary.contains("stub skipped (exists)")); //$NON-NLS-1$
     }
@@ -251,8 +258,11 @@ public class EventHandlerStubIntegrationTest {
             handlerNames.add(name);
         }
 
-        void removeHandler(String name) {
-            handlerNames.remove(name);
+        void renameHandler(String oldName, String newName) {
+            int index = handlerNames.indexOf(oldName);
+            if (index >= 0) {
+                handlerNames.set(index, newName);
+            }
         }
 
         boolean hasHandler(String name) {

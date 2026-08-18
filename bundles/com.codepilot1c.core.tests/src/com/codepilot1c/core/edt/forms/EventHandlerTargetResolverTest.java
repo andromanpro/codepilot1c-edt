@@ -13,7 +13,9 @@ import com._1c.g5.v8.dt.form.model.Button;
 import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 
@@ -85,6 +87,33 @@ public class EventHandlerTargetResolverTest {
         EventHandlerContainer container = resolver.requireEventHandlerContainer(form);
 
         assertSame(form, container);
+    }
+
+    @Test
+    public void resolvesExtensionEventWithItsActualOwnerAfterDirectEvents() {
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        field.setExtInfo(extInfo);
+        Event direct = createEvent(EVENT_ON_CHANGE_EN, EVENT_ON_CHANGE_RU);
+        Event extension = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandlerCatalog catalog = new EventHandlerCatalog() {
+            @Override
+            public List<Event> allowedEvents(FormVisualEntity item) {
+                return List.of(direct, extension);
+            }
+
+            @Override
+            public List<EventSurface> eventSurfaces(FormVisualEntity item) {
+                return List.of(new EventSurface(field, List.of(direct)),
+                        new EventSurface(extInfo, List.of(extension)));
+            }
+        };
+
+        EventHandlerTargetResolver.ResolvedEvent resolved =
+                new EventHandlerTargetResolver(catalog).resolveEvent(field, "StartChoice"); //$NON-NLS-1$
+
+        assertSame(extInfo, resolved.owner());
+        assertSame(extension, resolved.event());
     }
 
     private static Event createEvent(String nameEn, String nameRu) {

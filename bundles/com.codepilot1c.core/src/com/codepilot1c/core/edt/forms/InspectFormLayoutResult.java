@@ -49,7 +49,12 @@ public record InspectFormLayoutResult(
     /**
      * Event handler surfaced on a form node (form root or a {@code FormItemNode}).
      */
-    public record EventHandlerInfo(String event, String handlerName) {
+    public record EventHandlerInfo(String event, String handlerName, String callType) {
+
+        /** Constructor retained for native handler callers and binary/source compatibility. */
+        public EventHandlerInfo(String event, String handlerName) {
+            this(event, handlerName, null);
+        }
     }
 
     /**

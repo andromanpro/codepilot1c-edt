@@ -18,6 +18,7 @@ import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 
@@ -28,7 +29,7 @@ import com.codepilot1c.core.edt.forms.InspectFormLayoutResult;
 
 /**
  * Covers INSP-01: {@code inspect_form_layout} surfaces existing event handlers as
- * {@code {event, handlerName}} on both the form root (via {@code formProperties}) and each
+ * {@code {event, handlerName, callType}} on both the form root (via {@code formProperties}) and each
  * {@code EventHandlerContainer} {@link InspectFormLayoutResult.FormItemNode}.
  *
  * <p>Invokes the private {@code collectFormRootProperties}/{@code collectFormItemNodes} directly
@@ -66,6 +67,26 @@ public class EventHandlerInspectTest {
     }
 
     @Test
+    public void adoptedDuplicateEventsExposeCallTypeForDisambiguation() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        attachExtensionHandler(form, EVENT_ON_OPEN_EN, "BeforeHandler", //$NON-NLS-1$
+                com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE);
+        attachExtensionHandler(form, EVENT_ON_OPEN_EN, "AfterHandler", //$NON-NLS-1$
+                com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER);
+
+        Map<String, Object> formProperties = collectFormRootProperties(form, false, false);
+
+        @SuppressWarnings("unchecked")
+        List<InspectFormLayoutResult.EventHandlerInfo> handlers =
+                (List<InspectFormLayoutResult.EventHandlerInfo>) formProperties.get("eventHandlers"); //$NON-NLS-1$
+        assertEquals(2, handlers.size());
+        assertTrue(handlers.contains(new InspectFormLayoutResult.EventHandlerInfo(
+                EVENT_ON_OPEN_EN, "BeforeHandler", "Before"))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(handlers.contains(new InspectFormLayoutResult.EventHandlerInfo(
+                EVENT_ON_OPEN_EN, "AfterHandler", "After"))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void fieldFormItemNodeEventHandlersSurfacesFieldHandler() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         FormField field = FormFactory.eINSTANCE.createFormField();
@@ -81,6 +102,42 @@ public class EventHandlerInspectTest {
         assertEquals(1, fieldNode.eventHandlers().size());
         assertEquals(new InspectFormLayoutResult.EventHandlerInfo(EVENT_ON_CHANGE_EN, "FieldOnChange"), //$NON-NLS-1$
                 fieldNode.eventHandlers().get(0));
+    }
+
+    @Test
+    public void fieldNodeAggregatesHandlerStoredOnExtInfo() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("MyField"); //$NON-NLS-1$
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        field.setExtInfo(extInfo);
+        form.getItems().add(field);
+        Event startChoice = createEvent("StartChoice"); //$NON-NLS-1$
+        attachHandler(extInfo, "StartChoice", "FieldStartChoice"); //$NON-NLS-1$ //$NON-NLS-2$
+        EventHandlerCatalog catalog = new EventHandlerCatalog() {
+            @Override
+            public List<Event> allowedEvents(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                return List.of(startChoice);
+            }
+
+            @Override
+            public List<EventSurface> eventSurfaces(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                if (item == field) {
+                    return List.of(new EventSurface(field, List.of()),
+                            new EventSurface(extInfo, List.of(startChoice)));
+                }
+                return EventHandlerCatalog.super.eventSurfaces(item);
+            }
+        };
+        service = new EdtMetadataService(
+                new EdtMetadataGateway(), new EventHandlerTargetResolver(catalog));
+
+        List<InspectFormLayoutResult.FormItemNode> nodes = collectFormItemNodes(form);
+
+        assertEquals(1, nodes.get(0).eventHandlers().size());
+        assertEquals(new InspectFormLayoutResult.EventHandlerInfo("StartChoice", "FieldStartChoice"), //$NON-NLS-1$ //$NON-NLS-2$
+                nodes.get(0).eventHandlers().get(0));
     }
 
     @Test
@@ -134,6 +191,19 @@ public class EventHandlerInspectTest {
         EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
         handler.setEvent(createEvent(eventName));
         handler.setName(handlerName);
+        container.getHandlers().add(handler);
+    }
+
+    private static void attachExtensionHandler(
+            com._1c.g5.v8.dt.form.model.EventHandlerContainer container,
+            String eventName,
+            String handlerName,
+            com._1c.g5.v8.dt.form.model.ExtendedMethodCallType callType) {
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension handler =
+                FormFactory.eINSTANCE.createEventHandlerExtension();
+        handler.setEvent(createEvent(eventName));
+        handler.setName(handlerName);
+        handler.setCallType(callType);
         container.getHandlers().add(handler);
     }
 

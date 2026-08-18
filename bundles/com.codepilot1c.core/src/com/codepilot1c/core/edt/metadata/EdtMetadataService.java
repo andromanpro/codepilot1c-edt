@@ -148,11 +148,13 @@ import com._1c.g5.v8.dt.moxel.Row;
 import com._1c.g5.v8.dt.moxel.RowsArea;
 import com._1c.g5.v8.dt.moxel.SpreadsheetDocument;
 import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator;
+import com.codepilot1c.core.edt.forms.BslHandlerStubGenerator.TargetContext;
 import com.codepilot1c.core.edt.forms.BslHandlerStubWriter;
 import com.codepilot1c.core.edt.forms.BslHandlerStubWriter.StubWriteOutcome;
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.CreateFormResult;
 import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver;
+import com.codepilot1c.core.edt.forms.EventHandlerTargetResolver.ResolvedEvent;
 import com.codepilot1c.core.edt.forms.ExtendedMethodCallTypeResolver;
 import com.codepilot1c.core.edt.forms.FormOwnerStrategy;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
@@ -553,9 +555,9 @@ public class EdtMetadataService {
     /**
      * Post-export tail (07-03, STUB-06): for each pending stub, ensures {@code Module.bsl}
      * exists (createIfMissing, Pitfall 4), generates + writes the BSL handler stub via
-     * {@link BslHandlerStubWriter}, and on {@link StubWriteOutcome#WRITE_FAILURE} runs the
-     * compensating {@link #rollbackHandlerSlot} + re-export, then throws
-     * {@code EDT_TRANSACTION_FAILED} (STUB-01 both-or-neither).
+     * {@link BslHandlerStubWriter}. Any failure after the BM commit (fresh verification,
+     * generation, or write) compensates every still-unpaired handler mutation and re-exports
+     * once before rethrowing the original failure (STUB-01 both-or-neither).
      * {@link StubWriteOutcome#SKIPPED_EXISTING_WARN} appends a warning summary only — the
      * model slot stays wired, NO rollback (Pitfall 3).
      */
@@ -566,37 +568,75 @@ public class EdtMetadataService {
             String topLevelFqn,
             List<PendingStub> pendingStubs,
             String opId) {
-        ScriptVariant variant = resolveScriptVariant(configuration);
-        String modulePath = ensureFormModulePath(project, formFqn, opId);
         List<String> summaries = new ArrayList<>();
-        BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
-        BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
-        for (PendingStub pending : pendingStubs) {
-            Event freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
-            BslHandlerStubGenerator.StubText stub = generator.generate(freshEvent, pending.handlerName(), variant);
-            StubWriteOutcome outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
-            switch (outcome) {
-                case WRITTEN -> summaries.add(
-                        "stub generated: " + pending.handlerName() + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                case SKIPPED_EXISTING_WARN -> {
-                    LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
-                            opId, pending.handlerName());
-                    summaries.add("stub skipped (exists): " + pending.handlerName()); //$NON-NLS-1$
-                }
-                case WRITE_FAILURE -> {
-                    LOG.error("[%s] Stub write failed for handler '%s'; rolling back handler slot", //$NON-NLS-1$
-                            opId, pending.handlerName());
-                    rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
-                    forceExportTopLevelObject(project, topLevelFqn, opId);
-                    throw new MetadataOperationException(
+        List<PendingStub> awaitingStub = new ArrayList<>(pendingStubs);
+        try {
+            ScriptVariant variant = resolveScriptVariant(configuration);
+            String modulePath = ensureFormModulePath(project, formFqn, opId);
+            BslHandlerStubGenerator generator = new BslHandlerStubGenerator();
+            BslHandlerStubWriter stubWriter = new BslHandlerStubWriter(moduleFileWriter);
+            for (PendingStub pending : pendingStubs) {
+                Event freshEvent = resolveFreshEvent(project, configuration, formFqn, pending);
+                BslHandlerStubGenerator.StubText stub = generator.generate(
+                        freshEvent, pending.handlerName(), variant, pending.targetContext());
+                StubWriteOutcome outcome = stubWriter.write(modulePath, pending.handlerName(), stub, variant);
+                switch (outcome) {
+                    case WRITTEN -> summaries.add(
+                            "stub generated: " + pending.handlerName() + " (" + stub.directive() + ")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    case SKIPPED_EXISTING_WARN -> {
+                        LOG.warn("[%s] Handler procedure '%s' already exists; leaving untouched", //$NON-NLS-1$
+                                opId, pending.handlerName());
+                        summaries.add("stub skipped (exists): " + pending.handlerName()); //$NON-NLS-1$
+                    }
+                    case WRITE_FAILURE -> throw new MetadataOperationException(
                             MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                            "Stub write failed for handler '" + pending.handlerName() //$NON-NLS-1$
-                                    + "'; handler slot rolled back", true); //$NON-NLS-1$
+                            "Stub write failed for handler '" + pending.handlerName() + "'", true); //$NON-NLS-1$ //$NON-NLS-2$
+                    default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
                 }
-                default -> throw new IllegalStateException("Unhandled StubWriteOutcome: " + outcome); //$NON-NLS-1$
+                // WRITTEN and SKIPPED are both valid paired states. Never compensate a
+                // skipped existing procedure merely because a later handler fails.
+                awaitingStub.remove(0);
+            }
+            return summaries;
+        } catch (RuntimeException failure) {
+            compensateHandlerMutations(
+                    project, configuration, formFqn, topLevelFqn, awaitingStub, opId, failure);
+            throw failure;
+        }
+    }
+
+    private void compensateHandlerMutations(
+            IProject project,
+            Configuration configuration,
+            String formFqn,
+            String topLevelFqn,
+            List<PendingStub> pendingStubs,
+            String opId,
+            RuntimeException originalFailure) {
+        if (pendingStubs.isEmpty()) {
+            return;
+        }
+        LOG.error("[%s] Post-commit handler processing failed; compensating %d mutation(s)", //$NON-NLS-1$
+                opId, Integer.valueOf(pendingStubs.size()));
+        // Reverse mutation order so sequential upserts of the same event unwind to
+        // the original pre-request state rather than an intermediate snapshot.
+        for (int index = pendingStubs.size() - 1; index >= 0; index--) {
+            PendingStub pending = pendingStubs.get(index);
+            try {
+                rollbackHandlerSlot(project, configuration, formFqn, pending, opId);
+            } catch (RuntimeException rollbackFailure) {
+                originalFailure.addSuppressed(rollbackFailure);
+                LOG.error("[%s] Handler compensation failed for event=%s handler=%s: %s", //$NON-NLS-1$
+                        opId, pending.eventName(), pending.handlerName(), rollbackFailure.toString());
             }
         }
-        return summaries;
+        try {
+            forceExportTopLevelObject(project, topLevelFqn, opId);
+        } catch (RuntimeException exportFailure) {
+            originalFailure.addSuppressed(exportFailure);
+            LOG.error("[%s] Re-export after handler compensation failed: %s", //$NON-NLS-1$
+                    opId, exportFailure.toString());
+        }
     }
 
     /**
@@ -634,8 +674,17 @@ public class EdtMetadataService {
             }
             Form formModel = resolveManagedFormModel(basicForm, formFqn);
             FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
-            EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
-            return eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
+            ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, pending.eventName());
+            EventHandler persistedHandler = findExistingHandler(
+                    resolvedEvent.owner(), resolvedEvent.event(), pending.adopted(), pending.callType());
+            if (persistedHandler == null || !pending.handlerName().equals(persistedHandler.getName())) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Event handler binding is not visible after commit: event=" + pending.eventName() //$NON-NLS-1$
+                                + ", handler=" + pending.handlerName(), //$NON-NLS-1$
+                        true);
+            }
+            return resolvedEvent.event();
         });
     }
 
@@ -643,7 +692,7 @@ public class EdtMetadataService {
      * Compensating transaction (STUB-01 "both or neither"): re-resolves the Form/container/
      * handler completely FRESH inside a NEW {@code executeWrite} — never closing over the
      * original transaction's (now-stale) object references (Pitfall 2) — and removes the
-     * just-wired handler slot.
+     * just-wired handler slot or restores the pre-upsert handler snapshot.
      */
     private void rollbackHandlerSlot(
             IProject project, Configuration configuration, String formFqn, PendingStub pending, String opId) {
@@ -656,14 +705,44 @@ public class EdtMetadataService {
             }
             Form formModel = resolveManagedFormModel(basicForm, formFqn);
             FormVisualEntity target = resolveEventHandlerFormItem(formModel, pending.operation());
-            EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
-            Event freshEvent = eventHandlerTargetResolver.resolveConcreteEvent(container, pending.eventName());
-            EventHandler existing = findExistingHandler(container, freshEvent);
-            if (existing != null) {
-                container.getHandlers().remove(existing);
-            }
+            ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, pending.eventName());
+            restoreHandlerSnapshot(
+                    resolvedEvent.owner(), resolvedEvent.event(),
+                    pending.adopted(), pending.callType(), pending.previousState());
             return null;
         });
+    }
+
+    /** Restores one handler mutation from its pre-commit snapshot. Package-visible for tests. */
+    void restoreHandlerSnapshot(
+            EventHandlerContainer owner,
+            Event event,
+            boolean adopted,
+            ExtendedMethodCallType callType,
+            HandlerMutationSnapshot previousState) {
+        EventHandler current = findExistingHandler(owner, event, adopted, callType);
+        if (!previousState.existed()) {
+            if (current != null) {
+                owner.getHandlers().remove(current);
+            }
+            return;
+        }
+
+        boolean currentIsExtension = current instanceof EventHandlerExtension;
+        if (current == null || currentIsExtension != previousState.extensionHandler()) {
+            if (current != null) {
+                owner.getHandlers().remove(current);
+            }
+            current = previousState.extensionHandler()
+                    ? FormFactory.eINSTANCE.createEventHandlerExtension()
+                    : FormFactory.eINSTANCE.createEventHandler();
+            current.setEvent(event);
+            owner.getHandlers().add(current);
+        }
+        current.setName(previousState.handlerName());
+        if (current instanceof EventHandlerExtension extensionHandler) {
+            extensionHandler.setCallType(previousState.callType());
+        }
     }
 
     public FormRecipeResult applyFormRecipe(FormRecipeRequest request) {
@@ -1228,7 +1307,14 @@ public class EdtMetadataService {
                 case "addeventhandler", "seteventhandler" -> {
                     WiredEventHandler wired = wireEventHandler(formModel, operation);
                     EventHandler handler = wired.handler();
-                    pendingStubs.add(new PendingStub(operation, handler.getEvent().getName(), handler.getName()));
+                    pendingStubs.add(new PendingStub(
+                            operation,
+                            handler.getEvent().getName(),
+                            handler.getName(),
+                            wired.targetContext(),
+                            wired.adopted(),
+                            wired.callType(),
+                            wired.previousState()));
                     StringBuilder summary = new StringBuilder("add_event_handler[") //$NON-NLS-1$
                             .append(operationIndex)
                             .append("]: event=") //$NON-NLS-1$
@@ -1243,14 +1329,27 @@ public class EdtMetadataService {
                 }
                 case "removeeventhandler" -> {
                     FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
-                    EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
                     String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
-                    Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
-                    EventHandler existing = findExistingHandler(container, event);
+                    ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+                    Event event = resolvedEvent.event();
+                    boolean adopted = isAdoptedTarget(formModel);
+                    ExtendedMethodCallType callType = adopted
+                            ? extendedMethodCallTypeResolver.resolve(
+                                    asString(getMapValueIgnoreCase(operation, "call_type"))) //$NON-NLS-1$
+                            : null;
+                    EventHandler existing = findExistingHandler(
+                            resolvedEvent.owner(), event, adopted, callType);
                     if (existing != null) {
-                        container.getHandlers().remove(existing);
+                        resolvedEvent.owner().getHandlers().remove(existing);
                     }
-                    summaries.add("remove_event_handler[" + operationIndex + "]: event=" + event.getName()); //$NON-NLS-1$ //$NON-NLS-2$
+                    StringBuilder summary = new StringBuilder("remove_event_handler[") //$NON-NLS-1$
+                            .append(operationIndex)
+                            .append("]: event=") //$NON-NLS-1$
+                            .append(event.getName());
+                    if (adopted) {
+                        summary.append(", call_type=").append(callType.getLiteral()); //$NON-NLS-1$
+                    }
+                    summaries.add(summary.toString());
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -1283,8 +1382,10 @@ public class EdtMetadataService {
     }
 
     /**
-     * Upsert-by-(target,event) implementation shared by {@code add_event_handler} and
-     * {@code set_event_handler}: re-wiring the same event never duplicates the handler.
+     * Upsert implementation shared by {@code add_event_handler} and
+     * {@code set_event_handler}. Native identity is {@code (owner,eventName)}. Adopted
+     * identity mirrors EDT {@code ModelUtils}: {@code (owner,eventName,callType)}, so
+     * BEFORE and AFTER handlers may coexist while an exact tuple is updated in place.
      *
      * <p>Extension-adoption branch (EXT-01/EXT-02/EXT-03, Phase 8): if the form's owning
      * {@code BasicForm} is {@link ObjectBelonging#ADOPTED} (a single uniform signal reached
@@ -1307,9 +1408,10 @@ public class EdtMetadataService {
      */
     private WiredEventHandler wireEventHandler(Form formModel, Map<String, Object> operation) {
         FormVisualEntity target = resolveEventHandlerFormItem(formModel, operation);
-        EventHandlerContainer container = eventHandlerTargetResolver.requireEventHandlerContainer(target);
         String requestedEvent = asString(getMapValueIgnoreCase(operation, "event")); //$NON-NLS-1$
-        Event event = eventHandlerTargetResolver.resolveConcreteEvent(container, requestedEvent);
+        ResolvedEvent resolvedEvent = eventHandlerTargetResolver.resolveEvent(target, requestedEvent);
+        EventHandlerContainer owner = resolvedEvent.owner();
+        Event event = resolvedEvent.event();
         String handlerName = asString(getMapValueIgnoreCase(operation, "handler_name")); //$NON-NLS-1$
         if (handlerName == null || handlerName.isBlank()) {
             handlerName = defaultHandlerName(target, event);
@@ -1322,17 +1424,18 @@ public class EdtMetadataService {
         boolean adopted = isAdoptedTarget(formModel);
         ExtendedMethodCallType requestedCallType = extendedMethodCallTypeResolver.resolve(
                 asString(getMapValueIgnoreCase(operation, "call_type"))); //$NON-NLS-1$
-        EventHandler handler = findExistingHandler(container, event);
+        EventHandler handler = findExistingHandler(owner, event, adopted, requestedCallType);
+        HandlerMutationSnapshot previousState = HandlerMutationSnapshot.capture(handler);
         if (handler == null) {
             handler = createHandlerForTarget(adopted, requestedCallType);
             handler.setEvent(event);
-            container.getHandlers().add(handler);
-        } else if (adopted && handler instanceof EventHandlerExtension extensionHandler) {
-            extensionHandler.setCallType(requestedCallType);
+            owner.getHandlers().add(handler);
         }
         handler.setName(handlerName);
         boolean baseExists = adopted && baseHandlerExists(formModel, operation, event);
-        return new WiredEventHandler(handler, requestedCallType, adopted, baseExists);
+        TargetContext targetContext = target == formModel ? TargetContext.FORM : TargetContext.VISUAL_ITEM;
+        return new WiredEventHandler(
+                handler, requestedCallType, adopted, baseExists, targetContext, previousState);
     }
 
     /**
@@ -1397,10 +1500,13 @@ public class EdtMetadataService {
             // never a hard failure of the wiring operation itself.
             return false;
         }
-        if (!(baseTarget instanceof EventHandlerContainer baseContainer)) {
+        ResolvedEvent baseEvent;
+        try {
+            baseEvent = eventHandlerTargetResolver.resolveEvent(baseTarget, event.getName());
+        } catch (RuntimeException e) {
             return false;
         }
-        return containsHandlerForEventName(baseContainer, event.getName());
+        return containsHandlerForEventName(baseEvent.owner(), event.getName());
     }
 
     /**
@@ -1421,10 +1527,26 @@ public class EdtMetadataService {
         return false;
     }
 
-    private EventHandler findExistingHandler(EventHandlerContainer container, Event event) {
+    private EventHandler findExistingHandler(
+            EventHandlerContainer container,
+            Event event,
+            boolean adopted,
+            ExtendedMethodCallType callType) {
+        String eventName = event != null ? event.getName() : null;
+        if (eventName == null) {
+            return null;
+        }
         for (EventHandler handler : container.getHandlers()) {
-            if (handler != null && handler.getEvent() == event) {
+            if (handler == null || handler.getEvent() == null
+                    || !eventName.equals(handler.getEvent().getName())) {
+                continue;
+            }
+            if (!adopted) {
                 return handler;
+            }
+            if (handler instanceof EventHandlerExtension extensionHandler
+                    && extensionHandler.getCallType() == callType) {
+                return extensionHandler;
             }
         }
         return null;
@@ -1437,7 +1559,31 @@ public class EdtMetadataService {
      * (validated) but never applied/echoed — {@code adopted} is {@code false}.
      */
     private record WiredEventHandler(
-            EventHandler handler, ExtendedMethodCallType callType, boolean adopted, boolean baseHandlerExists) {
+            EventHandler handler,
+            ExtendedMethodCallType callType,
+            boolean adopted,
+            boolean baseHandlerExists,
+            TargetContext targetContext,
+            HandlerMutationSnapshot previousState) {
+    }
+
+    /** Snapshot required to reverse a post-commit add/upsert without losing prior state. */
+    record HandlerMutationSnapshot(
+            boolean existed,
+            boolean extensionHandler,
+            String handlerName,
+            ExtendedMethodCallType callType) {
+
+        static HandlerMutationSnapshot capture(EventHandler handler) {
+            if (handler == null) {
+                return new HandlerMutationSnapshot(false, false, null, null);
+            }
+            boolean extension = handler instanceof EventHandlerExtension;
+            ExtendedMethodCallType previousCallType = extension
+                    ? ((EventHandlerExtension) handler).getCallType()
+                    : null;
+            return new HandlerMutationSnapshot(true, extension, handler.getName(), previousCallType);
+        }
     }
 
     /**
@@ -1448,16 +1594,26 @@ public class EdtMetadataService {
      * resolved event's EN name — both retained (rather than the live, transaction-scoped
      * {@code Event}/container EMF references) so BOTH the stub-write tail and the
      * compensating rollback ({@link #rollbackHandlerSlot}) re-resolve the
-     * target/container/event completely FRESH via {@link #resolveEventHandlerFormItem} +
-     * {@code resolveConcreteEvent} inside their own transactions — never touching a
+     * target/actual-owner/event completely FRESH via {@link #resolveEventHandlerFormItem} +
+     * {@link EventHandlerTargetResolver#resolveEvent} inside their own transactions — never touching a
      * reference from the (by-then-committed, transaction-scoped) original transaction
      * (Pitfall 2).</p>
      *
      * <p>{@code handlerName} is the already-validated handler procedure name (validated
      * upstream by {@code MetadataNameValidator.isValidName} in {@link #wireEventHandler} —
-     * not re-validated here or downstream, per V5).</p>
+     * not re-validated here or downstream, per V5). {@code targetContext} preserves the
+     * EDT implicit-parameter rule. {@code adopted}/{@code callType} preserve the exact
+     * handler tuple across fresh verification and rollback, while {@code previousState}
+     * restores the old handler name or removes a newly-created tuple.</p>
      */
-    private record PendingStub(Map<String, Object> operation, String eventName, String handlerName) {
+    private record PendingStub(
+            Map<String, Object> operation,
+            String eventName,
+            String handlerName,
+            TargetContext targetContext,
+            boolean adopted,
+            ExtendedMethodCallType callType,
+            HandlerMutationSnapshot previousState) {
     }
 
     /**
@@ -3343,7 +3499,7 @@ public class EdtMetadataService {
         if (includeProperties) {
             result.put("properties", collectScalarProperties(formModel, includeTitles)); //$NON-NLS-1$
         }
-        List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = collectEventHandlerInfos(formModel);
+        List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = collectEventHandlerInfosForTarget(formModel);
         if (!eventHandlers.isEmpty()) {
             result.put("eventHandlers", eventHandlers); //$NON-NLS-1$
         }
@@ -3351,7 +3507,7 @@ public class EdtMetadataService {
     }
 
     /**
-     * Surfaces the {@code {event, handlerName}} pairs already wired on an
+     * Surfaces the {@code {event, handlerName, callType}} values already wired on an
      * {@link EventHandlerContainer} (form root or a form item). Read path only,
      * unconditional (not gated by include_properties/include_titles) — INSP-01.
      * Handlers whose {@link EventHandler#getEvent()} is {@code null} are skipped.
@@ -3363,8 +3519,22 @@ public class EdtMetadataService {
         return container.getHandlers().stream()
                 .filter(handler -> handler != null && handler.getEvent() != null)
                 .map(handler -> new InspectFormLayoutResult.EventHandlerInfo(
-                        handler.getEvent().getName(), handler.getName()))
+                        handler.getEvent().getName(),
+                        handler.getName(),
+                        handler instanceof EventHandlerExtension extensionHandler
+                                ? extensionHandler.getCallType().getLiteral()
+                                : null))
                 .toList();
+    }
+
+    /** Aggregates handlers from the visual item and its concrete ExtInfo owner. */
+    private List<InspectFormLayoutResult.EventHandlerInfo> collectEventHandlerInfosForTarget(
+            FormVisualEntity target) {
+        List<InspectFormLayoutResult.EventHandlerInfo> result = new ArrayList<>();
+        for (EventHandlerContainer owner : eventHandlerTargetResolver.resolveHandlerOwners(target)) {
+            result.addAll(collectEventHandlerInfos(owner));
+        }
+        return result;
     }
 
     private List<InspectFormLayoutResult.FormItemNode> collectFormItemNodes(
@@ -3446,9 +3616,8 @@ public class EdtMetadataService {
                     commandRef = namedCmd.getName();
                 }
             }
-            List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers = item instanceof EventHandlerContainer handlerContainer
-                    ? collectEventHandlerInfos(handlerContainer)
-                    : List.of();
+            List<InspectFormLayoutResult.EventHandlerInfo> eventHandlers =
+                    collectEventHandlerInfosForTarget(item);
 
             result.add(new InspectFormLayoutResult.FormItemNode(
                     item.getId(),

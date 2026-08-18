@@ -15,6 +15,8 @@ import org.junit.Test;
 
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.metadata.mdclass.CommonForm;
@@ -116,6 +118,133 @@ public class ExtensionEventHandlerWiringTest {
         com._1c.g5.v8.dt.form.model.EventHandlerExtension extensionHandler =
                 (com._1c.g5.v8.dt.form.model.EventHandlerExtension) form.getHandlers().get(0);
         assertEquals(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.OVERRIDE, extensionHandler.getCallType());
+    }
+
+    @Test
+    public void adoptedBeforeAndAfterCoexistAndExactTupleIsUpserted() throws Exception {
+        Form form = createAdoptedFixture();
+        applyFormModelOperations(form, List.of(
+                opAddEventHandler("form", null, EVENT_ON_OPEN_EN, "BeforeOld", "Before"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                opAddEventHandler("form", null, EVENT_ON_OPEN_EN, "AfterHandler", "After"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        applyFormModelOperations(form, List.of(
+                opSetEventHandler("form", null, EVENT_ON_OPEN_EN, "BeforeNew", "Before"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertEquals(2, form.getHandlers().size());
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "BeforeNew"); //$NON-NLS-1$
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER, "AfterHandler"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void adoptedExactTupleMatchesStableEventNameNotEventObjectIdentity() throws Exception {
+        Form form = createAdoptedFixture();
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension existing =
+                FormFactory.eINSTANCE.createEventHandlerExtension();
+        existing.setEvent(createEvent(EVENT_ON_OPEN_EN, EVENT_ON_OPEN_RU));
+        existing.setName("OldName"); //$NON-NLS-1$
+        existing.setCallType(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE);
+        form.getHandlers().add(existing);
+
+        applyFormModelOperations(form, List.of(
+                opSetEventHandler("form", null, EVENT_ON_OPEN_EN, "NewName", "Before"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertEquals(1, form.getHandlers().size());
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "NewName"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void compensationRestoresExtensionNameAndCallType() {
+        Form form = createAdoptedFixture();
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension handler =
+                com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE.createEventHandlerExtension();
+        handler.setEvent(onOpenEvent);
+        handler.setName("OldName"); //$NON-NLS-1$
+        handler.setCallType(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE);
+        form.getHandlers().add(handler);
+        EdtMetadataService.HandlerMutationSnapshot snapshot =
+                EdtMetadataService.HandlerMutationSnapshot.capture(handler);
+        handler.setName("NewName"); //$NON-NLS-1$
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension after =
+                com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE.createEventHandlerExtension();
+        after.setEvent(onOpenEvent);
+        after.setName("AfterHandler"); //$NON-NLS-1$
+        after.setCallType(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER);
+        form.getHandlers().add(after);
+
+        service.restoreHandlerSnapshot(
+                form, onOpenEvent, true,
+                com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, snapshot);
+
+        assertEquals(2, form.getHandlers().size());
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "OldName"); //$NON-NLS-1$
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER, "AfterHandler"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void adoptedRemoveDeletesOnlyExactCallTypeTuple() throws Exception {
+        Form form = createAdoptedFixture();
+        applyFormModelOperations(form, List.of(
+                opAddEventHandler("form", null, EVENT_ON_OPEN_EN, "BeforeHandler", "Before"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                opAddEventHandler("form", null, EVENT_ON_OPEN_EN, "AfterHandler", "After"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        applyFormModelOperations(form, List.of(
+                opRemoveEventHandler("form", null, EVENT_ON_OPEN_EN, "After"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertEquals(1, form.getHandlers().size());
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "BeforeHandler"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void compensationForNewTupleRemovesOnlyThatCallType() {
+        Form form = createAdoptedFixture();
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension before =
+                com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE.createEventHandlerExtension();
+        before.setEvent(onOpenEvent);
+        before.setName("BeforeHandler"); //$NON-NLS-1$
+        before.setCallType(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE);
+        form.getHandlers().add(before);
+        com._1c.g5.v8.dt.form.model.EventHandlerExtension after =
+                com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE.createEventHandlerExtension();
+        after.setEvent(onOpenEvent);
+        after.setName("AfterHandler"); //$NON-NLS-1$
+        after.setCallType(com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER);
+        form.getHandlers().add(after);
+
+        service.restoreHandlerSnapshot(
+                form, onOpenEvent, true,
+                com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER,
+                EdtMetadataService.HandlerMutationSnapshot.capture(null));
+
+        assertEquals(1, form.getHandlers().size());
+        assertExtensionHandler(form, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "BeforeHandler"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void adoptedExtInfoOwnerUsesExactCallTypeForUpsertAndRemove() throws Exception {
+        Form form = createAdoptedFixture();
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("Field"); //$NON-NLS-1$
+        InputFieldExtInfo extInfo = FormFactory.eINSTANCE.createInputFieldExtInfo();
+        field.setExtInfo(extInfo);
+        form.getItems().add(field);
+        Event startChoice = createEvent("StartChoice", "НачалоВыбора"); //$NON-NLS-1$ //$NON-NLS-2$
+        service = serviceForExtensionEvent(field, extInfo, startChoice);
+
+        applyFormModelOperations(form, List.of(
+                opAddEventHandler(null, 1, "StartChoice", "BeforeOld", "Before"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                opAddEventHandler(null, 1, "StartChoice", "AfterHandler", "After"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                opSetEventHandler(null, 1, "StartChoice", "BeforeNew", "Before"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assertEquals(2, extInfo.getHandlers().size());
+        assertExtensionHandler(extInfo, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.BEFORE, "BeforeNew"); //$NON-NLS-1$
+        assertExtensionHandler(extInfo, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER, "AfterHandler"); //$NON-NLS-1$
+
+        applyFormModelOperations(form, List.of(
+                opRemoveEventHandler(null, 1, "StartChoice", null))); //$NON-NLS-1$
+
+        assertEquals(1, extInfo.getHandlers().size());
+        assertExtensionHandler(extInfo, com._1c.g5.v8.dt.form.model.ExtendedMethodCallType.AFTER, "AfterHandler"); //$NON-NLS-1$
     }
 
     @Test
@@ -257,6 +386,49 @@ public class ExtensionEventHandlerWiringTest {
             operation.put("call_type", callType); //$NON-NLS-1$
         }
         return operation;
+    }
+
+    private static Map<String, Object> opSetEventHandler(
+            String target, Integer itemId, String event, String handlerName, String callType) {
+        Map<String, Object> operation = opAddEventHandler(target, itemId, event, handlerName, callType);
+        operation.put("op", "set_event_handler"); //$NON-NLS-1$ //$NON-NLS-2$
+        return operation;
+    }
+
+    private static Map<String, Object> opRemoveEventHandler(
+            String target, Integer itemId, String event, String callType) {
+        Map<String, Object> operation = opAddEventHandler(target, itemId, event, null, callType);
+        operation.put("op", "remove_event_handler"); //$NON-NLS-1$ //$NON-NLS-2$
+        return operation;
+    }
+
+    private static EdtMetadataService serviceForExtensionEvent(
+            FormField field, InputFieldExtInfo extInfo, Event extensionEvent) {
+        EventHandlerCatalog catalog = new EventHandlerCatalog() {
+            @Override
+            public List<Event> allowedEvents(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                return List.of(extensionEvent);
+            }
+
+            @Override
+            public List<EventSurface> eventSurfaces(com._1c.g5.v8.dt.form.model.FormVisualEntity item) {
+                if (item == field) {
+                    return List.of(new EventSurface(extInfo, List.of(extensionEvent)));
+                }
+                return EventHandlerCatalog.super.eventSurfaces(item);
+            }
+        };
+        return new EdtMetadataService(new EdtMetadataGateway(), new EventHandlerTargetResolver(catalog));
+    }
+
+    private static void assertExtensionHandler(
+            com._1c.g5.v8.dt.form.model.EventHandlerContainer owner,
+            com._1c.g5.v8.dt.form.model.ExtendedMethodCallType callType,
+            String handlerName) {
+        assertTrue(owner.getHandlers().stream().anyMatch(handler ->
+                handler instanceof com._1c.g5.v8.dt.form.model.EventHandlerExtension extension
+                        && extension.getCallType() == callType
+                        && handlerName.equals(extension.getName())));
     }
 
     @SuppressWarnings("unchecked")

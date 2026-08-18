@@ -1,6 +1,5 @@
 package com.codepilot1c.core.tools.forms;
 
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -43,6 +42,8 @@ public class FormToolSchemaContractTest {
         assertTrue(text.contains("set_event_handler")); //$NON-NLS-1$
         assertTrue(text.contains("remove_event_handler")); //$NON-NLS-1$
         assertTrue(text.contains("handler_name")); //$NON-NLS-1$
-        assertFalse(text.contains("call_type")); //$NON-NLS-1$
+        assertTrue(text.contains("call_type")); //$NON-NLS-1$
+        assertTrue(text.contains("CHANGE_AND_VALIDATE")); //$NON-NLS-1$
+        assertTrue(text.contains("Defaults to BEFORE")); //$NON-NLS-1$
     }
 }
