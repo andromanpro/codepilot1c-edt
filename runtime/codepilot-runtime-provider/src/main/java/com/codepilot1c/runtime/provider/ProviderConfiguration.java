@@ -9,6 +9,7 @@ package com.codepilot1c.runtime.provider;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -190,18 +191,36 @@ public final class ProviderConfiguration {
 
         /**
          * Copies mutable secret material. The supplied array remains owned by
-         * the caller and should be erased after {@link #build()}.
+         * the caller and should be erased after {@link #build()}. Replacing a
+         * key erases the builder's previous copy.
          *
          * @param apiKey provider API key; null means no bearer authentication
          * @return this builder
          */
         public Builder apiKey(char[] apiKey) {
+            clearApiKey();
             this.apiKey = apiKey == null ? null : apiKey.clone();
             return this;
         }
 
+        /**
+         * Creates an immutable configuration and erases the builder's
+         * temporary secret copy before returning. Configure the key again
+         * before reusing this builder for another secret-bearing config.
+         *
+         * @return immutable configuration
+         */
         public ProviderConfiguration build() {
-            return new ProviderConfiguration(this);
+            ProviderConfiguration configuration = new ProviderConfiguration(this);
+            clearApiKey();
+            return configuration;
+        }
+
+        private void clearApiKey() {
+            if (apiKey != null) {
+                Arrays.fill(apiKey, '\0');
+                apiKey = null;
+            }
         }
     }
 
@@ -216,6 +235,9 @@ public final class ProviderConfiguration {
         }
         if (source.getQuery() != null || source.getFragment() != null) {
             throw new IllegalArgumentException("baseUri must not include query or fragment"); //$NON-NLS-1$
+        }
+        if (source.getUserInfo() != null) {
+            throw new IllegalArgumentException("baseUri must not include user info"); //$NON-NLS-1$
         }
         String normalized = source.toString();
         while (normalized.endsWith("/")) { //$NON-NLS-1$
