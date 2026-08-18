@@ -1,8 +1,8 @@
 package com.codepilot1c.runtime.mcp;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -18,11 +18,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+
+import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
 import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
@@ -163,9 +166,11 @@ public class McpClientHttpContractTest {
 
     @Test
     public void configRejectsUnsafeEndpointsAndRedactsCredentials() {
-        try { McpClientConfig.builder("ftp://127.0.0.1/mcp").build(); fail(); }
+        try { McpClientConfig.builder("ftp://127.0.0.1/mcp")
+                .bearerToken("unsafe-ftp-secret".toCharArray()).build(); fail(); }
         catch (IllegalArgumentException expected) { }
-        try { McpClientConfig.builder("http://example.com/mcp").build(); fail(); }
+        try { McpClientConfig.builder("http://example.com/mcp")
+                .bearerToken("unsafe-http-secret".toCharArray()).build(); fail(); }
         catch (IllegalArgumentException expected) { }
         try { McpClientConfig.builder("https://user:pass@example.com/mcp").build(); fail(); }
         catch (IllegalArgumentException expected) { }
@@ -184,9 +189,31 @@ public class McpClientHttpContractTest {
     }
 
     @Test
-    public void productionSourceHasNoPlatformImportsAndPomHasExactRuntimeDependencies() throws IOException {
-        Path source = Path.of(System.getProperty("mcp.client.basedir", "."), "src/main/java");
-        if (!Files.isDirectory(source)) return;
+    public void builderWipesBearerBufferAfterSuccessfulAndFailedBuild() throws Exception {
+        java.lang.reflect.Field field = McpClientConfig.Builder.class.getDeclaredField("bearerToken");
+        field.setAccessible(true);
+
+        McpClientConfig.Builder successful = McpClientConfig.builder("https://example.com/mcp");
+        successful.bearerToken("success-secret".toCharArray());
+        McpClientConfig config = successful.build();
+        assertNull("builder must not retain the cloned bearer after build", field.get(successful));
+        assertArrayEquals("success-secret".toCharArray(), config.copyBearerToken());
+        config.close();
+
+        McpClientConfig.Builder failed = McpClientConfig.builder("http://example.com/mcp");
+        failed.bearerToken("failed-secret".toCharArray());
+        try {
+            failed.build();
+            fail("unsafe endpoint must fail validation");
+        } catch (IllegalArgumentException expected) {
+            assertNull("builder must wipe the bearer even when validation fails", field.get(failed));
+        }
+    }
+
+    @Test
+    public void productionSourceHasNoPlatformImportsAndPomHasExactRuntimeDependencies() throws Exception {
+        Path module = Path.of(System.getProperty("runtime.module.basedir"));
+        Path source = module.resolve("src/main/java");
         try (var files = Files.walk(source)) {
             files.filter(path -> path.toString().endsWith(".java")).forEach(path -> {
                 try {
@@ -198,9 +225,8 @@ public class McpClientHttpContractTest {
                 } catch (IOException e) { throw new AssertionError(e); }
             });
         }
-        String pom = Files.readString(source.getParent().getParent().getParent().resolve("pom.xml"));
-        assertTrue(pom.contains("com.google.code.gson"));
-        assertFalse(pom.contains("codepilot-runtime-provider"));
+        List<String> dependencies = dependencies(Files.readString(module.resolve("pom.xml")));
+        assertEquals(List.of("com.google.code.gson:gson:compile", "junit:junit:test"), dependencies);
     }
 
     private McpClientConfig config(String token) {
@@ -214,6 +240,31 @@ public class McpClientHttpContractTest {
         if (body.isBlank()) return "";
         try { return com.google.gson.JsonParser.parseString(body).getAsJsonObject().get("method").getAsString(); }
         catch (RuntimeException e) { return ""; }
+    }
+
+    private static List<String> dependencies(String pomSource) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        factory.setExpandEntityReferences(false);
+        factory.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        factory.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        var document = factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(
+                pomSource.getBytes(StandardCharsets.UTF_8)));
+        NodeList dependencyNodes = document.getElementsByTagName("dependency");
+        List<String> dependencies = new ArrayList<>();
+        for (int index = 0; index < dependencyNodes.getLength(); index++) {
+            Element dependency = (Element) dependencyNodes.item(index);
+            String groupId = childText(dependency, "groupId");
+            String artifactId = childText(dependency, "artifactId");
+            String scope = childText(dependency, "scope");
+            dependencies.add(groupId + ":" + artifactId + ":" + (scope == null ? "compile" : scope));
+        }
+        return dependencies;
+    }
+
+    private static String childText(Element parent, String name) {
+        NodeList elements = parent.getElementsByTagName(name);
+        return elements.getLength() == 0 ? null : elements.item(0).getTextContent().trim();
     }
 
     private static void write(HttpExchange exchange, int status, String body) throws IOException {
