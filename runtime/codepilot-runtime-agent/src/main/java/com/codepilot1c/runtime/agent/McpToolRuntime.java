@@ -35,12 +35,29 @@ public final class McpToolRuntime implements ToolRuntime {
         CompletionStage<?> initialization = client.isInitialized()
                 ? CompletableFuture.completedFuture(null)
                 : client.initialize();
-        return initialization.thenCompose(ignored -> client.listTools()).thenApply(listed -> {
+        CompletableFuture<McpToolRuntime> connecting = initialization
+                .thenCompose(ignored -> client.listTools()).thenApply(listed -> {
             List<ToolDefinition> definitions = listed.tools().stream()
                     .map(tool -> new ToolDefinition(tool.name(), tool.description(), schema(tool.inputSchema())))
                     .toList();
             return new McpToolRuntime(client, definitions);
+        }).toCompletableFuture();
+        CompletableFuture<McpToolRuntime> guarded = new CompletableFuture<>();
+        connecting.whenComplete((runtime, failure) -> {
+            if (guarded.isDone()) return;
+            if (failure == null) {
+                guarded.complete(runtime);
+                return;
+            }
+            client.closeAsync().whenComplete((ignored, closeFailure) ->
+                    guarded.completeExceptionally(failure));
         });
+        guarded.whenComplete((ignored, failure) -> {
+            if (!guarded.isCancelled()) return;
+            connecting.cancel(true);
+            client.closeAsync();
+        });
+        return guarded;
     }
 
     @Override

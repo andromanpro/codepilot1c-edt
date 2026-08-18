@@ -102,7 +102,6 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
         } else if (message instanceof AgentMessage.Tool tool) {
             value.addProperty("role", "tool"); //$NON-NLS-1$ //$NON-NLS-2$
             value.addProperty("tool_call_id", tool.callId()); //$NON-NLS-1$
-            value.addProperty("name", tool.toolName()); //$NON-NLS-1$
             value.addProperty("content", tool.result().toJson().toString()); //$NON-NLS-1$
         } else {
             throw new IllegalArgumentException("Unsupported agent message type"); //$NON-NLS-1$
@@ -128,6 +127,7 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
             JsonArray choices = array(parsed.getAsJsonObject(), "choices"); //$NON-NLS-1$
             if (choices.size() == 0 || !choices.get(0).isJsonObject()) throw malformed();
             JsonObject message = object(choices.get(0).getAsJsonObject(), "message"); //$NON-NLS-1$
+            if (!"assistant".equals(requiredString(message, "role"))) throw malformed(); //$NON-NLS-1$ //$NON-NLS-2$
             Optional<String> text = optionalString(message, "content"); //$NON-NLS-1$
             List<ToolCall> calls = parseCalls(message);
             return new AgentMessage.Assistant(text, calls);
@@ -150,6 +150,7 @@ public final class OpenAiCompatibleAgentModel implements AgentModel {
             JsonObject call = element.getAsJsonObject();
             String id = requiredString(call, "id"); //$NON-NLS-1$
             if (!ids.add(id)) throw malformed();
+            if (!"function".equals(requiredString(call, "type"))) throw malformed(); //$NON-NLS-1$ //$NON-NLS-2$
             JsonObject function = object(call, "function"); //$NON-NLS-1$
             calls.add(new ToolCall(id, requiredString(function, "name"), //$NON-NLS-1$
                     requiredString(function, "arguments"))); //$NON-NLS-1$

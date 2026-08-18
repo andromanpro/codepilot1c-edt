@@ -81,6 +81,8 @@ public class OpenAiAgentHttpTest {
             assertEquals(4, bodies.get(1).getAsJsonArray("messages").size()); //$NON-NLS-1$
             assertEquals("tool", bodies.get(1).getAsJsonArray("messages").get(2) //$NON-NLS-1$ //$NON-NLS-2$
                     .getAsJsonObject().get("role").getAsString()); //$NON-NLS-1$
+            assertFalse(bodies.get(1).getAsJsonArray("messages").get(2) //$NON-NLS-1$
+                    .getAsJsonObject().has("name")); //$NON-NLS-1$
         } finally {
             java.util.Arrays.fill(apiKey, '\0');
             server.stop(0);
@@ -148,6 +150,37 @@ public class OpenAiAgentHttpTest {
             }
         } finally {
             releaseServer.countDown();
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void rejectsUnexpectedMessageRoleAndToolCallType() throws Exception {
+        assertProviderResponseError(
+                "{\"choices\":[{\"message\":{\"role\":\"user\",\"content\":\"wrong\"}}]}"); //$NON-NLS-1$
+        assertProviderResponseError("""
+                {"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                  {"id":"call","type":"custom","function":{"name":"echo","arguments":"{}"}}
+                ]}}]}
+                """);
+    }
+
+    private static void assertProviderResponseError(String responseBody) throws Exception {
+        HttpServer server = server(exchange -> respond(exchange, 200, responseBody));
+        try {
+            OpenAiCompatibleAgentModel model = new OpenAiCompatibleAgentModel(
+                    new RuntimeProviderFactory().create(configuration(server, null)));
+            try (AgentRuntime runtime = new AgentRuntime(model,
+                    singleTool((name, args, cancellation) ->
+                            CompletableFuture.completedFuture(ToolExecutionResult.success(args))),
+                    new AgentRunConfig(2, Duration.ofSeconds(2)))) {
+                AgentResult result = runtime.run(new AgentRequest("invalid-wire", List.of( //$NON-NLS-1$
+                        new AgentMessage.Text(AgentMessage.Role.USER, "request")))) //$NON-NLS-1$
+                        .get(2, TimeUnit.SECONDS);
+                assertEquals(AgentResult.Status.FAILED, result.status());
+                assertEquals(AgentError.Code.PROVIDER_RESPONSE, result.error().orElseThrow().code());
+            }
+        } finally {
             server.stop(0);
         }
     }

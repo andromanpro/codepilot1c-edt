@@ -7,6 +7,7 @@ package com.codepilot1c.runtime.agent;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -14,6 +15,8 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Test;
@@ -83,6 +86,48 @@ public class McpToolRuntimeHttpTest {
             assertEquals("sum", called.get().get("name").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
             assertEquals(2, called.get().getAsJsonObject("arguments").get("b").getAsInt()); //$NON-NLS-1$ //$NON-NLS-2$
             assertTrue(result.data().getAsJsonObject().has("content")); //$NON-NLS-1$
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void closesMcpSessionWhenToolListingFails() throws Exception {
+        AtomicInteger deletes = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            if ("DELETE".equals(exchange.getRequestMethod())) { //$NON-NLS-1$
+                deletes.incrementAndGet();
+                respond(exchange, 204, "", false); //$NON-NLS-1$
+                return;
+            }
+            JsonObject request = JsonParser.parseString(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
+            String method = request.get("method").getAsString(); //$NON-NLS-1$
+            long id = request.get("id").getAsLong(); //$NON-NLS-1$
+            if ("initialize".equals(method)) { //$NON-NLS-1$
+                String protocol = request.getAsJsonObject("params") //$NON-NLS-1$
+                        .get("protocolVersion").getAsString(); //$NON-NLS-1$
+                respond(exchange, 200, rpc(id,
+                        "{\"protocolVersion\":\"" + protocol //$NON-NLS-1$
+                        + "\",\"serverInfo\":{},\"capabilities\":{}}"), true); //$NON-NLS-1$
+            } else {
+                respond(exchange, 200,
+                        "{\"jsonrpc\":\"2.0\",\"id\":" + id //$NON-NLS-1$
+                        + ",\"error\":{\"code\":-32000,\"message\":\"listing failed\"}}", false); //$NON-NLS-1$
+            }
+        });
+        McpClientConfig config = McpClientConfig.builder(URI.create(
+                "http://localhost:" + server.getAddress().getPort() + "/mcp")) //$NON-NLS-1$ //$NON-NLS-2$
+                .requestTimeout(Duration.ofSeconds(2)).build();
+        try (McpClient client = new McpClient(config)) {
+            try {
+                McpToolRuntime.connect(client).toCompletableFuture().get(2, TimeUnit.SECONDS);
+                fail("connect should fail when tools/list fails"); //$NON-NLS-1$
+            } catch (ExecutionException expected) {
+                assertTrue(expected.getCause() != null);
+            }
+            assertEquals(1, deletes.get());
+            assertFalse(client.isInitialized());
         } finally {
             server.stop(0);
         }

@@ -22,9 +22,11 @@ The module contains two boundary adapters:
 
 - `OpenAiCompatibleAgentModel` maps neutral messages and JSON schemas to the
   existing configured `/chat/completions` transport and parses assistant tool
-  calls. It never selects an endpoint or authorization policy itself.
+  calls. It validates assistant roles and function call types, and it never
+  selects an endpoint or authorization policy itself.
 - `McpToolRuntime.connect(...)` initializes an existing `McpClient`, snapshots
-  `tools/list`, and maps `tools/call` results into stable tool envelopes.
+  `tools/list`, and maps `tools/call` results into stable tool envelopes. A
+  failed tool-list snapshot closes the newly initialized MCP session.
 
 Logs intentionally contain only the caller-supplied operation ID, counters,
 and terminal status. Message content, tool arguments/results, HTTP bodies,
