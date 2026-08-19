@@ -41,6 +41,8 @@ import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataService;
+import com.codepilot1c.core.edt.metadata.MetadataConfigurationCollections;
+import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
@@ -736,47 +738,30 @@ public class EdtExtensionService {
         return items;
     }
 
+    /**
+     * Все top-level объекты конфигурации, по всем видам метаданных, известным
+     * {@link MetadataKind}.
+     *
+     * <p>Обход идёт через {@link MetadataConfigurationCollections} — единый реестр «вид ->
+     * коллекция». Раньше здесь лежал собственный список из 39 вызовов {@code getXxx()}, мимо
+     * которого проходили 9 видов (StyleItem, Style, Language, CommonAttribute, CommandGroup,
+     * FilterCriterion, Interface, Bot, WebSocketClient). Последствие было тихим и опасным:
+     * заимствованный объект такого вида не попадал ни в {@code list_objects}, ни в
+     * {@code attachedDependencies} у adopt, ни в кандидаты prune — то есть prune рапортовал
+     * «кандидатов 0» на расширении, где лежал паразитный мусор (живой случай: 6 адоптированных
+     * StyleItem пережили чистку РасшКИЗ и были невидимы для инструментов).</p>
+     *
+     * <p>Реестр является exhaustive switch по {@link MetadataKind}, поэтому новый вид без
+     * маппинга — ошибка компиляции, а не молча пропущенный тип.</p>
+     */
     private List<MdObject> collectKnownTopLevelObjects(Configuration configuration) {
         List<MdObject> all = new ArrayList<>();
-        all.addAll(configuration.getCatalogs());
-        all.addAll(configuration.getDocuments());
-        all.addAll(configuration.getInformationRegisters());
-        all.addAll(configuration.getAccumulationRegisters());
-        all.addAll(configuration.getAccountingRegisters());
-        all.addAll(configuration.getCalculationRegisters());
-        all.addAll(configuration.getCommonModules());
-        all.addAll(configuration.getEnums());
-        all.addAll(configuration.getReports());
-        all.addAll(configuration.getDataProcessors());
-        all.addAll(configuration.getConstants());
-        all.addAll(configuration.getSubsystems());
-        all.addAll(configuration.getRoles());
-        all.addAll(configuration.getCommonCommands());
-        all.addAll(configuration.getCommonForms());
-        all.addAll(configuration.getCommonTemplates());
-        all.addAll(configuration.getCommonPictures());
-        all.addAll(configuration.getScheduledJobs());
-        all.addAll(configuration.getDefinedTypes());
-        all.addAll(configuration.getDocumentJournals());
-        all.addAll(configuration.getDocumentNumerators());
-        all.addAll(configuration.getChartsOfAccounts());
-        all.addAll(configuration.getChartsOfCharacteristicTypes());
-        all.addAll(configuration.getChartsOfCalculationTypes());
-        all.addAll(configuration.getExchangePlans());
-        all.addAll(configuration.getBusinessProcesses());
-        all.addAll(configuration.getTasks());
-        all.addAll(configuration.getSequences());
-        all.addAll(configuration.getFunctionalOptions());
-        all.addAll(configuration.getFunctionalOptionsParameters());
-        all.addAll(configuration.getSessionParameters());
-        all.addAll(configuration.getSettingsStorages());
-        all.addAll(configuration.getXDTOPackages());
-        all.addAll(configuration.getWsReferences());
-        all.addAll(configuration.getWebServices());
-        all.addAll(configuration.getHttpServices());
-        all.addAll(configuration.getIntegrationServices());
-        all.addAll(configuration.getExternalDataSources());
-        all.addAll(configuration.getEventSubscriptions());
+        for (MetadataKind kind : MetadataKind.values()) {
+            List<? extends MdObject> collection = MetadataConfigurationCollections.topLevelForKind(configuration, kind);
+            if (collection != null) {
+                all.addAll(collection);
+            }
+        }
         return all;
     }
 
@@ -845,51 +830,29 @@ public class EdtExtensionService {
         return current;
     }
 
+    /**
+     * Top-level объект по паре «вид, имя».
+     *
+     * <p>Вид резолвится через {@link MetadataKind#fromString}, коллекция — через
+     * {@link MetadataConfigurationCollections}. Раньше здесь был свой switch на 40 ветвей, в
+     * котором не было StyleItem/Style/Language/CommandGroup/FilterCriterion/Interface/
+     * WebSocketClient: такой FQN тихо уходил в {@code default -> emptyList()} и объект
+     * «не находился», хотя существовал в конфигурации.</p>
+     *
+     * <p>Неизвестный вид по-прежнему даёт {@code null} (а не исключение) — вызывающий код
+     * трактует это как «объект не найден».</p>
+     */
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
-        String normalized = normalize(type);
-        List<? extends MdObject> topLevel = switch (normalized) {
-            case "catalog", "справочник" -> configuration.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "документ" -> configuration.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "регистрсведений" -> configuration.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "регистрнакопления" -> configuration.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accountingregister", "регистрбухгалтерии" -> configuration.getAccountingRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "calculationregister", "регистррасчета", "регистррасчёта" -> configuration.getCalculationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "commonmodule", "общиймодуль" -> configuration.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "перечисление" -> configuration.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "отчет", "отчёт" -> configuration.getReports(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "dataprocessor", "обработка" -> configuration.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "константа" -> configuration.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "subsystem", "подсистема" -> configuration.getSubsystems(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "role", "роль" -> configuration.getRoles(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commoncommand", "общаякоманда" -> configuration.getCommonCommands(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonform", "общаяформа" -> configuration.getCommonForms(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commontemplate", "общиймокет", "общиймакет" -> configuration.getCommonTemplates(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "commonpicture", "общаякартинка" -> configuration.getCommonPictures(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "scheduledjob", "регламентноезадание" -> configuration.getScheduledJobs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "definedtype", "определяемыйтип" -> configuration.getDefinedTypes(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "documentjournal", "журналдокументов" -> configuration.getDocumentJournals(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "documentnumerator", "нумератордокументов" -> configuration.getDocumentNumerators(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "chartofaccounts", "плансчетов" -> configuration.getChartsOfAccounts(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "chartofcharacteristictypes", "планвидовхарактеристик" -> configuration.getChartsOfCharacteristicTypes(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "chartofcalculationtypes", "планвидоврасчета", "планвидоврасчёта" -> configuration.getChartsOfCalculationTypes(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "exchangeplan", "планобмена" -> configuration.getExchangePlans(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "businessprocess", "бизнеспроцесс" -> configuration.getBusinessProcesses(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "task", "задача" -> configuration.getTasks(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "sequence", "последовательность" -> configuration.getSequences(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "functionaloption", "функциональнаяопция" -> configuration.getFunctionalOptions(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "functionaloptionsparameter", "параметрфункциональныхопций" -> configuration.getFunctionalOptionsParameters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "sessionparameter", "параметрсеанса" -> configuration.getSessionParameters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "settingsstorage", "хранилищенастроек" -> configuration.getSettingsStorages(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "xdtopackage", "xdtoпакет" -> configuration.getXDTOPackages(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "wsreference", "webсервис" -> configuration.getWsReferences(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "webservice", "webсервиспубликация" -> configuration.getWebServices(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "httpservice", "httpсервис" -> configuration.getHttpServices(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "integrationservice", "сервисинтеграции" -> configuration.getIntegrationServices(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "bot", "бот" -> configuration.getBots(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "externdatasource", "externaldatasource", "внешнийисточникданных" -> configuration.getExternalDataSources(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "eventsubscription", "подписканасобытие" -> configuration.getEventSubscriptions(); //$NON-NLS-1$ //$NON-NLS-2$
-            default -> Collections.emptyList();
-        };
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(type);
+        } catch (MetadataOperationException e) {
+            return null;
+        }
+        List<? extends MdObject> topLevel = MetadataConfigurationCollections.topLevelForKind(configuration, kind);
+        if (topLevel == null) {
+            return null;
+        }
         for (MdObject object : topLevel) {
             if (object != null && name.equalsIgnoreCase(safe(object.getName()))) {
                 return object;
@@ -1030,14 +993,25 @@ public class EdtExtensionService {
         return ""; //$NON-NLS-1$
     }
 
+    /**
+     * FQN объекта для отчётов и последующей адресации.
+     *
+     * <p>{@code safeTopFqn} возвращает FQN ВЛАДЕЛЬЦА для видов, которые не являются
+     * самостоятельными top-объектами BM: у языка «Русский» это буквально {@code "Configuration"}.
+     * Такой FQN бесполезен (не адресует объект) и опасен (в отчёте prune/list_objects выглядит как
+     * отдельная сущность «Configuration»). Поэтому результат принимается, только если он реально
+     * оканчивается именем объекта; иначе собираем {@code <Вид>.<Имя>} — форму, которую понимает
+     * {@code findTopLevel} через {@link MetadataKind}.</p>
+     */
     private String safeFqn(EObject object, String kind, String name) {
+        String fallback = kind + "." + name; //$NON-NLS-1$
         if (object instanceof IBmObject bmObject) {
             String fqn = BmObjectHelper.safeTopFqn(bmObject);
-            if (!fqn.isBlank()) {
+            if (!fqn.isBlank() && (name == null || name.isBlank() || fqn.endsWith("." + name) || fqn.equals(name))) { //$NON-NLS-1$
                 return fqn;
             }
         }
-        return kind + "." + name; //$NON-NLS-1$
+        return fallback;
     }
 
     private <T> T executeWrite(IProject project, PlatformTransactionTask<T> task) {
