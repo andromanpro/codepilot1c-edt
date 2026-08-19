@@ -4,10 +4,19 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.CoreException;
@@ -30,6 +39,8 @@ import com._1c.g5.v8.dt.metadata.mdclass.extension.type.MdPropertyState;
 import com._1c.g5.v8.dt.platform.version.Version;
 import com.codepilot1c.core.edt.BmObjectHelper;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
+import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
+import com.codepilot1c.core.edt.metadata.EdtMetadataService;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
@@ -38,7 +49,11 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
  */
 public class EdtExtensionService {
 
+    private static final int DEPENDENCIES_WARNING_THRESHOLD = 5;
+
     private final EdtMetadataGateway gateway;
+
+    private EdtMetadataService metadataService;
 
     public EdtExtensionService() {
         this(new EdtMetadataGateway());
@@ -91,6 +106,11 @@ public class EdtExtensionService {
         }
 
         boolean alreadyAdopted = gateway.getModelObjectAdopter().isAdopted(source, extensionProject);
+        // Снимок состава ДО адопции: EDT прикрепляет объект вместе со всем, что его
+        // участники-адоптеры сочтут связанным, и API платформы этим не управляет.
+        // Разницу «до/после» считаем сами - только она отличает запрошенный объект
+        // от свиты, которую иначе никто не увидит.
+        Set<String> adoptedBefore = snapshotAdoptedFqns(baseConfiguration, extensionProject);
         MdObject adopted = null;
         boolean updated = false;
         try {
@@ -127,6 +147,40 @@ public class EdtExtensionService {
 
         String sourceFqn = safeFqn(source, source.eClass().getName(), safe(source.getName()));
         String adoptedFqn = safeFqn(adopted, adopted.eClass().getName(), safe(adopted.getName()));
+
+        Set<String> adoptedAfter = snapshotAdoptedFqns(baseConfiguration, extensionProject);
+        List<String> attached = new ArrayList<>();
+        for (String fqn : adoptedAfter) {
+            if (!adoptedBefore.contains(fqn) && !fqn.equals(adoptedFqn)) {
+                attached.add(fqn);
+            }
+        }
+        Collections.sort(attached);
+
+        String mode = request.normalizedDependenciesMode();
+        List<String> removed = new ArrayList<>();
+        List<String> failedRemovals = new ArrayList<>();
+        if (request.prunesDependencies() && !attached.isEmpty()) {
+            Collection<String> keep = request.normalizedKeepDependencies();
+            String extensionProjectName = extensionProject.getProject().getName();
+            for (String fqn : attached) {
+                if (keep.contains(fqn)) {
+                    continue;
+                }
+                try {
+                    // Тот же путь, что у delete_metadata: заглушка ссылается на себя и на
+                    // состав конфигурации, поэтому без force+recursive BM её не отдаёт.
+                    metadataService().deleteMetadata(
+                            new DeleteMetadataRequest(extensionProjectName, fqn, true, true));
+                    removed.add(fqn);
+                } catch (RuntimeException e) {
+                    failedRemovals.add(fqn + ": " + e.getMessage()); //$NON-NLS-1$
+                }
+            }
+        }
+
+        String warning = buildDependenciesWarning(mode, attached, removed, failedRemovals);
+
         return new ExtensionAdoptObjectResult(
                 extensionProject.getProject().getName(),
                 effectiveBaseProjectName,
@@ -135,7 +189,207 @@ public class EdtExtensionService {
                 adopted.eClass().getName(),
                 safe(adopted.getName()),
                 alreadyAdopted,
-                updated);
+                updated,
+                mode,
+                List.copyOf(attached),
+                List.copyOf(removed),
+                List.copyOf(failedRemovals),
+                warning);
+    }
+
+    /**
+     * Ищет заимствованные объекты, на которые в исходниках расширения нет ни одной ссылки,
+     * и (если запрошено) удаляет их.
+     *
+     * <p>Критерий намеренно текстовый: имя объекта как отдельное слово в любом файле
+     * проекта расширения, кроме файлов самого объекта и реестра состава Configuration.mdo.
+     * Ссылки в BSL, в .form и в .mdo выглядят по-разному, а единого модельного индекса
+     * «кто кого использует» платформа не даёт. Текстовый поиск может дать ложное
+     * «используется» (совпадение с заголовком), но не обратное - объект, который реально
+     * нужен, кандидатом на удаление не станет.</p>
+     */
+    public ExtensionPruneAdoptedResult pruneAdopted(ExtensionPruneAdoptedRequest request) {
+        request.validate();
+        gateway.ensureExtensionRuntimeAvailable();
+
+        IExtensionProject extensionProject = resolveExtensionProject(request.normalizedExtensionProjectName());
+        String baseProjectName = resolveEffectiveBaseProjectName(
+                extensionProject, request.normalizedBaseProjectName());
+        IProject baseProject = gateway.resolveProject(baseProjectName);
+        if (baseProject == null || !baseProject.exists()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.PROJECT_NOT_FOUND,
+                    "Base project not found: " + baseProjectName, false); //$NON-NLS-1$
+        }
+        Configuration baseConfiguration = gateway.getConfigurationProvider().getConfiguration(baseProject);
+        if (baseConfiguration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Base configuration is unavailable for project: " + baseProjectName, false); //$NON-NLS-1$
+        }
+
+        List<ExtensionObjectSummary> adopted =
+                collectAdoptedTopLevelObjects(baseConfiguration, extensionProject, null, null);
+        Map<String, String> sources = readExtensionSources(extensionProject);
+
+        Collection<String> keep = request.normalizedKeep();
+        Collection<String> explicitRemove = request.normalizedRemove();
+
+        List<String> candidates = new ArrayList<>();
+        List<String> referenced = new ArrayList<>();
+        List<String> keptByRequest = new ArrayList<>();
+        for (ExtensionObjectSummary summary : adopted) {
+            String fqn = summary.fqn();
+            if (fqn == null || fqn.isBlank()) {
+                continue;
+            }
+            if (keep.contains(fqn)) {
+                keptByRequest.add(fqn);
+                continue;
+            }
+            if (!explicitRemove.isEmpty() && !explicitRemove.contains(fqn)) {
+                continue;
+            }
+            if (isReferencedInSources(summary, sources)) {
+                referenced.add(fqn);
+            } else {
+                candidates.add(fqn);
+            }
+        }
+        Collections.sort(candidates);
+        Collections.sort(referenced);
+
+        List<String> removed = new ArrayList<>();
+        List<String> failedRemovals = new ArrayList<>();
+        if (!request.isDryRun()) {
+            String extensionProjectName = extensionProject.getProject().getName();
+            for (String fqn : candidates) {
+                try {
+                    metadataService().deleteMetadata(
+                            new DeleteMetadataRequest(extensionProjectName, fqn, true, true));
+                    removed.add(fqn);
+                } catch (RuntimeException e) {
+                    failedRemovals.add(fqn + ": " + e.getMessage()); //$NON-NLS-1$
+                }
+            }
+        }
+
+        return new ExtensionPruneAdoptedResult(
+                extensionProject.getProject().getName(),
+                baseProjectName,
+                request.isDryRun(),
+                adopted.size(),
+                List.copyOf(candidates),
+                List.copyOf(referenced),
+                List.copyOf(keptByRequest),
+                List.copyOf(removed),
+                List.copyOf(failedRemovals));
+    }
+
+    /** Содержимое текстовых файлов проекта расширения: относительный путь -> текст. */
+    private Map<String, String> readExtensionSources(IExtensionProject extensionProject) {
+        Map<String, String> sources = new LinkedHashMap<>();
+        IProject project = extensionProject.getProject();
+        if (project == null || project.getLocation() == null) {
+            return sources;
+        }
+        Path root = project.getLocation().toFile().toPath();
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.filter(Files::isRegularFile)
+                .filter(EdtExtensionService::isTextSource)
+                .forEach(file -> {
+                    try {
+                        sources.put(
+                                root.relativize(file).toString().replace(File.separatorChar, '/'),
+                                Files.readString(file, StandardCharsets.UTF_8));
+                    } catch (IOException | RuntimeException ignored) {
+                        // нечитаемый файл ссылок не содержит
+                    }
+                });
+        } catch (IOException e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                    "Failed to read extension sources: " + e.getMessage(), false, e); //$NON-NLS-1$
+        }
+        return sources;
+    }
+
+    private static boolean isTextSource(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".bsl") //$NON-NLS-1$
+                || name.endsWith(".mdo") //$NON-NLS-1$
+                || name.endsWith(".form") //$NON-NLS-1$
+                || name.endsWith(".dcs") //$NON-NLS-1$
+                || name.endsWith(".dcssca") //$NON-NLS-1$
+                || name.endsWith(".xml"); //$NON-NLS-1$
+    }
+
+    private static boolean isReferencedInSources(ExtensionObjectSummary summary, Map<String, String> sources) {
+        String name = summary.name();
+        if (name == null || name.isBlank()) {
+            return true;
+        }
+        String ownFolder = "/" + name + "/"; //$NON-NLS-1$ //$NON-NLS-2$
+        String ownFile = "/" + name + ".mdo"; //$NON-NLS-1$ //$NON-NLS-2$
+        Pattern word = Pattern.compile(
+                "(?<![0-9A-Za-z_\\p{IsCyrillic}])" //$NON-NLS-1$
+                        + Pattern.quote(name)
+                        + "(?![0-9A-Za-z_\\p{IsCyrillic}])"); //$NON-NLS-1$
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            String path = "/" + entry.getKey(); //$NON-NLS-1$
+            if (path.contains(ownFolder) || path.endsWith(ownFile)) {
+                continue;
+            }
+            if (path.endsWith("/Configuration/Configuration.mdo")) { //$NON-NLS-1$
+                continue;
+            }
+            if (word.matcher(entry.getValue()).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** FQN всех top-level объектов, заимствованных расширением на данный момент. */
+    private Set<String> snapshotAdoptedFqns(Configuration baseConfiguration, IExtensionProject extensionProject) {
+        Set<String> fqns = new LinkedHashSet<>();
+        for (ExtensionObjectSummary summary
+                : collectAdoptedTopLevelObjects(baseConfiguration, extensionProject, null, null)) {
+            if (summary != null && summary.fqn() != null && !summary.fqn().isBlank()) {
+                fqns.add(summary.fqn());
+            }
+        }
+        return fqns;
+    }
+
+    private String buildDependenciesWarning(
+            String mode,
+            List<String> attached,
+            List<String> removed,
+            List<String> failedRemovals
+    ) {
+        StringBuilder sb = new StringBuilder();
+        if (ExtensionAdoptObjectRequest.DEPENDENCIES_ALL.equals(mode)
+                && attached.size() > DEPENDENCIES_WARNING_THRESHOLD) {
+            sb.append("EDT attached ").append(attached.size()) //$NON-NLS-1$
+              .append(" extra objects along with the requested one. Pass adopt_dependencies=\"none\"") //$NON-NLS-1$
+              .append(" or an explicit list to keep the extension small."); //$NON-NLS-1$
+        }
+        if (!failedRemovals.isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append("Failed to remove ").append(failedRemovals.size()) //$NON-NLS-1$
+              .append(" dependencies: extension composition is not what was requested."); //$NON-NLS-1$
+        }
+        return sb.length() == 0 ? "" : sb.toString(); //$NON-NLS-1$
+    }
+
+    private EdtMetadataService metadataService() {
+        if (metadataService == null) {
+            metadataService = new EdtMetadataService(gateway);
+        }
+        return metadataService;
     }
 
     public ExtensionSetPropertyStateResult setPropertyState(ExtensionSetPropertyStateRequest request) {

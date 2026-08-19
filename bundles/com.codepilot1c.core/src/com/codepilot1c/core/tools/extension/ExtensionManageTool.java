@@ -12,6 +12,8 @@ import com.codepilot1c.core.edt.extension.ExtensionCreateProjectResult;
 import com.codepilot1c.core.edt.extension.ExtensionListObjectsRequest;
 import com.codepilot1c.core.edt.extension.ExtensionListProjectsRequest;
 import com.codepilot1c.core.edt.extension.ExtensionObjectsResult;
+import com.codepilot1c.core.edt.extension.ExtensionPruneAdoptedRequest;
+import com.codepilot1c.core.edt.extension.ExtensionPruneAdoptedResult;
 import com.codepilot1c.core.edt.extension.ExtensionProjectsResult;
 import com.codepilot1c.core.edt.extension.ExtensionSetPropertyStateRequest;
 import com.codepilot1c.core.edt.extension.ExtensionSetPropertyStateResult;
@@ -36,7 +38,7 @@ public class ExtensionManageTool extends AbstractTool {
     private static final Gson GSON = new Gson();
 
     private static final Set<String> ALL_COMMANDS = Set.of(
-            "list_projects", "list_objects", "create", "adopt", "set_state"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            "list_projects", "list_objects", "create", "adopt", "set_state", "prune"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
 
     private static final String SCHEMA = """
             {
@@ -44,8 +46,8 @@ public class ExtensionManageTool extends AbstractTool {
               "properties": {
                 "command": {
                   "type": "string",
-                  "description": "Command: list_projects, list_objects, create, adopt, or set_state",
-                  "enum": ["list_projects", "list_objects", "create", "adopt", "set_state"]
+                  "description": "Command: list_projects, list_objects, create, adopt, set_state, or prune",
+                  "enum": ["list_projects", "list_objects", "create", "adopt", "set_state", "prune"]
                 },
                 "project": {
                   "type": "string",
@@ -102,6 +104,27 @@ public class ExtensionManageTool extends AbstractTool {
                 "update_if_exists": {
                   "type": "boolean",
                   "description": "(adopt) If the object is already adopted, update the adopted object instead of failing."
+                },
+                "adopt_dependencies": {
+                  "description": "(adopt) What to do with objects EDT attaches alongside the requested one: \"all\" keeps them (default, adopting one form may attach dozens of catalogs/forms/pictures), \"none\" keeps only the requested object, or an array of FQNs to keep. The result always reports attached_dependencies.",
+                  "oneOf": [
+                    {"type": "string", "enum": ["all", "none"]},
+                    {"type": "array", "items": {"type": "string"}}
+                  ]
+                },
+                "keep": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "(prune) FQNs to keep regardless of whether the extension references them."
+                },
+                "remove": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "(prune) Limit the scan to these FQNs. Empty means every adopted object is a candidate."
+                },
+                "dry_run": {
+                  "type": "boolean",
+                  "description": "(prune) Defaults to true: report candidates without deleting. Pass false to actually remove them."
                 },
                 "property_name": {
                   "type": "string",
@@ -168,6 +191,7 @@ public class ExtensionManageTool extends AbstractTool {
                     case "create" -> doCreate(p); //$NON-NLS-1$
                     case "adopt" -> doAdopt(p); //$NON-NLS-1$
                     case "set_state" -> doSetState(p); //$NON-NLS-1$
+            case "prune" -> doPrune(p); //$NON-NLS-1$
                     default -> ToolResult.failure("Unknown command: " + command); //$NON-NLS-1$
                 };
             } catch (MetadataOperationException e) {
@@ -231,10 +255,11 @@ public class ExtensionManageTool extends AbstractTool {
         String extensionProject = asString(p.get("extension_project")); //$NON-NLS-1$
         String sourceObjectFqn = asString(p.get("source_object_fqn")); //$NON-NLS-1$
         Boolean updateIfExists = asOptionalBoolean(p.get("update_if_exists")); //$NON-NLS-1$
+        Object adoptDependencies = p.get("adopt_dependencies"); //$NON-NLS-1$
         String validationToken = asString(p.get("validation_token")); //$NON-NLS-1$
 
         validationService.normalizeExtensionAdoptPayload(
-                project, extensionProject, baseProject, sourceObjectFqn, updateIfExists);
+                project, extensionProject, baseProject, sourceObjectFqn, updateIfExists, adoptDependencies);
 
         Map<String, Object> v = validationService.consumeToken(
                 validationToken, ValidationOperation.EXTENSION_ADOPT_OBJECT, project);
@@ -243,8 +268,35 @@ public class ExtensionManageTool extends AbstractTool {
                 asString(v.get("base_project")), //$NON-NLS-1$
                 asString(v.get("extension_project")), //$NON-NLS-1$
                 asString(v.get("source_object_fqn")), //$NON-NLS-1$
-                asOptionalBoolean(v.get("update_if_exists"))); //$NON-NLS-1$
+                asOptionalBoolean(v.get("update_if_exists")), //$NON-NLS-1$
+                asOptionalString(v.get("adopt_dependencies_mode")), //$NON-NLS-1$
+                asStringList(v.get("adopt_dependencies_keep"))); //$NON-NLS-1$
         ExtensionAdoptObjectResult result = service.adoptObject(request);
+        return ToolResult.success(GSON.toJson(result), ToolResult.ToolResultType.CONFIRMATION);
+    }
+
+    private ToolResult doPrune(Map<String, Object> p) throws MetadataOperationException {
+        String project = asString(p.get("project")); //$NON-NLS-1$
+        String baseProject = asString(p.get("base_project")); //$NON-NLS-1$
+        String extensionProject = asString(p.get("extension_project")); //$NON-NLS-1$
+        Object keep = p.get("keep"); //$NON-NLS-1$
+        Object remove = p.get("remove"); //$NON-NLS-1$
+        Boolean dryRun = asOptionalBoolean(p.get("dry_run")); //$NON-NLS-1$
+        String validationToken = asString(p.get("validation_token")); //$NON-NLS-1$
+
+        validationService.normalizeExtensionPrunePayload(
+                project, extensionProject, baseProject, keep, remove, dryRun);
+
+        Map<String, Object> v = validationService.consumeToken(
+                validationToken, ValidationOperation.EXTENSION_PRUNE_ADOPTED, project);
+
+        ExtensionPruneAdoptedRequest request = new ExtensionPruneAdoptedRequest(
+                asString(v.get("base_project")), //$NON-NLS-1$
+                asString(v.get("extension_project")), //$NON-NLS-1$
+                asStringList(v.get("keep")), //$NON-NLS-1$
+                asStringList(v.get("remove")), //$NON-NLS-1$
+                asOptionalBoolean(v.get("dry_run"))); //$NON-NLS-1$
+        ExtensionPruneAdoptedResult result = service.pruneAdopted(request);
         return ToolResult.success(GSON.toJson(result), ToolResult.ToolResultType.CONFIRMATION);
     }
 
@@ -291,6 +343,19 @@ public class ExtensionManageTool extends AbstractTool {
         if (value == null) return null;
         String raw = String.valueOf(value).trim();
         return raw.isEmpty() ? null : raw;
+    }
+
+    private java.util.List<String> asStringList(Object value) {
+        if (!(value instanceof Iterable<?> items)) {
+            return null;
+        }
+        java.util.List<String> result = new java.util.ArrayList<>();
+        for (Object item : items) {
+            if (item != null && !String.valueOf(item).isBlank()) {
+                result.add(String.valueOf(item).trim());
+            }
+        }
+        return result;
     }
 
     private Boolean asOptionalBoolean(Object value) {

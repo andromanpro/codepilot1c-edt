@@ -412,6 +412,18 @@ public class MetadataRequestValidationService {
             String sourceObjectFqn,
             Boolean updateIfExists
     ) {
+        return normalizeExtensionAdoptPayload(
+                projectName, extensionProject, baseProject, sourceObjectFqn, updateIfExists, null);
+    }
+
+    public Map<String, Object> normalizeExtensionAdoptPayload(
+            String projectName,
+            String extensionProject,
+            String baseProject,
+            String sourceObjectFqn,
+            Boolean updateIfExists,
+            Object adoptDependencies
+    ) {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(
                     MetadataOperationCode.PROJECT_NOT_FOUND,
@@ -428,7 +440,9 @@ public class MetadataRequestValidationService {
                         effectiveBaseProject,
                         extensionProject,
                         sourceObjectFqn,
-                        updateIfExists);
+                        updateIfExists,
+                        dependenciesModeOf(adoptDependencies),
+                        dependenciesListOf(adoptDependencies));
         request.validate();
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -437,6 +451,78 @@ public class MetadataRequestValidationService {
         payload.put("extension_project", request.normalizedExtensionProjectName()); //$NON-NLS-1$
         payload.put("source_object_fqn", request.normalizedSourceObjectFqn()); //$NON-NLS-1$
         payload.put("update_if_exists", Boolean.valueOf(request.shouldUpdateIfExists())); //$NON-NLS-1$
+        payload.put("adopt_dependencies_mode", request.normalizedDependenciesMode()); //$NON-NLS-1$
+        payload.put("adopt_dependencies_keep", request.normalizedKeepDependencies()); //$NON-NLS-1$
+        return payload;
+    }
+
+    /**
+     * adopt_dependencies принимает либо строку режима ("all"/"none"), либо массив FQN,
+     * которые надо оставить. Массив = режим "list".
+     */
+    private static String dependenciesModeOf(Object adoptDependencies) {
+        if (adoptDependencies == null) {
+            return null;
+        }
+        if (adoptDependencies instanceof CharSequence text) {
+            return text.toString();
+        }
+        if (adoptDependencies instanceof Iterable<?>) {
+            return com.codepilot1c.core.edt.extension.ExtensionAdoptObjectRequest.DEPENDENCIES_LIST;
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.KNOWLEDGE_REQUIRED,
+                "adopt_dependencies must be \"all\", \"none\" or an array of FQNs", false); //$NON-NLS-1$
+    }
+
+    private static java.util.List<String> dependenciesListOf(Object adoptDependencies) {
+        if (!(adoptDependencies instanceof Iterable<?> items)) {
+            return null;
+        }
+        java.util.List<String> result = new java.util.ArrayList<>();
+        for (Object item : items) {
+            if (item != null && !item.toString().isBlank()) {
+                result.add(item.toString().trim());
+            }
+        }
+        return result;
+    }
+
+    public Map<String, Object> normalizeExtensionPrunePayload(
+            String projectName,
+            String extensionProject,
+            String baseProject,
+            Object keep,
+            Object remove,
+            Boolean dryRun
+    ) {
+        if (projectName == null || projectName.isBlank()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.PROJECT_NOT_FOUND,
+                    "project name is required", false); //$NON-NLS-1$
+        }
+        String effectiveBaseProject = baseProject == null || baseProject.isBlank() ? projectName : baseProject.trim();
+        if (!projectName.equals(effectiveBaseProject)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.KNOWLEDGE_REQUIRED,
+                    EXTENSION_BASE_PROJECT_MISMATCH, false);
+        }
+        com.codepilot1c.core.edt.extension.ExtensionPruneAdoptedRequest request =
+                new com.codepilot1c.core.edt.extension.ExtensionPruneAdoptedRequest(
+                        effectiveBaseProject,
+                        extensionProject,
+                        dependenciesListOf(keep),
+                        dependenciesListOf(remove),
+                        dryRun);
+        request.validate();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("base_project", effectiveBaseProject); //$NON-NLS-1$
+        payload.put("extension_project", request.normalizedExtensionProjectName()); //$NON-NLS-1$
+        payload.put("keep", request.normalizedKeep()); //$NON-NLS-1$
+        payload.put("remove", request.normalizedRemove()); //$NON-NLS-1$
+        payload.put("dry_run", Boolean.valueOf(request.isDryRun())); //$NON-NLS-1$
         return payload;
     }
 
@@ -1289,8 +1375,20 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("extension_project")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("base_project")), //$NON-NLS-1$
                         asString(request.payload().get("source_object_fqn")), //$NON-NLS-1$
-                        asOptionalBoolean(request.payload().get("update_if_exists"))); //$NON-NLS-1$
+                        asOptionalBoolean(request.payload().get("update_if_exists")), //$NON-NLS-1$
+                        request.payload().get("adopt_dependencies")); //$NON-NLS-1$
                 checks.add("Операция extension_adopt_object валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case EXTENSION_PRUNE_ADOPTED -> {
+                Map<String, Object> payload = normalizeExtensionPrunePayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("extension_project")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("base_project")), //$NON-NLS-1$
+                        request.payload().get("keep"), //$NON-NLS-1$
+                        request.payload().get("remove"), //$NON-NLS-1$
+                        asOptionalBoolean(request.payload().get("dry_run"))); //$NON-NLS-1$
+                checks.add("Операция extension_prune_adopted валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
             case EXTENSION_SET_PROPERTY_STATE -> {

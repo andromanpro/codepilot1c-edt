@@ -18,6 +18,7 @@ public enum ValidationOperation {
     EXTENSION_CREATE_PROJECT("extension_create_project"), //$NON-NLS-1$
     EXTENSION_ADOPT_OBJECT("extension_adopt_object"), //$NON-NLS-1$
     EXTENSION_SET_PROPERTY_STATE("extension_set_property_state"), //$NON-NLS-1$
+    EXTENSION_PRUNE_ADOPTED("extension_prune_adopted"), //$NON-NLS-1$
     DCS_CREATE_MAIN_SCHEMA("dcs_create_main_schema"), //$NON-NLS-1$
     DCS_UPSERT_QUERY_DATASET("dcs_upsert_query_dataset"), //$NON-NLS-1$
     DCS_UPSERT_PARAMETER("dcs_upsert_parameter"), //$NON-NLS-1$
@@ -86,6 +87,7 @@ public enum ValidationOperation {
             case "create" -> EXTENSION_CREATE_PROJECT; //$NON-NLS-1$
             case "adopt" -> EXTENSION_ADOPT_OBJECT; //$NON-NLS-1$
             case "set_state" -> EXTENSION_SET_PROPERTY_STATE; //$NON-NLS-1$
+            case "prune" -> EXTENSION_PRUNE_ADOPTED; //$NON-NLS-1$
             default -> throw unsupportedCompositeCommand("extension_manage", payload); //$NON-NLS-1$
         };
     }
