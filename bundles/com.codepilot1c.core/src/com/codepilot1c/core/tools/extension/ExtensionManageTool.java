@@ -106,7 +106,7 @@ public class ExtensionManageTool extends AbstractTool {
                   "description": "(adopt) If the object is already adopted, update the adopted object instead of failing."
                 },
                 "adopt_dependencies": {
-                  "description": "(adopt) What to do with objects EDT attaches alongside the requested one: \"all\" keeps them (default, adopting one form may attach dozens of catalogs/forms/pictures), \"none\" keeps only the requested object, or an array of FQNs to keep. The result always reports attached_dependencies.",
+                  "description": "(adopt) What to do with objects EDT attaches alongside the requested one: 'all' keeps them (default, adopting one form may attach dozens of catalogs/forms/pictures), 'none' keeps only the requested object, or an array of FQNs to keep. The result always reports attached_dependencies.",
                   "oneOf": [
                     {"type": "string", "enum": ["all", "none"]},
                     {"type": "array", "items": {"type": "string"}}
