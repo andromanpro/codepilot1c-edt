@@ -250,7 +250,7 @@ public class EdtExtensionService {
             if (!explicitRemove.isEmpty() && !explicitRemove.contains(fqn)) {
                 continue;
             }
-            if (isReferencedInSources(summary, sources)) {
+            if (hasOwnContent(summary, sources) || isReferencedInSources(summary, sources)) {
                 referenced.add(fqn);
             } else {
                 candidates.add(fqn);
@@ -322,6 +322,37 @@ public class EdtExtensionService {
                 || name.endsWith(".dcs") //$NON-NLS-1$
                 || name.endsWith(".dcssca") //$NON-NLS-1$
                 || name.endsWith(".xml"); //$NON-NLS-1$
+    }
+
+    /**
+     * Есть ли у заимствованного объекта СОБСТВЕННОЕ содержимое расширения.
+     *
+     * <p>Объект, заимствованный ради правки своего же модуля или формы, входящих ссылок
+     * не имеет вовсе - на него никто не ссылается по имени, он сам несёт изменения.
+     * Поэтому одного текстового поиска мало: без этой проверки кандидатами на удаление
+     * становятся ровно те объекты, ради которых расширение и делалось.</p>
+     *
+     * <p>Признак собственного содержимого - любой файл внутри папки объекта, кроме
+     * единственного дескриптора {@code <Имя>.mdo}: модуль, форма, макет. Плюс флаг
+     * наличия extension-данных у самого объекта модели.</p>
+     */
+    private static boolean hasOwnContent(ExtensionObjectSummary summary, Map<String, String> sources) {
+        if (summary.hasExtensionData()) {
+            return true;
+        }
+        String name = summary.name();
+        if (name == null || name.isBlank()) {
+            return true;
+        }
+        String ownFolder = "/" + name + "/"; //$NON-NLS-1$ //$NON-NLS-2$
+        String ownDescriptor = "/" + name + "/" + name + ".mdo"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        for (String key : sources.keySet()) {
+            String path = "/" + key; //$NON-NLS-1$
+            if (path.contains(ownFolder) && !path.endsWith(ownDescriptor)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isReferencedInSources(ExtensionObjectSummary summary, Map<String, String> sources) {
