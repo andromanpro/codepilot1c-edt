@@ -338,24 +338,73 @@ public class EdtExtensionService {
      * единственного дескриптора {@code <Имя>.mdo}: модуль, форма, макет. Плюс флаг
      * наличия extension-данных у самого объекта модели.</p>
      */
+/**
+     * Есть ли у заимствованного объекта собственное содержимое, которое нельзя потерять.
+     *
+     * <p>Раньше первой строкой стояло {@code if (summary.hasExtensionData()) return true;} — и это
+     * убивало смысл всей команды: {@code getExtension() != null} верно для ЛЮБОГО адоптированного
+     * объекта, потому что адопция всегда создаёт {@code <extension>}-секцию в {@code .mdo}.
+     * В результате кандидатом не становился никто, и prune рапортовал «кандидатов 0» на
+     * расширении с паразитной свитой — ровно в том случае, ради которого он писался
+     * (verified 2026-08-19: свежезаимствованный StyleItem без единой ссылки уходил в referenced).</p>
+     *
+     * <p>Признаки собственного содержимого, любой из которых запрещает удаление:</p>
+     * <ul>
+     * <li>у объекта есть свои файлы помимо голого дескриптора — модули, формы, макеты;</li>
+     * <li>в дескрипторе больше одного {@code uuid="} — дочерние объекты метаданных (формы,
+     * реквизиты, макеты, команды) всегда несут собственный uuid, у голой заглушки он ровно один,
+     * корневой;</li>
+     * <li>в дескрипторе есть состояние, отличное от {@code Checked} — то есть расширение что-то
+     * реально меняет или слушает ({@code Extended}/{@code Notify}/{@code None}).</li>
+     * </ul>
+     *
+     * <p>Дескриптор не прочитан — считаем, что содержимое есть: удалять вслепую нельзя.</p>
+     */
     private static boolean hasOwnContent(ExtensionObjectSummary summary, Map<String, String> sources) {
-        if (summary.hasExtensionData()) {
-            return true;
-        }
         String name = summary.name();
         if (name == null || name.isBlank()) {
             return true;
         }
         String ownFolder = "/" + name + "/"; //$NON-NLS-1$ //$NON-NLS-2$
         String ownDescriptor = "/" + name + "/" + name + ".mdo"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        for (String key : sources.keySet()) {
-            String path = "/" + key; //$NON-NLS-1$
-            if (path.contains(ownFolder) && !path.endsWith(ownDescriptor)) {
+        String descriptor = null;
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            String path = "/" + entry.getKey(); //$NON-NLS-1$
+            if (path.endsWith(ownDescriptor)) {
+                descriptor = entry.getValue();
+                continue;
+            }
+            if (path.contains(ownFolder)) {
+                return true;
+            }
+        }
+        if (descriptor == null) {
+            return true;
+        }
+        return descriptorCarriesOwnData(descriptor);
+    }
+
+    /** @return true, если дескриптор несёт что-то сверх голой заимствованной обёртки. */
+    private static boolean descriptorCarriesOwnData(String descriptor) {
+        int uuids = 0;
+        int at = descriptor.indexOf("uuid=\""); //$NON-NLS-1$
+        while (at >= 0) {
+            uuids++;
+            if (uuids > 1) {
+                return true;
+            }
+            at = descriptor.indexOf("uuid=\"", at + 1); //$NON-NLS-1$
+        }
+        for (String state : OWN_DATA_STATES) {
+            if (descriptor.contains(state)) {
                 return true;
             }
         }
         return false;
     }
+
+    /** Состояния свойств расширения, означающие «расширение здесь что-то делает». */
+    private static final String[] OWN_DATA_STATES = {">Extended<", ">Notify<", ">None<", ">Modified<"}; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
 
     private static boolean isReferencedInSources(ExtensionObjectSummary summary, Map<String, String> sources) {
         String name = summary.name();

@@ -326,12 +326,20 @@ public final class EventLogService {
                 if (!m.matches()) {
                     continue;
                 }
-                long dayStart = Long.parseLong(m.group(1));
-                long dayEnd = dayStart + 235959; // same-day upper literal bound
-                if (q.sinceRaw > 0 && dayEnd < q.sinceRaw) {
-                    continue;
-                }
-                if (q.untilRaw > 0 && dayStart > q.untilRaw) {
+                long partitionStart = Long.parseLong(m.group(1));
+                // Имя партиции даёт только НИЖНЮЮ границу — дату, с которой файл начат.
+                // Верхней границы в имени нет: платформа заводит новый .lgp не каждый день,
+                // а по своему порогу, поэтому 20260817000000.lgp спокойно содержит записи
+                // за 18 и 19 августа. Прежний код считал имя однодневным интервалом
+                // (dayStart + 235959) и отбрасывал такую партицию для окна «последние 90 минут
+                // 19.08» — запрос возвращал partitions_scanned: 0 при живом растущем журнале
+                // (verified 2026-08-19 на wms_test: 7.5 МБ, 5426 записей за 19.08, из них
+                // 45 ошибок — и пустой ответ инструмента).
+                //
+                // Отсекать снизу по имени нельзя. Точную отсечку «вся партиция старше окна»
+                // делает scanPartition через windowStartOffset — двоичный поиск по содержимому,
+                // то есть по фактическим меткам записей.
+                if (q.untilRaw > 0 && partitionStart > q.untilRaw) {
                     continue;
                 }
                 out.add(p);
