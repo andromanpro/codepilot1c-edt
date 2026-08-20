@@ -51,12 +51,15 @@ public final class EdtProjectAnalysisSupport {
 
     private static final QualifiedName TAGS_PROPERTY =
             new QualifiedName("com._1c.g5.v8.dt.metadata", "tags"); //$NON-NLS-1$ //$NON-NLS-2$
+    private static final int BSL_DECLARATION_FLAGS =
+            Pattern.CASE_INSENSITIVE | Pattern.MULTILINE | Pattern.UNICODE_CASE;
     private static final Pattern METHOD_DECLARATION = Pattern.compile(
-            "(?im)^\\s*(procedure|function|процедура|функция)\\s+([A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*)\\s*\\(([^)]*)\\)([^\\r\\n]*)"); //$NON-NLS-1$
+            "^\\s*(procedure|function|процедура|функция)\\s+([A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*)\\s*\\(([^)]*)\\)([^\\r\\n]*)", //$NON-NLS-1$
+            BSL_DECLARATION_FLAGS);
     private static final Pattern REGION_DECLARATION = Pattern.compile(
-            "(?im)^\\s*#\\s*(region|область)\\s+(.+)$"); //$NON-NLS-1$
+            "^\\s*#\\s*(region|область)\\s+(.+)$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern END_REGION_DECLARATION = Pattern.compile(
-            "(?im)^\\s*#\\s*(endregion|конецобласти)\\b.*$"); //$NON-NLS-1$
+            "^\\s*#\\s*(endregion|конецобласти)\\b.*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern CALL_EXPRESSION = Pattern.compile(
             "\\b([A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*)\\s*\\("); //$NON-NLS-1$
     private static final Set<String> CALL_KEYWORDS = Set.of(
@@ -267,7 +270,12 @@ public final class EdtProjectAnalysisSupport {
         return result;
     }
 
-    JsonObject methodCallHierarchy(String projectName, String methodFqn, String direction, int depth) {
+    JsonObject methodCallHierarchy(
+            String projectName,
+            String methodFqn,
+            String modulePath,
+            String direction,
+            int depth) {
         IProject project = resolveExistingProject(projectName);
         String normalizedDirection = defaulted(direction, "both").toLowerCase(Locale.ROOT); //$NON-NLS-1$
         if (!Set.of("callers", "callees", "both").contains(normalizedDirection)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -276,7 +284,7 @@ public final class EdtProjectAnalysisSupport {
         }
         int effectiveDepth = Math.max(1, Math.min(depth, 5));
         CodeIndex index = buildCodeIndex(project);
-        MethodKey root = index.resolveMethod(methodFqn);
+        MethodKey root = index.resolveMethod(methodFqn, modulePath);
         if (root == null) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
                     "Method not found: " + methodFqn); //$NON-NLS-1$
@@ -543,7 +551,7 @@ public final class EdtProjectAnalysisSupport {
             String text = readFile(module.file());
             ModuleStructure structure = parseModule(module, text);
             for (MethodInfo method : structure.methods()) {
-                MethodKey key = new MethodKey(module.fqn(), method.name());
+                MethodKey key = new MethodKey(module.filePath(), method.name());
                 methods.put(key, method);
                 byName.computeIfAbsent(normalize(method.name()), ignored -> new ArrayList<>()).add(key);
             }
@@ -553,12 +561,18 @@ public final class EdtProjectAnalysisSupport {
             String text = readFile(module.file());
             ModuleStructure structure = parseModule(module, text);
             for (MethodInfo method : structure.methods()) {
-                MethodKey from = new MethodKey(module.fqn(), method.name());
+                MethodKey from = new MethodKey(module.filePath(), method.name());
                 for (CallSite call : collectCallSites(structure, text)) {
                     if (!call.callerFqn().equals(method.fqn())) {
                         continue;
                     }
                     List<MethodKey> targets = byName.getOrDefault(normalize(call.calleeName()), List.of());
+                    List<MethodKey> localTargets = targets.stream()
+                            .filter(target -> normalize(target.modulePath()).equals(normalize(from.modulePath())))
+                            .toList();
+                    if (!localTargets.isEmpty()) {
+                        targets = localTargets;
+                    }
                     for (MethodKey target : targets) {
                         callees.computeIfAbsent(from, ignored -> new LinkedHashSet<>()).add(target);
                         callers.computeIfAbsent(target, ignored -> new LinkedHashSet<>()).add(from);
@@ -968,7 +982,7 @@ public final class EdtProjectAnalysisSupport {
 
     private record CallSite(String callerFqn, String calleeName, int line) { }
 
-    private record MethodKey(String moduleFqn, String methodName) { }
+    private record MethodKey(String modulePath, String methodName) { }
 
     private record HierarchyNode(MethodKey key, int depth) { }
 
@@ -1076,19 +1090,43 @@ public final class EdtProjectAnalysisSupport {
             return callers.getOrDefault(key, Set.of());
         }
 
-        MethodKey resolveMethod(String methodFqn) {
+        MethodKey resolveMethod(String methodFqn, String modulePath) {
             String normalized = normalize(methodFqn);
-            MethodKey suffixMatch = null;
+            String normalizedModulePath = normalizeModulePath(modulePath);
+            List<MethodKey> exactMatches = new ArrayList<>();
+            List<MethodKey> suffixMatches = new ArrayList<>();
             for (Map.Entry<MethodKey, MethodInfo> entry : methods.entrySet()) {
+                if (!normalizedModulePath.isBlank()
+                        && !normalize(entry.getValue().filePath()).equals(normalizedModulePath)) {
+                    continue;
+                }
                 String fqn = normalize(entry.getValue().fqn());
                 if (fqn.equals(normalized)) {
-                    return entry.getKey();
+                    exactMatches.add(entry.getKey());
+                    continue;
                 }
                 if (fqn.endsWith("." + normalized) || normalize(entry.getValue().name()).equals(normalized)) { //$NON-NLS-1$
-                    suffixMatch = entry.getKey();
+                    suffixMatches.add(entry.getKey());
                 }
             }
-            return suffixMatch;
+            List<MethodKey> matches = !exactMatches.isEmpty() ? exactMatches : suffixMatches;
+            if (matches.size() > 1) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "Method is ambiguous: " + methodFqn //$NON-NLS-1$
+                                + ". Pass modulePath from edt_list_modules.file_path to disambiguate it."); //$NON-NLS-1$
+            }
+            return matches.isEmpty() ? null : matches.get(0);
+        }
+
+        private String normalizeModulePath(String modulePath) {
+            String normalized = normalize(modulePath);
+            if (normalized.startsWith("/")) { //$NON-NLS-1$
+                normalized = normalized.substring(1);
+            }
+            if (normalized.startsWith("src/")) { //$NON-NLS-1$
+                normalized = normalized.substring(4);
+            }
+            return normalized;
         }
     }
 }

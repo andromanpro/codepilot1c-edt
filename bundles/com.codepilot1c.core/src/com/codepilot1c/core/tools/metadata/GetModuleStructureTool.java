@@ -27,7 +27,7 @@ public class GetModuleStructureTool extends AbstractTool {
               "type": "object",
               "properties": {
                 "projectName": {"type": "string", "description": "EDT project name"},
-                "moduleFqn": {"type": "string", "description": "Module FQN or path relative to src/"},
+                "moduleFqn": {"type": "string", "description": "Module FQN or file_path relative to src/; prefer file_path when FQN is duplicated"},
                 "full": {"type": "boolean", "description": "Include call sites"}
               },
               "required": ["projectName", "moduleFqn"]
