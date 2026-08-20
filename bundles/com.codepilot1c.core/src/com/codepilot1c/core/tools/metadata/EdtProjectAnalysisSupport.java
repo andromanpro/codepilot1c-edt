@@ -57,13 +57,13 @@ public final class EdtProjectAnalysisSupport {
             "^\\h*(procedure|function|процедура|функция)\\h+([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\(([^)]*)\\)([^\\r\\n]*)", //$NON-NLS-1$
             BSL_DECLARATION_FLAGS);
     private static final Pattern FUNCTION_END_DECLARATION = Pattern.compile(
-            "^\\h*(endfunction|конецфункции)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+            "^\\h*(endfunction|конецфункции)(?=\\h|;|$)[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern PROCEDURE_END_DECLARATION = Pattern.compile(
-            "^\\h*(endprocedure|конецпроцедуры)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+            "^\\h*(endprocedure|конецпроцедуры)(?=\\h|;|$)[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern REGION_DECLARATION = Pattern.compile(
             "^\\h*#\\h*(region|область)\\h+(.+)$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern END_REGION_DECLARATION = Pattern.compile(
-            "^\\h*#\\h*(endregion|конецобласти)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+            "^\\h*#\\h*(endregion|конецобласти)(?=\\h|;|$)[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern CALL_EXPRESSION = Pattern.compile(
             "\\b([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\("); //$NON-NLS-1$
     private static final Set<String> CALL_KEYWORDS = Set.of(

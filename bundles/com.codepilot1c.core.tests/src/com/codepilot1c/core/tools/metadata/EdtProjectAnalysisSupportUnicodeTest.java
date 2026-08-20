@@ -182,6 +182,24 @@ public class EdtProjectAnalysisSupportUnicodeTest {
     }
 
     @Test
+    public void moduleStructureMatchesUnicodeEndDeclarationsWithSemicolonsAndCrLf() {
+        String source = HEALTH_MODULE_TEXT
+                .replace("КонецФункции", "КонецФункции; // end") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("#КонецОбласти", "#КонецОбласти; // end") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\n", "\r\n"); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtProjectAnalysisSupport support = support(Map.of(HEALTH_PATH, source));
+
+        JsonObject result = support.moduleStructure(PROJECT, HEALTH_PATH, false);
+
+        JsonArray sections = result.getAsJsonArray("sections"); //$NON-NLS-1$
+        assertRange(sections.get(0).getAsJsonObject(), 1, 21);
+        assertRange(sections.get(1).getAsJsonObject(), 23, 60);
+        JsonArray methods = result.getAsJsonArray("methods"); //$NON-NLS-1$
+        assertRange(methods.get(0).getAsJsonObject(), 3, 19);
+        assertRange(methods.get(1).getAsJsonObject(), 25, 58);
+    }
+
+    @Test
     public void projectCallGraphReturnsDeterministicPathQualifiedDirectEdges() {
         Map<String, String> files = new LinkedHashMap<>();
         files.put(FIRST_PATH, MODULE_TEXT);
