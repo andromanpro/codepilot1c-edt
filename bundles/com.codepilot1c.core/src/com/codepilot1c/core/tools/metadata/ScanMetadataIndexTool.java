@@ -31,16 +31,19 @@ public class ScanMetadataIndexTool extends AbstractTool {
                 "projectName": {"type": "string", "description": "EDT project whose configuration should be scanned. Optional: if omitted, the active editor project (or the single open project) is used; otherwise the error lists available projects."},
                 "scope": {"type": "string", "description": "High-level metadata scope filter such as all, catalogs, documents, commonModules"},
                 "nameContains": {"type": "string", "description": "Case-insensitive object name filter for broad discovery"},
-                "limit": {"type": "integer", "description": "Maximum number of index entries to return (1..1000, default 200)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of index entries to return"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Zero-based offset in the stable sorted result set; when hasMore is true, pass the returned nextOffset here"},
                 "language": {"type": "string", "description": "Preferred synonym language for display values (ru, en, ...)"},
                 "includeModules": {"type": "boolean", "description": "Compatibility flag; does not replace detailed module inspection"}
-              }
+              },
+              "additionalProperties": false
             }
             """; //$NON-NLS-1$
 
     @Override
     public String getDescription() {
-        return "Возвращает индекс верхнеуровневых объектов метаданных EDT по проекту с широкими фильтрами."; //$NON-NLS-1$
+        return "Возвращает стабильную страницу индекса верхнеуровневых объектов метаданных EDT; " //$NON-NLS-1$
+                + "для продолжения передайте nextOffset как offset, когда hasMore=true."; //$NON-NLS-1$
     }
 
     @Override

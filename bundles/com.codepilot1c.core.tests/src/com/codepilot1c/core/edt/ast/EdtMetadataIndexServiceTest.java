@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -82,6 +83,76 @@ public class EdtMetadataIndexServiceTest {
         String actual = (String) safeFqn.invoke(service, catalog, "Catalog", "Items"); //$NON-NLS-1$ //$NON-NLS-2$
 
         assertEquals("Catalog.Items", actual); //$NON-NLS-1$
+    }
+
+    @Test
+    public void scanReturnsStableOffsetPagesAndEmptyPagePastTotal() {
+        Configuration configuration = MdClassFactory.eINSTANCE.createConfiguration();
+        addCatalogs(configuration, "Zulu", "alpha", "Delta", "bravo", "Echo"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+
+        IProject project = project("Demo"); //$NON-NLS-1$
+        TestGateway gateway = new TestGateway(project, configuration);
+        EdtMetadataIndexService service = new EdtMetadataIndexService(
+                gateway,
+                new ReadyChecker(gateway));
+
+        MetadataIndexResult first = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", 0)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(first, 5, 0, 2, true, 2, List.of("alpha", "bravo")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        MetadataIndexResult second = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", first.getNextOffset())); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(second, 5, 2, 2, true, 4, List.of("Delta", "Echo")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        MetadataIndexResult last = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", second.getNextOffset())); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(last, 5, 4, 1, false, 5, List.of("Zulu")); //$NON-NLS-1$
+
+        MetadataIndexResult exactLastPage = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", 3)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(exactLastPage, 5, 3, 2, false, 5, List.of("Echo", "Zulu")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        MetadataIndexResult atTotal = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", 5)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(atTotal, 5, 5, 0, false, 5, List.of());
+
+        MetadataIndexResult pastTotal = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 2, "ru", 7)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertPage(pastTotal, 5, 7, 0, false, 7, List.of());
+
+        List<String> repeatedOrder = service.scan(new MetadataIndexRequest(
+                "Demo", "all", null, 100, "ru", 0)).getItems().stream() //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                .map(MetadataIndexResult.Item::getFqn)
+                .toList();
+        assertEquals(List.of(
+                "Catalog.alpha", "Catalog.bravo", "Catalog.Delta", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "Catalog.Echo", "Catalog.Zulu"), repeatedOrder); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static void addCatalogs(Configuration configuration, String... names) {
+        for (String name : names) {
+            Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+            catalog.setName(name);
+            configuration.getCatalogs().add(catalog);
+        }
+    }
+
+    private static void assertPage(
+            MetadataIndexResult result,
+            int total,
+            int offset,
+            int returned,
+            boolean hasMore,
+            int nextOffset,
+            List<String> names) {
+        assertEquals(total, result.getTotal());
+        assertEquals(offset, result.getOffset());
+        assertEquals(returned, result.getReturned());
+        assertEquals(hasMore, result.isHasMore());
+        assertEquals(nextOffset, result.getNextOffset());
+        assertEquals(names, result.getItems().stream()
+                .map(MetadataIndexResult.Item::getName)
+                .toList());
     }
 
     private static IProject project(String name) {
