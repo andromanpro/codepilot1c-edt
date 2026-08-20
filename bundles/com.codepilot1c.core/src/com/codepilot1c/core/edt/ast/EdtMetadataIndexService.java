@@ -233,11 +233,11 @@ public class EdtMetadataIndexService {
             collected = gateway.getBmModelManager().executeReadOnlyTask(project, tx -> {
                 Configuration txConfiguration = tx.toTransactionObject(configuration);
                 Configuration source = txConfiguration != null ? txConfiguration : configuration;
-                List<MetadataIndexResult.Item> scanned = collect(source, scope, nameFilter, language);
-                if (!scanned.isEmpty()) {
-                    return scanned;
-                }
-                return collectFromKnownCollections(source, scope, nameFilter, language);
+                List<MetadataIndexResult.Item> known = collectFromKnownCollections(
+                        source, scope, nameFilter, language);
+                List<MetadataIndexResult.Item> reflective = collect(
+                        source, scope, nameFilter, language);
+                return mergeUnique(known, reflective);
             });
         } catch (EdtAstException e) {
             throw e;
@@ -436,7 +436,7 @@ public class EdtMetadataIndexService {
             if (canonicalKind.isBlank() || "configuration".equals(canonicalKind)) { //$NON-NLS-1$
                 canonicalKind = canonicalCollection;
             }
-            String fqn = safeFqn(object, canonicalKind, name);
+            String fqn = safeFqn(object, kind, name);
             if (fqn == null || fqn.isBlank()) {
                 fqn = canonicalKind + "." + name; //$NON-NLS-1$
             }
@@ -551,12 +551,36 @@ public class EdtMetadataIndexService {
 
     private String safeFqn(EObject object, String kind, String name) {
         if (object instanceof IBmObject bmObject) {
-            String fqn = BmObjectHelper.safeTopFqn(bmObject);
-            if (!fqn.isBlank()) {
-                return fqn;
+            IBmObject topObject = BmObjectHelper.safeTopObject(bmObject);
+            if (topObject == bmObject) {
+                String fqn = BmObjectHelper.safeTopFqn(topObject);
+                if (!fqn.isBlank()) {
+                    return fqn;
+                }
             }
         }
         return kind + "." + name; //$NON-NLS-1$
+    }
+
+    private List<MetadataIndexResult.Item> mergeUnique(
+            List<MetadataIndexResult.Item> primary,
+            List<MetadataIndexResult.Item> supplemental) {
+        List<MetadataIndexResult.Item> merged = new ArrayList<>(primary.size() + supplemental.size());
+        Set<String> seenFqns = new LinkedHashSet<>();
+        appendUnique(merged, seenFqns, primary);
+        appendUnique(merged, seenFqns, supplemental);
+        return merged;
+    }
+
+    private void appendUnique(
+            List<MetadataIndexResult.Item> target,
+            Set<String> seenFqns,
+            List<MetadataIndexResult.Item> candidates) {
+        for (MetadataIndexResult.Item item : candidates) {
+            if (seenFqns.add(normalize(item.getFqn()))) {
+                target.add(item);
+            }
+        }
     }
 
     private String canonicalScope(String value) {
