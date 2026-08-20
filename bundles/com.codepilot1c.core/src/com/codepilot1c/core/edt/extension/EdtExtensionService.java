@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -589,6 +590,14 @@ public class EdtExtensionService {
         Path projectPath = request.effectiveProjectPath(defaultContainer);
 
         Configuration configuration = MdClassFactory.eINSTANCE.createConfiguration();
+        // Без собственного идентификатора EDT создаёт проект, но экспортировать его в формат
+        // платформы уже нельзя: 1cedtcli падает с «Ошибка экспорта во внешний поток для
+        // Configuration.xml» (exit 204) и оставляет файл обрезанным на третьей строке —
+        // экспортёру нечего писать в атрибут <Configuration uuid="...">. Дальше по цепочке
+        // Конфигуратор отвергает такой пакет с «Extra content at the end of the document».
+        // Проверено 2026-08-20: добавление uuid в Configuration.mdo созданного расширения —
+        // единственное изменение, после которого экспорт проходит (exit 0, файл целый).
+        configuration.setUuid(UUID.randomUUID());
         configuration.setName(request.effectiveConfigurationName());
         configuration.setConfigurationExtensionPurpose(request.effectivePurpose());
         CompatibilityMode compatibilityMode = request.effectiveCompatibilityMode();
