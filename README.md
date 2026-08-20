@@ -4,10 +4,10 @@
 
 ## Актуальные артефакты
 
-- Текущая линия разработки: `1.3.0` — **не выпущена**: git-тега `v1.3.0*` нет, GitHub Release не создан.
-- Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/> — сейчас отдаёт
-  preview-сборку `1.3.0.20260817-1245`, опубликованную из `64c45d95`.
-- Последний тегированный релиз: [`v1.0.0.20260803-1552`](https://github.com/ondysss/codepilot1c-edt/releases/tag/v1.0.0.20260803-1552).
+- Текущая release-линия: `1.3.4`.
+- Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/> — публикует последнюю
+  сборку release-линии `1.3.4`.
+- Последний тегированный релиз: [GitHub Releases](https://github.com/ondysss/codepilot1c-edt/releases/latest).
 - GitHub Packages (container image): <https://github.com/users/ondysss/packages/container/package/codepilot1c-edt>
 - Telegram-канал: <https://t.me/codepilot1c>
 - Группа поддержки: <https://t.me/ai_1c_dev>
