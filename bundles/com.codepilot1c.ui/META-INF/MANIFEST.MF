@@ -2,7 +2,7 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: %Bundle-Name
 Bundle-SymbolicName: com.codepilot1c.ui;singleton:=true
-Bundle-Version: 1.3.7.qualifier
+Bundle-Version: 1.3.8.qualifier
 Bundle-Vendor: %Bundle-Vendor
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-Activator: com.codepilot1c.ui.internal.VibeUiPlugin
