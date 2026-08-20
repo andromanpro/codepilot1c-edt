@@ -7290,80 +7290,15 @@ public class EdtMetadataService {
         return value instanceof EMap<?, ?> map ? (EMap<String, String>) map : null;
     }
 
+    // Обход вынесен в MdObjectFqnResolver: та же логика жила второй копией в пути чтения
+    // (EdtMetadataInspectorService), где фикс про non-containment Subsystem.subsystems так и не
+    // появился — update_metadata вложенную подсистему находил, edt_metadata_details по тому же
+    // FQN отвечал "Object not found".
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
-        String normalizedMarker = normalizeToken(marker);
-        for (EStructuralFeature feature : parent.eClass().getEAllStructuralFeatures()) {
-            if (!(feature instanceof EReference reference) || !reference.isMany()) {
-                continue;
-            }
-            // Nested metadata hierarchy is not always plain EMF containment. In the EDT
-            // metadata model, nested subsystems (Subsystem.subsystems) are a NON-containment,
-            // resolve-proxies EReference (verified via bytecode: initEReference isContainment=false,
-            // isResolveProxies=true) — physically the subsystems are contained by Configuration,
-            // and the tree is expressed through cross-references. A containment-only walker drops
-            // that feature and never finds nested children. Allow a non-containment reference only
-            // when the FQN marker explicitly matches the feature/type, so we don't start traversing
-            // arbitrary back-references (e.g. parentSubsystem) and produce false matches.
-            boolean markerMatchesFeature = matchesMarker(
-                    normalizedMarker, feature.getName(), reference.getEReferenceType().getName());
-            if (!reference.isContainment() && !markerMatchesFeature) {
-                continue;
-            }
-            @SuppressWarnings("unchecked")
-            Collection<Object> values = (Collection<Object>) parent.eGet(feature);
-            if (values == null) {
-                continue;
-            }
-            for (Object value : values) {
-                if (!(value instanceof MdObject child)) {
-                    continue;
-                }
-                // Non-containment references return proxies outside a BM transaction — resolve
-                // them before reading the name (resolveProxies=true for these references).
-                if (child.eIsProxy() || child.getName() == null) {
-                    Object resolved = EcoreUtil.resolve(child, parent);
-                    if (resolved instanceof MdObject resolvedChild) {
-                        child = resolvedChild;
-                    }
-                }
-                if (!childName.equalsIgnoreCase(child.getName())) {
-                    continue;
-                }
-                if (markerMatchesFeature
-                        || matchesMarker(normalizedMarker, feature.getName(), child.eClass().getName())) {
-                    return child;
-                }
-            }
-        }
-        return null;
+        return MdObjectFqnResolver.findNestedChild(parent, marker, childName);
     }
 
-    private boolean matchesMarker(String marker, String featureName, String className) {
-        if (marker == null || marker.isBlank()) {
-            return true;
-        }
-        String normalizedFeature = normalizeToken(featureName);
-        String singularFeature = singularize(normalizedFeature);
-        String normalizedClass = normalizeToken(className);
-        String shortClass = normalizeToken(extractShortClassMarker(className));
-        return marker.equals(normalizedFeature)
-                || marker.equals(singularFeature)
-                || marker.equals(normalizedClass)
-                || marker.equals(shortClass);
-    }
 
-    private String extractShortClassMarker(String className) {
-        String normalized = className != null ? className : ""; //$NON-NLS-1$
-        String[] tails = {
-                "Attribute", "TabularSection", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
-        };
-        for (String tail : tails) {
-            if (normalized.endsWith(tail)) {
-                return tail;
-            }
-        }
-        return normalized;
-    }
 
     private MdObject createChildByFactory(MdObject parent, MetadataChildKind kind) {
         String childSuffix = kind.getDisplayName();
