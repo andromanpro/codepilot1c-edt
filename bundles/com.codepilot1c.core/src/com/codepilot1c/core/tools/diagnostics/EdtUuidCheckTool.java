@@ -62,10 +62,15 @@ public class EdtUuidCheckTool extends AbstractTool {
             "([A-Za-z][A-Za-z0-9_]*)=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""); //$NON-NLS-1$
     private static final Pattern EMPTY_UUID_ATTRIBUTE = Pattern.compile("\\buuid=\"\""); //$NON-NLS-1$
 
-    /** Binary/irrelevant payloads: BSL has no uuid attributes, .bin is the support map. */
+    /**
+     * Binary/irrelevant payloads: BSL has no uuid attributes, .bin is the support
+     * map, and moxel templates (.mxl/.mxlx) repeat field ids by design — a
+     * FieldName referenced from several cells is legitimate, not a clone
+     * (verified live on ШаблоныЭтикетокИЦенниковБПО).
+     */
     private static final Set<String> SKIPPED_EXTENSIONS = Set.of(
             "bsl", "os", "bin", "png", "jpg", "jpeg", "gif", "ico", "bmp", "svg", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
-            "pdf", "zip", "jar", "epf", "erf", "cf", "cfe", "dt", "mxl"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
+            "pdf", "zip", "jar", "epf", "erf", "cf", "cfe", "dt", "mxl", "mxlx"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$ //$NON-NLS-10$
 
     private static final long MAX_FILE_BYTES = 32L * 1024 * 1024;
     private static final int MAX_DUPLICATES_LISTED = 50;
