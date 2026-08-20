@@ -54,14 +54,18 @@ public final class EdtProjectAnalysisSupport {
     private static final int BSL_DECLARATION_FLAGS =
             Pattern.CASE_INSENSITIVE | Pattern.MULTILINE | Pattern.UNICODE_CASE;
     private static final Pattern METHOD_DECLARATION = Pattern.compile(
-            "^\\s*(procedure|function|процедура|функция)\\s+([A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*)\\s*\\(([^)]*)\\)([^\\r\\n]*)", //$NON-NLS-1$
+            "^\\h*(procedure|function|процедура|функция)\\h+([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\(([^)]*)\\)([^\\r\\n]*)", //$NON-NLS-1$
             BSL_DECLARATION_FLAGS);
+    private static final Pattern FUNCTION_END_DECLARATION = Pattern.compile(
+            "^\\h*(endfunction|конецфункции)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+    private static final Pattern PROCEDURE_END_DECLARATION = Pattern.compile(
+            "^\\h*(endprocedure|конецпроцедуры)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern REGION_DECLARATION = Pattern.compile(
-            "^\\s*#\\s*(region|область)\\s+(.+)$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+            "^\\h*#\\h*(region|область)\\h+(.+)$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern END_REGION_DECLARATION = Pattern.compile(
-            "^\\s*#\\s*(endregion|конецобласти)\\b.*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
+            "^\\h*#\\h*(endregion|конецобласти)\\b[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern CALL_EXPRESSION = Pattern.compile(
-            "\\b([A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*)\\s*\\("); //$NON-NLS-1$
+            "\\b([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\("); //$NON-NLS-1$
     private static final Set<String> CALL_KEYWORDS = Set.of(
             "if", "for", "while", "try", "new", "если", "для", "пока", "попытка", "новый", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$ //$NON-NLS-10$
             "procedure", "function", "процедура", "функция"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
@@ -302,6 +306,12 @@ public final class EdtProjectAnalysisSupport {
         return result;
     }
 
+    JsonObject projectCallGraph(String projectName, String modulePath) {
+        IProject project = resolveExistingProject(projectName);
+        CodeIndex index = buildCodeIndex(project);
+        return index.toGraphJson(projectName, modulePath);
+    }
+
     JsonObject goToDefinition(String projectName, Map<String, Object> position, String symbolFqn) {
         IProject project = resolveExistingProject(projectName);
         SymbolResolution resolution = resolveSymbol(project, position, symbolFqn);
@@ -453,7 +463,8 @@ public final class EdtProjectAnalysisSupport {
             }
             result.add(moduleInfo(file));
         }
-        result.sort(Comparator.comparing(ModuleInfo::fqn, String.CASE_INSENSITIVE_ORDER));
+        result.sort(Comparator.comparing(ModuleInfo::fqn, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(ModuleInfo::filePath, String.CASE_INSENSITIVE_ORDER));
         return result;
     }
 
@@ -489,11 +500,12 @@ public final class EdtProjectAnalysisSupport {
     }
 
     private ModuleStructure parseModule(ModuleInfo module, String text) {
+        SourceText source = new SourceText(text);
         List<SectionInfo> sections = new ArrayList<>();
         Matcher regionMatcher = REGION_DECLARATION.matcher(text);
         while (regionMatcher.find()) {
-            int startLine = lineOf(text, regionMatcher.start());
-            int endLine = findRegionEnd(text, regionMatcher.end(), startLine);
+            int startLine = source.lineOf(regionMatcher.start());
+            int endLine = findRegionEnd(text, source, regionMatcher.end(), startLine);
             sections.add(new SectionInfo(regionMatcher.group(2).trim(), startLine, endLine));
         }
 
@@ -503,13 +515,12 @@ public final class EdtProjectAnalysisSupport {
             String kind = normalize(matcher.group(1)).startsWith("ф") || normalize(matcher.group(1)).startsWith("f") //$NON-NLS-1$ //$NON-NLS-2$
                     ? "function" : "procedure"; //$NON-NLS-1$ //$NON-NLS-2$
             String name = matcher.group(2);
-            int startLine = lineOf(text, matcher.start());
-            int endOffset = findMethodEnd(text, matcher.end());
-            int endLine = lineOf(text, endOffset);
+            int startLine = source.lineOf(matcher.start());
+            int endLine = findMethodEndLine(text, source, matcher.end(), kind);
             String tail = matcher.group(4) == null ? "" : matcher.group(4); //$NON-NLS-1$
             boolean exported = normalize(tail).contains("export") || normalize(tail).contains("экспорт"); //$NON-NLS-1$ //$NON-NLS-2$
-            String signature = lineAt(text, startLine).trim();
-            String documentation = documentationBefore(text, startLine);
+            String signature = source.lineAt(startLine).trim();
+            String documentation = documentationBefore(source, startLine);
             methods.add(new MethodInfo(
                     module.fqn() + "." + name, //$NON-NLS-1$
                     name,
@@ -526,16 +537,21 @@ public final class EdtProjectAnalysisSupport {
     }
 
     private List<CallSite> collectCallSites(ModuleStructure structure, String text) {
+        SourceText source = new SourceText(text);
         List<CallSite> calls = new ArrayList<>();
         for (MethodInfo method : structure.methods()) {
-            String body = sliceLines(text, method.startLine(), method.endLine());
+            String body = source.sliceLines(method.startLine(), method.endLine());
+            SourceText bodySource = new SourceText(body);
             Matcher matcher = CALL_EXPRESSION.matcher(body);
             while (matcher.find()) {
                 String name = matcher.group(1);
                 if (CALL_KEYWORDS.contains(normalize(name)) || name.equals(method.name())) {
                     continue;
                 }
-                calls.add(new CallSite(method.fqn(), name, method.startLine() + lineOf(body, matcher.start()) - 1));
+                calls.add(new CallSite(
+                        method.fqn(),
+                        name,
+                        method.startLine() + bodySource.lineOf(matcher.start()) - 1));
             }
         }
         return calls;
@@ -545,42 +561,68 @@ public final class EdtProjectAnalysisSupport {
         Map<MethodKey, MethodInfo> methods = new LinkedHashMap<>();
         Map<MethodKey, Set<MethodKey>> callees = new LinkedHashMap<>();
         Map<MethodKey, Set<MethodKey>> callers = new LinkedHashMap<>();
-        Map<String, List<MethodKey>> byName = new HashMap<>();
+        Map<String, LinkedHashSet<MethodKey>> byName = new HashMap<>();
+        Map<String, MethodKey> byPathAndFqn = new HashMap<>();
+        List<ParsedModule> parsedModules = new ArrayList<>();
+        LinkedHashSet<String> modulePaths = new LinkedHashSet<>();
 
         for (ModuleInfo module : modules(project)) {
             String text = readFile(module.file());
             ModuleStructure structure = parseModule(module, text);
+            List<CallSite> calls = collectCallSites(structure, text);
+            parsedModules.add(new ParsedModule(module, calls));
+            modulePaths.add(module.filePath());
             for (MethodInfo method : structure.methods()) {
                 MethodKey key = new MethodKey(module.filePath(), method.name());
                 methods.put(key, method);
-                byName.computeIfAbsent(normalize(method.name()), ignored -> new ArrayList<>()).add(key);
+                byName.computeIfAbsent(normalize(method.name()), ignored -> new LinkedHashSet<>()).add(key);
+                byPathAndFqn.put(methodIdentity(module.filePath(), method.fqn()), key);
             }
         }
 
-        for (ModuleInfo module : modules(project)) {
-            String text = readFile(module.file());
-            ModuleStructure structure = parseModule(module, text);
-            for (MethodInfo method : structure.methods()) {
-                MethodKey from = new MethodKey(module.filePath(), method.name());
-                for (CallSite call : collectCallSites(structure, text)) {
-                    if (!call.callerFqn().equals(method.fqn())) {
-                        continue;
-                    }
-                    List<MethodKey> targets = byName.getOrDefault(normalize(call.calleeName()), List.of());
-                    List<MethodKey> localTargets = targets.stream()
-                            .filter(target -> normalize(target.modulePath()).equals(normalize(from.modulePath())))
-                            .toList();
-                    if (!localTargets.isEmpty()) {
-                        targets = localTargets;
-                    }
-                    for (MethodKey target : targets) {
-                        callees.computeIfAbsent(from, ignored -> new LinkedHashSet<>()).add(target);
-                        callers.computeIfAbsent(target, ignored -> new LinkedHashSet<>()).add(from);
-                    }
+        Map<GraphEdgeKey, LinkedHashSet<Integer>> edgeLines = new LinkedHashMap<>();
+        List<UnresolvedCall> unresolvedCalls = new ArrayList<>();
+        for (ParsedModule parsed : parsedModules) {
+            for (CallSite call : parsed.calls()) {
+                MethodKey from = byPathAndFqn.get(methodIdentity(parsed.module().filePath(), call.callerFqn()));
+                if (from == null) {
+                    continue;
                 }
+                LinkedHashSet<MethodKey> namedTargets = byName.getOrDefault(
+                        normalize(call.calleeName()), new LinkedHashSet<>());
+                List<MethodKey> localTargets = namedTargets.stream()
+                        .filter(target -> normalize(target.modulePath()).equals(normalize(from.modulePath())))
+                        .toList();
+                MethodKey target = null;
+                String resolution = ""; //$NON-NLS-1$
+                if (localTargets.size() == 1) {
+                    target = localTargets.get(0);
+                    resolution = "same_module"; //$NON-NLS-1$
+                } else if (localTargets.isEmpty() && namedTargets.size() == 1) {
+                    target = namedTargets.iterator().next();
+                    resolution = "unique_name"; //$NON-NLS-1$
+                }
+                if (target == null) {
+                    unresolvedCalls.add(new UnresolvedCall(
+                            from,
+                            call.calleeName(),
+                            call.line(),
+                            namedTargets.isEmpty() ? "not_found" : "ambiguous", //$NON-NLS-1$ //$NON-NLS-2$
+                            namedTargets.size()));
+                    continue;
+                }
+                callees.computeIfAbsent(from, ignored -> new LinkedHashSet<>()).add(target);
+                callers.computeIfAbsent(target, ignored -> new LinkedHashSet<>()).add(from);
+                edgeLines.computeIfAbsent(
+                        new GraphEdgeKey(from, target, resolution), ignored -> new LinkedHashSet<>())
+                        .add(Integer.valueOf(call.line()));
             }
         }
-        return new CodeIndex(methods, callees, callers);
+        return new CodeIndex(methods, callees, callers, edgeLines, unresolvedCalls, modulePaths);
+    }
+
+    private String methodIdentity(String modulePath, String methodFqn) {
+        return normalize(modulePath) + "\n" + normalize(methodFqn); //$NON-NLS-1$
     }
 
     private JsonArray hierarchy(MethodKey root, int maxDepth, CodeIndex index, boolean calleeDirection) {
@@ -765,43 +807,39 @@ public final class EdtProjectAnalysisSupport {
         }
     }
 
-    private int findRegionEnd(String text, int fromOffset, int defaultLine) {
+    private int findRegionEnd(String text, SourceText source, int fromOffset, int defaultLine) {
         Matcher matcher = END_REGION_DECLARATION.matcher(text);
         if (matcher.find(fromOffset)) {
-            return lineOf(text, matcher.start());
+            return source.lineOf(matcher.start());
         }
         return defaultLine;
     }
 
-    private int findMethodEnd(String text, int fromOffset) {
+    private int findMethodEndLine(String text, SourceText source, int fromOffset, String kind) {
+        Pattern endPattern = "function".equals(kind) //$NON-NLS-1$
+                ? FUNCTION_END_DECLARATION
+                : PROCEDURE_END_DECLARATION;
+        Matcher end = endPattern.matcher(text);
+        if (end.find(fromOffset)) {
+            return source.lineOf(end.start());
+        }
         Matcher next = METHOD_DECLARATION.matcher(text);
         if (next.find(fromOffset)) {
-            return Math.max(fromOffset, next.start() - 1);
+            return Math.max(source.lineOf(fromOffset), source.lineOf(next.start()) - 1);
         }
-        return text.length();
+        return source.lineCount();
     }
 
-    private String documentationBefore(String text, int startLine) {
+    private String documentationBefore(SourceText source, int startLine) {
         StringBuilder docs = new StringBuilder();
         for (int line = startLine - 1; line >= 1; line--) {
-            String current = lineAt(text, line).trim();
+            String current = source.lineAt(line).trim();
             if (!current.startsWith("//") || current.length() <= 2) { //$NON-NLS-1$
                 break;
             }
             docs.insert(0, current.substring(2).trim() + "\n"); //$NON-NLS-1$
         }
         return docs.toString().trim();
-    }
-
-    private int lineOf(String text, int offset) {
-        int line = 1;
-        int max = Math.min(Math.max(offset, 0), text.length());
-        for (int i = 0; i < max; i++) {
-            if (text.charAt(i) == '\n') {
-                line++;
-            }
-        }
-        return line;
     }
 
     private String lineAt(String text, int lineNumber) {
@@ -812,14 +850,6 @@ public final class EdtProjectAnalysisSupport {
         return lines[lineNumber - 1];
     }
 
-    private String sliceLines(String text, int startLine, int endLine) {
-        String[] lines = text.split("\\R", -1); //$NON-NLS-1$
-        StringBuilder builder = new StringBuilder();
-        for (int i = Math.max(1, startLine); i <= Math.min(endLine, lines.length); i++) {
-            builder.append(lines[i - 1]).append('\n');
-        }
-        return builder.toString();
-    }
 
     private String symbolAt(String text, int line, int column) {
         String current = lineAt(text, line);
@@ -986,6 +1016,17 @@ public final class EdtProjectAnalysisSupport {
 
     private record HierarchyNode(MethodKey key, int depth) { }
 
+    private record ParsedModule(ModuleInfo module, List<CallSite> calls) { }
+
+    private record GraphEdgeKey(MethodKey source, MethodKey target, String resolution) { }
+
+    private record UnresolvedCall(
+            MethodKey source,
+            String calleeName,
+            int line,
+            String reason,
+            int candidateCount) { }
+
     private record ModuleInfo(
             String fqn,
             String ownerFqn,
@@ -1065,17 +1106,88 @@ public final class EdtProjectAnalysisSupport {
         }
     }
 
+    private static final class SourceText {
+
+        private final String text;
+        private final int[] lineStarts;
+
+        SourceText(String text) {
+            this.text = text == null ? "" : text; //$NON-NLS-1$
+            int lineCount = 1;
+            for (int i = 0; i < this.text.length(); i++) {
+                if (this.text.charAt(i) == '\n') {
+                    lineCount++;
+                }
+            }
+            this.lineStarts = new int[lineCount];
+            int line = 1;
+            for (int i = 0; i < this.text.length(); i++) {
+                if (this.text.charAt(i) == '\n') {
+                    this.lineStarts[line++] = i + 1;
+                }
+            }
+        }
+
+        int lineCount() {
+            return lineStarts.length;
+        }
+
+        int lineOf(int offset) {
+            int target = Math.max(0, Math.min(offset, text.length()));
+            int low = 0;
+            int high = lineStarts.length - 1;
+            while (low <= high) {
+                int middle = (low + high) >>> 1;
+                if (lineStarts[middle] <= target) {
+                    low = middle + 1;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            return high + 1;
+        }
+
+        String lineAt(int lineNumber) {
+            if (lineNumber < 1 || lineNumber > lineStarts.length) {
+                return ""; //$NON-NLS-1$
+            }
+            int start = lineStarts[lineNumber - 1];
+            int end = lineNumber < lineStarts.length ? lineStarts[lineNumber] - 1 : text.length();
+            if (end > start && text.charAt(end - 1) == '\r') {
+                end--;
+            }
+            return text.substring(start, Math.max(start, end));
+        }
+
+        String sliceLines(int startLine, int endLine) {
+            int first = Math.max(1, Math.min(startLine, lineStarts.length));
+            int last = Math.max(first, Math.min(endLine, lineStarts.length));
+            int start = lineStarts[first - 1];
+            int end = last < lineStarts.length ? lineStarts[last] : text.length();
+            return text.substring(start, Math.max(start, end));
+        }
+    }
+
     private final class CodeIndex {
 
         private final Map<MethodKey, MethodInfo> methods;
         private final Map<MethodKey, Set<MethodKey>> callees;
         private final Map<MethodKey, Set<MethodKey>> callers;
+        private final Map<GraphEdgeKey, LinkedHashSet<Integer>> edgeLines;
+        private final List<UnresolvedCall> unresolvedCalls;
+        private final Set<String> modulePaths;
 
         CodeIndex(Map<MethodKey, MethodInfo> methods, Map<MethodKey, Set<MethodKey>> callees,
-                Map<MethodKey, Set<MethodKey>> callers) {
+                Map<MethodKey, Set<MethodKey>> callers,
+                Map<GraphEdgeKey, LinkedHashSet<Integer>> edgeLines,
+                List<UnresolvedCall> unresolvedCalls,
+                Set<String> modulePaths) {
             this.methods = methods;
             this.callees = callees;
             this.callers = callers;
+            this.edgeLines = edgeLines;
+            this.unresolvedCalls = unresolvedCalls;
+            this.modulePaths = modulePaths;
         }
 
         MethodInfo method(MethodKey key) {
@@ -1088,6 +1200,96 @@ public final class EdtProjectAnalysisSupport {
 
         Set<MethodKey> callers(MethodKey key) {
             return callers.getOrDefault(key, Set.of());
+        }
+
+        JsonObject toGraphJson(String projectName, String modulePath) {
+            String pathFilter = normalizeModulePath(modulePath);
+            if (!pathFilter.isBlank() && modulePaths.stream()
+                    .map(this::normalizeModulePath)
+                    .noneMatch(pathFilter::equals)) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "Module not found: " + modulePath); //$NON-NLS-1$
+            }
+
+            List<Map.Entry<MethodKey, MethodInfo>> selectedMethods = methods.entrySet().stream()
+                    .filter(entry -> pathFilter.isBlank()
+                            || normalizeModulePath(entry.getKey().modulePath()).equals(pathFilter))
+                    .sorted(Map.Entry.comparingByKey(methodKeyComparator()))
+                    .toList();
+            List<Map.Entry<GraphEdgeKey, LinkedHashSet<Integer>>> selectedEdges = edgeLines.entrySet().stream()
+                    .filter(entry -> pathFilter.isBlank()
+                            || normalizeModulePath(entry.getKey().source().modulePath()).equals(pathFilter))
+                    .sorted(Map.Entry.comparingByKey(graphEdgeComparator()))
+                    .toList();
+            List<UnresolvedCall> selectedUnresolved = unresolvedCalls.stream()
+                    .filter(call -> pathFilter.isBlank()
+                            || normalizeModulePath(call.source().modulePath()).equals(pathFilter))
+                    .sorted(Comparator.comparing((UnresolvedCall call) -> call.source().modulePath(),
+                            String.CASE_INSENSITIVE_ORDER)
+                            .thenComparing(call -> call.source().methodName(), String.CASE_INSENSITIVE_ORDER)
+                            .thenComparingInt(UnresolvedCall::line)
+                            .thenComparing(UnresolvedCall::calleeName, String.CASE_INSENSITIVE_ORDER))
+                    .toList();
+
+            JsonArray methodArray = new JsonArray();
+            selectedMethods.forEach(entry -> methodArray.add(entry.getValue().toJson()));
+            JsonArray edgeArray = new JsonArray();
+            selectedEdges.forEach(entry -> edgeArray.add(edgeJson(entry.getKey(), entry.getValue())));
+            JsonArray unresolvedArray = new JsonArray();
+            selectedUnresolved.forEach(call -> unresolvedArray.add(unresolvedJson(call)));
+
+            JsonObject result = base(projectName);
+            result.addProperty("module_path", pathFilter.isBlank() ? "" : modulePath); //$NON-NLS-1$ //$NON-NLS-2$
+            result.addProperty("project_total_modules", modulePaths.size()); //$NON-NLS-1$
+            result.addProperty("project_total_methods", methods.size()); //$NON-NLS-1$
+            result.addProperty("total_methods", methodArray.size()); //$NON-NLS-1$
+            result.addProperty("total_edges", edgeArray.size()); //$NON-NLS-1$
+            result.addProperty("total_unresolved_calls", unresolvedArray.size()); //$NON-NLS-1$
+            result.add("methods", methodArray); //$NON-NLS-1$
+            result.add("edges", edgeArray); //$NON-NLS-1$
+            result.add("unresolved_calls", unresolvedArray); //$NON-NLS-1$
+            return result;
+        }
+
+        private Comparator<MethodKey> methodKeyComparator() {
+            return Comparator.comparing(MethodKey::modulePath, String.CASE_INSENSITIVE_ORDER)
+                    .thenComparing(MethodKey::methodName, String.CASE_INSENSITIVE_ORDER);
+        }
+
+        private Comparator<GraphEdgeKey> graphEdgeComparator() {
+            return Comparator.comparing(GraphEdgeKey::source, methodKeyComparator())
+                    .thenComparing(GraphEdgeKey::target, methodKeyComparator())
+                    .thenComparing(GraphEdgeKey::resolution);
+        }
+
+        private JsonObject edgeJson(GraphEdgeKey edge, Set<Integer> lines) {
+            JsonObject object = new JsonObject();
+            object.add("source", endpointJson(edge.source())); //$NON-NLS-1$
+            object.add("target", endpointJson(edge.target())); //$NON-NLS-1$
+            object.addProperty("resolution", edge.resolution()); //$NON-NLS-1$
+            JsonArray lineArray = new JsonArray();
+            lines.forEach(lineArray::add);
+            object.add("lines", lineArray); //$NON-NLS-1$
+            return object;
+        }
+
+        private JsonObject unresolvedJson(UnresolvedCall call) {
+            JsonObject object = new JsonObject();
+            object.add("source", endpointJson(call.source())); //$NON-NLS-1$
+            object.addProperty("callee_name", call.calleeName()); //$NON-NLS-1$
+            object.addProperty("line", call.line()); //$NON-NLS-1$
+            object.addProperty("reason", call.reason()); //$NON-NLS-1$
+            object.addProperty("candidate_count", call.candidateCount()); //$NON-NLS-1$
+            return object;
+        }
+
+        private JsonObject endpointJson(MethodKey key) {
+            MethodInfo method = methods.get(key);
+            JsonObject endpoint = new JsonObject();
+            endpoint.addProperty("file_path", key.modulePath()); //$NON-NLS-1$
+            endpoint.addProperty("method_name", key.methodName()); //$NON-NLS-1$
+            endpoint.addProperty("method_fqn", method != null ? method.fqn() : ""); //$NON-NLS-1$ //$NON-NLS-2$
+            return endpoint;
         }
 
         MethodKey resolveMethod(String methodFqn, String modulePath) {

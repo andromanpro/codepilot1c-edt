@@ -51,6 +51,7 @@ abstract class GsdPhaseProfile implements AgentProfile {
                 "edt_get_module_structure", //$NON-NLS-1$
                 "edt_search_in_code", //$NON-NLS-1$
                 "edt_get_method_call_hierarchy", //$NON-NLS-1$
+                "edt_get_project_call_graph", //$NON-NLS-1$
                 "edt_go_to_definition", //$NON-NLS-1$
                 "edt_get_symbol_info", //$NON-NLS-1$
                 "inspect_form_layout", //$NON-NLS-1$
@@ -93,6 +94,7 @@ abstract class GsdPhaseProfile implements AgentProfile {
                 PermissionRule.allow("edt_get_module_structure").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("edt_search_in_code").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("edt_get_method_call_hierarchy").forAllResources(), //$NON-NLS-1$
+                PermissionRule.allow("edt_get_project_call_graph").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("edt_go_to_definition").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("edt_get_symbol_info").forAllResources(), //$NON-NLS-1$
                 PermissionRule.allow("inspect_form_layout").forAllResources(), //$NON-NLS-1$

@@ -81,7 +81,7 @@ public final class AgentPromptTemplates {
         sb.append("## Доступные инструменты\n"); //$NON-NLS-1$
         sb.append("- Файлы и workspace: read_file, edit_file, write_file, workspace_copy_transform, workspace_copy_transform_batch, glob, grep, workspace_import_project, connect_infobase, import_project_from_infobase\n"); //$NON-NLS-1$
         sb.append("- Git: git_inspect (status/log/branches/remotes/diff), git_mutate (create_repo/init/clone/remote/fetch/pull/push/branch/add/commit), git_clone_and_import_project (clone + workspace import)\n"); //$NON-NLS-1$
-        sb.append("- EDT AST/API: edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info, get_diagnostics\n"); //$NON-NLS-1$
+        sb.append("- EDT AST/API: edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, edt_go_to_definition, edt_get_symbol_info, get_diagnostics\n"); //$NON-NLS-1$
         sb.append("- EDT СКД: dcs_manage(command=get_summary|list_nodes|create_schema|upsert_dataset|upsert_param|upsert_field)\n"); //$NON-NLS-1$
         sb.append("- EDT расширения: extension_manage(command=list_projects|list_objects|create|adopt|set_state; project/base_project=база, extension_project=расширение), edt_extension_smoke\n"); //$NON-NLS-1$
         sb.append("- EDT внешние объекты: external_manage(command=list_projects|list_objects|details|create_report|create_processing), edt_external_smoke\n"); //$NON-NLS-1$
@@ -246,7 +246,7 @@ public final class AgentPromptTemplates {
         sb.append("## Риски\n[Основные риски и как их снизить]\n\n"); //$NON-NLS-1$
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files,\n"); //$NON-NLS-1$
-        sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
+        sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
         sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, java_compile_probe, discover_tools, skill, task.\n"); //$NON-NLS-1$
 
         return PromptQualityAssurance.verify(
@@ -287,7 +287,7 @@ public final class AgentPromptTemplates {
 
         sb.append("## Инструменты\n"); //$NON-NLS-1$
         sb.append("read_file, glob, grep, list_files,\n"); //$NON-NLS-1$
-        sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
+        sb.append("get_diagnostics, edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, edt_go_to_definition, edt_get_symbol_info,\n"); //$NON-NLS-1$
         sb.append("inspect_form_layout, bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, inspect_platform_reference, java_compile_probe, discover_tools, skill, task.\n"); //$NON-NLS-1$
 
         return PromptQualityAssurance.verify(
@@ -432,7 +432,7 @@ public final class AgentPromptTemplates {
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$
         sb.append("edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, "); //$NON-NLS-1$
-        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, "); //$NON-NLS-1$
+        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, "); //$NON-NLS-1$
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
@@ -465,7 +465,7 @@ public final class AgentPromptTemplates {
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$
         sb.append("edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, "); //$NON-NLS-1$
-        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, "); //$NON-NLS-1$
+        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, "); //$NON-NLS-1$
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
@@ -504,7 +504,7 @@ public final class AgentPromptTemplates {
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$
         sb.append("edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, "); //$NON-NLS-1$
-        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, "); //$NON-NLS-1$
+        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, "); //$NON-NLS-1$
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
@@ -542,7 +542,7 @@ public final class AgentPromptTemplates {
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$
         sb.append("edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, "); //$NON-NLS-1$
-        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, "); //$NON-NLS-1$
+        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, "); //$NON-NLS-1$
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$
@@ -577,7 +577,7 @@ public final class AgentPromptTemplates {
         sb.append("read_file, glob, grep, list_files, git_inspect, get_diagnostics, get_bookmarks, get_tasks, "); //$NON-NLS-1$
         sb.append("edt_content_assist, edt_find_references, edt_metadata_details, scan_metadata_index, "); //$NON-NLS-1$
         sb.append("edt_get_configuration_properties, edt_get_problem_summary, edt_get_tags, edt_get_objects_by_tags, "); //$NON-NLS-1$
-        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, "); //$NON-NLS-1$
+        sb.append("edt_list_modules, edt_get_module_structure, edt_search_in_code, edt_get_method_call_hierarchy, edt_get_project_call_graph, "); //$NON-NLS-1$
         sb.append("edt_go_to_definition, edt_get_symbol_info, inspect_form_layout, "); //$NON-NLS-1$
         sb.append("bsl_symbol_at_position, bsl_type_at_position, bsl_scope_members, bsl_list_methods, "); //$NON-NLS-1$
         sb.append("bsl_get_method_body, bsl_analyze_method, bsl_module_context, bsl_module_exports, "); //$NON-NLS-1$

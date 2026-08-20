@@ -122,6 +122,7 @@ public class ToolRegistry {
         register(new GetModuleStructureTool());
         register(new SearchInCodeTool());
         register(new GetMethodCallHierarchyTool());
+        register(new GetProjectCallGraphTool());
         register(new GoToDefinitionTool());
         register(new GetSymbolInfoTool());
         register(new GetBookmarksTool());
