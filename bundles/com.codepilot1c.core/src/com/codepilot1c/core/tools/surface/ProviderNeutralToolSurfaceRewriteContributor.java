@@ -52,7 +52,7 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "edt_content_assist" -> "Return EDT AST-aware content assist for a BSL position. Prefer it over grep when you need semantic completions or symbol-aware editing help."; //$NON-NLS-1$
             case "edt_find_references" -> "Find semantic references for metadata objects or EDT-resolved symbols. Prefer it over raw text search for usage questions."; //$NON-NLS-1$
             case "edt_metadata_details" -> "Read structured EDT metadata details for one or more object FQNs. Use it for configuration structure, not for platform-language reference."; //$NON-NLS-1$
-            case "scan_metadata_index" -> "List top-level metadata objects in an EDT configuration with scope and name filters. Use it before deeper metadata inspection or mutation."; //$NON-NLS-1$
+            case "scan_metadata_index" -> "List a stable page of top-level metadata objects in an EDT configuration with scope and name filters. When hasMore is true, pass nextOffset as offset to fetch the next page."; //$NON-NLS-1$
             case "edt_field_type_candidates" -> "List valid EDT type candidates for a metadata field such as type. Use it to resolve diagnostics about missing or invalid types."; //$NON-NLS-1$
             case "inspect_platform_reference" -> "Read EDT platform-language documentation for builtin types, methods, and properties. Use it for platform API questions, not configuration metadata."; //$NON-NLS-1$
             case "bsl_symbol_at_position" -> "Resolve the semantic BSL symbol at a source position, including its kind and owning container."; //$NON-NLS-1$

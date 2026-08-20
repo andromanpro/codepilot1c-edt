@@ -248,16 +248,23 @@ public class EdtMetadataIndexService {
                     true,
                     e);
         }
+        Comparator<String> caseInsensitive = Comparator.nullsFirst(String.CASE_INSENSITIVE_ORDER);
+        Comparator<String> exact = Comparator.nullsFirst(Comparator.naturalOrder());
         collected.sort(Comparator
-                .comparing(MetadataIndexResult.Item::getKind, String.CASE_INSENSITIVE_ORDER)
-                .thenComparing(MetadataIndexResult.Item::getName, String.CASE_INSENSITIVE_ORDER));
+                .comparing(MetadataIndexResult.Item::getKind, caseInsensitive)
+                .thenComparing(MetadataIndexResult.Item::getKind, exact)
+                .thenComparing(MetadataIndexResult.Item::getName, caseInsensitive)
+                .thenComparing(MetadataIndexResult.Item::getName, exact)
+                .thenComparing(MetadataIndexResult.Item::getFqn, caseInsensitive)
+                .thenComparing(MetadataIndexResult.Item::getFqn, exact));
 
         int total = collected.size();
-        int returned = Math.min(request.limit(), total);
-        boolean hasMore = total > returned;
-        List<MetadataIndexResult.Item> page = returned == total
-                ? collected
-                : new ArrayList<>(collected.subList(0, returned));
+        int fromIndex = Math.min(request.offset(), total);
+        int toIndex = (int) Math.min((long) fromIndex + request.limit(), total);
+        int returned = toIndex - fromIndex;
+        boolean hasMore = toIndex < total;
+        int nextOffset = request.offset() + returned;
+        List<MetadataIndexResult.Item> page = new ArrayList<>(collected.subList(fromIndex, toIndex));
 
         return new MetadataIndexResult(
                 request.projectName(),
@@ -265,8 +272,10 @@ public class EdtMetadataIndexService {
                 scope,
                 language,
                 total,
+                request.offset(),
                 returned,
                 hasMore,
+                nextOffset,
                 page);
     }
 

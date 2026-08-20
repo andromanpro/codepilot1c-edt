@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.ast;
 
+import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Map;
 
@@ -11,18 +12,33 @@ public record MetadataIndexRequest(
         String scope,
         String nameContains,
         int limit,
-        String language
+        String language,
+        int offset
 ) {
     private static final int DEFAULT_LIMIT = 200;
     private static final int MAX_LIMIT = 1000;
+
+    /**
+     * Backwards-compatible constructor for callers created before offset pagination.
+     */
+    public MetadataIndexRequest(
+            String projectName,
+            String scope,
+            String nameContains,
+            int limit,
+            String language) {
+        this(projectName, scope, nameContains, limit, language, 0);
+    }
 
     public static MetadataIndexRequest fromParameters(Map<String, Object> parameters) {
         String projectName = asString(parameters.get("projectName")); //$NON-NLS-1$
         String scope = asString(parameters.get("scope")); //$NON-NLS-1$
         String nameContains = asString(parameters.get("nameContains")); //$NON-NLS-1$
-        int limit = asInt(parameters.get("limit"), DEFAULT_LIMIT); //$NON-NLS-1$
+        int limit = asInteger(parameters.get("limit"), DEFAULT_LIMIT, "limit"); //$NON-NLS-1$ //$NON-NLS-2$
         String language = asString(parameters.get("language")); //$NON-NLS-1$
-        MetadataIndexRequest request = new MetadataIndexRequest(projectName, scope, nameContains, limit, language);
+        int offset = asInteger(parameters.get("offset"), 0, "offset"); //$NON-NLS-1$ //$NON-NLS-2$
+        MetadataIndexRequest request = new MetadataIndexRequest(
+                projectName, scope, nameContains, limit, language, offset);
         request.validate();
         return request;
     }
@@ -35,6 +51,10 @@ public record MetadataIndexRequest(
         if (limit < 1 || limit > MAX_LIMIT) {
             throw new EdtAstException(EdtAstErrorCode.INVALID_ARGUMENT,
                     "limit must be between 1 and " + MAX_LIMIT, false); //$NON-NLS-1$
+        }
+        if (offset < 0) {
+            throw new EdtAstException(EdtAstErrorCode.INVALID_ARGUMENT,
+                    "offset must be greater than or equal to 0", false); //$NON-NLS-1$
         }
     }
 
@@ -67,17 +87,15 @@ public record MetadataIndexRequest(
         return text.isEmpty() ? null : text;
     }
 
-    private static int asInt(Object value, int defaultValue) {
+    private static int asInteger(Object value, int defaultValue, String parameterName) {
         if (value == null) {
             return defaultValue;
         }
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
         try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (NumberFormatException e) {
-            return defaultValue;
+            return new BigDecimal(String.valueOf(value).trim()).intValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new EdtAstException(EdtAstErrorCode.INVALID_ARGUMENT,
+                    parameterName + " must be an integer", false); //$NON-NLS-1$
         }
     }
 }
