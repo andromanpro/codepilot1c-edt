@@ -22,6 +22,7 @@ import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
 import com.codepilot1c.core.edt.runtime.EdtToolException;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -179,6 +180,12 @@ public class EdtProjectAnalysisSupportUnicodeTest {
         JsonArray methods = result.getAsJsonArray("methods"); //$NON-NLS-1$
         assertRange(methods.get(0).getAsJsonObject(), 3, 19);
         assertRange(methods.get(1).getAsJsonObject(), 25, 58);
+        JsonObject localCall = result.getAsJsonArray("calls").asList().stream() //$NON-NLS-1$
+                .map(JsonElement::getAsJsonObject)
+                .filter(call -> "ДиагностикаАртели".equals(call.get("calleeName").getAsString())) //$NON-NLS-1$ //$NON-NLS-2$
+                .findFirst()
+                .orElseThrow();
+        assertEquals(9, localCall.get("line").getAsInt()); //$NON-NLS-1$
     }
 
     @Test

@@ -65,7 +65,7 @@ public final class EdtProjectAnalysisSupport {
     private static final Pattern END_REGION_DECLARATION = Pattern.compile(
             "^\\h*#\\h*(endregion|конецобласти)(?=\\h|;|$)[^\\r\\n]*$", BSL_DECLARATION_FLAGS); //$NON-NLS-1$
     private static final Pattern CALL_EXPRESSION = Pattern.compile(
-            "\\b([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\("); //$NON-NLS-1$
+            "(?<![\\p{L}\\p{N}_])([\\p{L}_][\\p{L}\\p{N}_]*)\\h*\\("); //$NON-NLS-1$
     private static final Set<String> CALL_KEYWORDS = Set.of(
             "if", "for", "while", "try", "new", "если", "для", "пока", "попытка", "новый", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$ //$NON-NLS-10$
             "procedure", "function", "процедура", "функция"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
