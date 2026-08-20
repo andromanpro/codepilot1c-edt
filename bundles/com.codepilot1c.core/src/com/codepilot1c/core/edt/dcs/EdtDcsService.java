@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -357,6 +358,10 @@ public class EdtDcsService {
             }
             if (template == null) {
                 template = MdClassFactory.eINSTANCE.createTemplate();
+                // A metadata child without a uuid fails EDT validation (SU106)
+                // and the whole project then refuses to export into the
+                // platform format — the schema itself is beside the point.
+                template.setUuid(UUID.randomUUID());
                 template.setName(request.effectiveTemplateName());
                 template.setTemplateType(TemplateType.DATA_COMPOSITION_SCHEMA);
                 templates.templates().add(template);
