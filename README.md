@@ -4,9 +4,9 @@
 
 ## Актуальные артефакты
 
-- Текущая release-линия: `1.3.8`.
+- Текущая release-линия: `1.3.9`.
 - Update site (GitHub Pages): <https://ondysss.github.io/codepilot1c-edt/> — публикует последнюю
-  сборку release-линии `1.3.8`.
+  сборку release-линии `1.3.9`.
 - Последний тегированный релиз: [GitHub Releases](https://github.com/ondysss/codepilot1c-edt/releases/latest).
 - GitHub Packages (container image): <https://github.com/users/ondysss/packages/container/package/codepilot1c-edt>
 - Telegram-канал: <https://t.me/codepilot1c>
