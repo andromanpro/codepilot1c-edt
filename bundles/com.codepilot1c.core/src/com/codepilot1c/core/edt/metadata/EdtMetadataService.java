@@ -425,6 +425,7 @@ public class EdtMetadataService {
                 bindAsDefault);
         gateway.ensureMutationRuntimeAvailable();
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.ownerFqn(), request.allowSupportedObjectEdit(), "create_form"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -523,6 +524,7 @@ public class EdtMetadataService {
         IProject project = requireProject(request.projectName());
         boolean externalProject = isExternalProject(project);
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.formFqn(), request.allowSupportedObjectEdit(), "mutate_form_model"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -1168,6 +1170,7 @@ public class EdtMetadataService {
         FormUsage usageForDefault = effectiveUsage != null
                 ? effectiveUsage
                 : resolveEffectiveFormUsage(ownerFqn, effectiveName, usage);
+        guardSupportLock(project, formFqn, request.allowSupportedObjectEdit(), "apply_form_recipe"); //$NON-NLS-1$
 
         LOG.info("[%s] applyFormRecipe START project=%s form=%s mode=%s attributes=%d layoutOps=%d", //$NON-NLS-1$
                 opId,
@@ -1205,7 +1208,8 @@ public class EdtMetadataService {
                     request.setAsDefault(),
                     request.synonym(),
                     request.comment(),
-                    request.waitMs());
+                    request.waitMs(),
+                    request.allowSupportedObjectEdit());
             CreateFormResult created = createForm(createRequest);
             formFqn = created.formFqn();
         } else if (mode == FormRecipeMode.CREATE) {
@@ -1455,6 +1459,7 @@ public class EdtMetadataService {
         IProject project = requireProject(request.projectName());
         readinessChecker.ensureReady(project);
         LOG.debug("[%s] Project is ready: %s", opId, project.getName()); //$NON-NLS-1$
+        guardSupportLock(project, request.parentFqn(), request.allowSupportedObjectEdit(), "add_metadata_child"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -4671,6 +4676,7 @@ public class EdtMetadataService {
         gateway.ensureMutationRuntimeAvailable();
         IProject project = requireProject(request.projectName());
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.targetFqn(), request.allowSupportedObjectEdit(), "update_metadata"); //$NON-NLS-1$
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
@@ -4858,6 +4864,7 @@ public class EdtMetadataService {
         }
 
         String targetFqn = request.targetFqn();
+        guardSupportLock(project, targetFqn, request.allowSupportedObjectEdit(), "delete_metadata"); //$NON-NLS-1$
         ensureNoIncomingReferences(project, configuration, targetFqn, request.force());
         executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -4922,6 +4929,7 @@ public class EdtMetadataService {
                     "Cannot resolve project configuration", false); //$NON-NLS-1$
         }
 
+        guardSupportLock(project, request.targetFqn(), request.allowSupportedObjectEdit(), "rename_metadata"); //$NON-NLS-1$
         MdObject target = resolveByFqn(configuration, request.targetFqn());
         if (target == null) {
             throw new MetadataOperationException(
@@ -5117,6 +5125,10 @@ public class EdtMetadataService {
                     MetadataOperationCode.METADATA_NOT_FOUND,
                     "Module file not found for object: " + request.objectFqn(), true); //$NON-NLS-1$
         }
+
+        // Only the actual creation is a mutation: returning an existing module
+        // path above stays available for vendor objects on support.
+        guardSupportLock(project, request.objectFqn(), request.allowSupportedObjectEdit(), "ensure_module_artifact"); //$NON-NLS-1$
 
         IFile targetFile = project.getFile(candidates.get(0));
         try {
@@ -5945,7 +5957,8 @@ public class EdtMetadataService {
                 setAsDefault,
                 request.synonym(),
                 request.comment(),
-                waitMs);
+                waitMs,
+                request.allowSupportedObjectEdit());
     }
 
     private FormUsage resolveEffectiveFormUsage(String ownerFqn, String requestedName, FormUsage requestedUsage) {
@@ -7041,6 +7054,33 @@ public class EdtMetadataService {
             LOG.debug("toTransactionMdObject via getExternalObjectByUri failed: %s", e.getMessage()); //$NON-NLS-1$
         }
         return null;
+    }
+
+    /**
+     * Antipattern #70 gate: refuse a generic mutation of a vendor-supplied object
+     * that is on support with the "changes not allowed" lock, unless the caller
+     * passed the explicit {@code allow_supported_object_edit} flag. The subject is
+     * identified by the top-level object's {@code .mdo} on disk, so the check works
+     * the same way for BM mutations and direct file edits.
+     */
+    private void guardSupportLock(IProject project, String fqn, boolean allowEdit, String operation) {
+        if (project == null || allowEdit || fqn == null || fqn.isBlank() || project.getLocation() == null) {
+            return;
+        }
+        String topKind = topKindFromFqn(fqn);
+        java.nio.file.Path srcRoot = project.getLocation().toFile().toPath().resolve("src"); //$NON-NLS-1$
+        java.nio.file.Path mdoPath;
+        if (topKind != null && isConfigurationRootFqn(topKind)) {
+            mdoPath = srcRoot.resolve("Configuration").resolve("Configuration.mdo"); //$NON-NLS-1$ //$NON-NLS-2$
+        } else {
+            String folder = tryMapTopFolder(topKind);
+            String name = topNameFromFqn(fqn);
+            if (folder == null || name == null) {
+                return;
+            }
+            mdoPath = srcRoot.resolve(folder).resolve(name).resolve(name + ".mdo"); //$NON-NLS-1$
+        }
+        SupportLockGuard.checkProjectPath(project, mdoPath, false, operation, fqn);
     }
 
     private MdObject resolveByFqn(Configuration configuration, String fqn) {

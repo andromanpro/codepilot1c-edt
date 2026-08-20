@@ -14,6 +14,7 @@ import com.codepilot1c.core.edt.metadata.ModuleArtifactKind;
 import com.codepilot1c.core.edt.metadata.ModuleArtifactResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -52,6 +53,10 @@ public class EnsureModuleArtifactTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request для operation=ensure_module_artifact; передавать без изменений"
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "object_fqn", "validation_token"]
@@ -127,7 +132,8 @@ public class EnsureModuleArtifactTool extends AbstractTool {
                         getString(validatedPayload, "object_fqn"), //$NON-NLS-1$
                         ModuleArtifactKind.fromString(getString(validatedPayload, "module_kind")), //$NON-NLS-1$
                         !Boolean.FALSE.equals(validatedPayload.get("create_if_missing")), //$NON-NLS-1$
-                        getString(validatedPayload, "initial_content")); //$NON-NLS-1$
+                        getString(validatedPayload, "initial_content"), //$NON-NLS-1$
+                        SupportLockGuard.isAllowed(parameters));
                 ModuleArtifactResult result = metadataService.ensureModuleArtifact(request);
                 LOG.info("[%s] SUCCESS in %s path=%s", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),

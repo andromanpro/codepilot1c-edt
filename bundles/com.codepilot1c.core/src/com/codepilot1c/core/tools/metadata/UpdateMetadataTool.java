@@ -15,6 +15,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationResult;
 import com.codepilot1c.core.edt.metadata.UpdateMetadataRequest;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -45,6 +46,10 @@ public class UpdateMetadataTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request for this exact update request."
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "target_fqn", "changes", "validation_token"]
@@ -112,7 +117,8 @@ public class UpdateMetadataTool extends AbstractTool {
                 Map<String, Object> validatedChanges = asMap(validatedPayload.get("changes")); //$NON-NLS-1$
 
                 UpdateMetadataRequest request = new UpdateMetadataRequest(
-                        projectName, validatedTargetFqn, validatedChanges);
+                        projectName, validatedTargetFqn, validatedChanges,
+                        SupportLockGuard.isAllowed(parameters));
                 MetadataOperationResult result = metadataService.updateMetadata(request);
                 LOG.info("[%s] SUCCESS in %s, fqn=%s", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),

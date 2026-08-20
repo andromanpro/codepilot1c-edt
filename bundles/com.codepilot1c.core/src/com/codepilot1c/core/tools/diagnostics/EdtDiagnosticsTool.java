@@ -35,7 +35,7 @@ public class EdtDiagnosticsTool extends AbstractTool {
 
     private static final Set<String> ALL_COMMANDS = Set.of(
             "metadata_smoke", "trace_export", "analyze_error", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "update_infobase", "launch_app"); //$NON-NLS-1$ //$NON-NLS-2$
+            "update_infobase", "launch_app", "uuid_check"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
     private static final String SCHEMA = """
             {
@@ -43,8 +43,8 @@ public class EdtDiagnosticsTool extends AbstractTool {
               "properties": {
                 "command": {
                   "type": "string",
-                  "description": "Diagnostics command. Use metadata_smoke for headless verification, trace_export for export issues, analyze_error for a concrete error payload, update_infobase or launch_app for runtime workflow.",
-                  "enum": ["metadata_smoke", "trace_export", "analyze_error", "update_infobase", "launch_app"]
+                  "description": "Diagnostics command. Use metadata_smoke for headless verification, trace_export for export issues, analyze_error for a concrete error payload, update_infobase or launch_app for runtime workflow, uuid_check for uuid uniqueness across project src after mass generation/adopt/merge (antipattern #71).",
+                  "enum": ["metadata_smoke", "trace_export", "analyze_error", "update_infobase", "launch_app", "uuid_check"]
                 },
                 "project": {
                   "type": "string",
@@ -69,22 +69,30 @@ public class EdtDiagnosticsTool extends AbstractTool {
     private final ITool analyzeError;
     private final ITool updateInfobase;
     private final ITool launchApp;
+    private final ITool uuidCheck;
 
     public EdtDiagnosticsTool() {
         this(new EdtMetadataSmokeTool(),
              new EdtTraceExportTool(),
              new AnalyzeToolErrorTool(),
              new EdtUpdateInfobaseTool(),
-             new EdtLaunchAppTool());
+             new EdtLaunchAppTool(),
+             new EdtUuidCheckTool());
     }
 
     EdtDiagnosticsTool(ITool metadataSmoke, ITool traceExport,
                        ITool analyzeError, ITool updateInfobase, ITool launchApp) {
+        this(metadataSmoke, traceExport, analyzeError, updateInfobase, launchApp, new EdtUuidCheckTool());
+    }
+
+    EdtDiagnosticsTool(ITool metadataSmoke, ITool traceExport,
+                       ITool analyzeError, ITool updateInfobase, ITool launchApp, ITool uuidCheck) {
         this.metadataSmoke = metadataSmoke;
         this.traceExport = traceExport;
         this.analyzeError = analyzeError;
         this.updateInfobase = updateInfobase;
         this.launchApp = launchApp;
+        this.uuidCheck = uuidCheck;
     }
 
     @Override
@@ -140,6 +148,7 @@ public class EdtDiagnosticsTool extends AbstractTool {
             case "analyze_error" -> analyzeError; //$NON-NLS-1$
             case "update_infobase" -> updateInfobase; //$NON-NLS-1$
             case "launch_app" -> launchApp; //$NON-NLS-1$
+            case "uuid_check" -> uuidCheck; //$NON-NLS-1$
             default -> null;
         };
 

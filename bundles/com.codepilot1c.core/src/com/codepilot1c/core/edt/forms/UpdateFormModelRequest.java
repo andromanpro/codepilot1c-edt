@@ -12,8 +12,13 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 public record UpdateFormModelRequest(
         String projectName,
         String formFqn,
-        List<Map<String, Object>> operations
+        List<Map<String, Object>> operations,
+        boolean allowSupportedObjectEdit
 ) {
+    public UpdateFormModelRequest(String projectName, String formFqn, List<Map<String, Object>> operations) {
+        this(projectName, formFqn, operations, false);
+    }
+
     public void validate() {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(

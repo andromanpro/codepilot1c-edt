@@ -13,8 +13,14 @@ public record AddMetadataChildRequest(
         String name,
         String synonym,
         String comment,
-        Map<String, Object> properties
+        Map<String, Object> properties,
+        boolean allowSupportedObjectEdit
 ) {
+    public AddMetadataChildRequest(String projectName, String parentFqn, MetadataChildKind childKind,
+            String name, String synonym, String comment, Map<String, Object> properties) {
+        this(projectName, parentFqn, childKind, name, synonym, comment, properties, false);
+    }
+
     public void validate() {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(

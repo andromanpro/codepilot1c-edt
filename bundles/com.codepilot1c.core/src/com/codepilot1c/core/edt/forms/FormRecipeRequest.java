@@ -29,8 +29,17 @@ public record FormRecipeRequest(
         String comment,
         Long waitMs,
         List<Map<String, Object>> attributes,
-        List<Map<String, Object>> layoutOperations
+        List<Map<String, Object>> layoutOperations,
+        boolean allowSupportedObjectEdit
 ) {
+    public FormRecipeRequest(String projectName, String mode, String formFqn, String ownerFqn,
+            String name, String usage, Boolean managed, Boolean setAsDefault, String synonym,
+            String comment, Long waitMs, List<Map<String, Object>> attributes,
+            List<Map<String, Object>> layoutOperations) {
+        this(projectName, mode, formFqn, ownerFqn, name, usage, managed, setAsDefault, synonym,
+                comment, waitMs, attributes, layoutOperations, false);
+    }
+
     public void validate() {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(

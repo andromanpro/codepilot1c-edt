@@ -25,6 +25,7 @@ import com.codepilot1c.core.edt.forms.FormRecipePartialFailureException;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -137,6 +138,10 @@ public class ApplyFormRecipeTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Required unchanged token from edt_validate_request for this exact recipe payload."
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "validation_token"]
@@ -235,7 +240,8 @@ public class ApplyFormRecipeTool extends AbstractTool {
                         asOptionalString(validatedPayload, "comment"), //$NON-NLS-1$
                         asOptionalLong(validatedPayload.get("wait_ms")), //$NON-NLS-1$
                         asListOfMaps(validatedPayload.get("attributes")), //$NON-NLS-1$
-                        asListOfMaps(validatedPayload.get("layout"))); //$NON-NLS-1$
+                        asListOfMaps(validatedPayload.get("layout")), //$NON-NLS-1$
+                        SupportLockGuard.isAllowed(parameters));
 
                 FormRecipeResult result = formService.applyFormRecipe(request);
                 LOG.info("[%s] SUCCESS in %s form=%s stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$

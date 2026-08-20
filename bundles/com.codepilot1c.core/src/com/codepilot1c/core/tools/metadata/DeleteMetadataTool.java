@@ -14,6 +14,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.metadata.MetadataOperationResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -48,6 +49,10 @@ public class DeleteMetadataTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request для operation=delete_metadata; передавать без изменений"
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "target_fqn", "validation_token"]
@@ -117,7 +122,8 @@ public class DeleteMetadataTool extends AbstractTool {
                 boolean validatedForce = asBoolean(validatedPayload.get("force")); //$NON-NLS-1$
 
                 DeleteMetadataRequest request = new DeleteMetadataRequest(
-                        projectName, validatedTargetFqn, validatedRecursive, validatedForce);
+                        projectName, validatedTargetFqn, validatedRecursive, validatedForce,
+                        SupportLockGuard.isAllowed(parameters));
                 MetadataOperationResult result = metadataService.deleteMetadata(request);
                 LOG.info("[%s] SUCCESS in %s, fqn=%s", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),

@@ -17,6 +17,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.metadata.MetadataOperationResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -86,6 +87,10 @@ public class AddMetadataChildTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request for this exact child-creation request."
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "parent_fqn", "child_kind", "validation_token"]
@@ -167,7 +172,8 @@ public class AddMetadataChildTool extends AbstractTool {
                 String validatedComment = asOptionalString(validatedPayload, "comment"); //$NON-NLS-1$
                 Map<String, Object> validatedProperties = parameterMap(validatedPayload.get("properties")); //$NON-NLS-1$
                 AddMetadataChildRequest request = new AddMetadataChildRequest(
-                        projectName, validatedParentFqn, childKind, validatedName, validatedSynonym, validatedComment, validatedProperties);
+                        projectName, validatedParentFqn, childKind, validatedName, validatedSynonym, validatedComment, validatedProperties,
+                        SupportLockGuard.isAllowed(parameters));
                 LOG.info("[%s] Calling EdtMetadataService.addMetadataChild(project=%s, parent=%s, kind=%s, name=%s)", // $NON-NLS-1$
                         opId, projectName, validatedParentFqn, childKind, validatedName);
                 MetadataOperationResult result = metadataService.addMetadataChild(request);

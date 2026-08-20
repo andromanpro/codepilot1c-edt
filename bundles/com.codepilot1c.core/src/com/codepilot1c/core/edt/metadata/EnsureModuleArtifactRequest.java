@@ -8,8 +8,14 @@ public record EnsureModuleArtifactRequest(
         String objectFqn,
         ModuleArtifactKind moduleKind,
         boolean createIfMissing,
-        String initialContent
+        String initialContent,
+        boolean allowSupportedObjectEdit
 ) {
+    public EnsureModuleArtifactRequest(String projectName, String objectFqn, ModuleArtifactKind moduleKind,
+            boolean createIfMissing, String initialContent) {
+        this(projectName, objectFqn, moduleKind, createIfMissing, initialContent, false);
+    }
+
     public void validate() {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(

@@ -16,8 +16,14 @@ public record CreateFormRequest(
         Boolean setAsDefault,
         String synonym,
         String comment,
-        Long waitMs
+        Long waitMs,
+        boolean allowSupportedObjectEdit
 ) {
+    public CreateFormRequest(String projectName, String ownerFqn, String name, FormUsage usage,
+            Boolean managed, Boolean setAsDefault, String synonym, String comment, Long waitMs) {
+        this(projectName, ownerFqn, name, usage, managed, setAsDefault, synonym, comment, waitMs, false);
+    }
+
     private static final long DEFAULT_WAIT_MS = 60_000L;
     private static final long MIN_WAIT_MS = 1_000L;
     private static final long MAX_WAIT_MS = 300_000L;

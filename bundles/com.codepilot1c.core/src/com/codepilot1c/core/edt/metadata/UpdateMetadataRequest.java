@@ -8,8 +8,13 @@ import java.util.Map;
 public record UpdateMetadataRequest(
         String projectName,
         String targetFqn,
-        Map<String, Object> changes
+        Map<String, Object> changes,
+        boolean allowSupportedObjectEdit
 ) {
+    public UpdateMetadataRequest(String projectName, String targetFqn, Map<String, Object> changes) {
+        this(projectName, targetFqn, changes, false);
+    }
+
     public void validate() {
         if (projectName == null || projectName.isBlank()) {
             throw new MetadataOperationException(

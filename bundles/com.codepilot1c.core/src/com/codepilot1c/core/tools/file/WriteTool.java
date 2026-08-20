@@ -10,7 +10,10 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
+import com.codepilot1c.core.diagnostics.BslSilentTypeLinter;
 import com.codepilot1c.core.edt.ast.BmSyncHelper;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -75,6 +78,10 @@ public class WriteTool extends AbstractTool {
                     "allow_empty": {
                         "type": "boolean",
                         "description": "Must be true to write empty content over an existing non-empty file"
+                    },
+                    "allow_supported_object_edit": {
+                        "type": "boolean",
+                        "description": "Явное согласие править файл объекта типовой конфигурации, находящегося на поддержке с замком (антипаттерн #70). По умолчанию false: правка файлов типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                     }
                 },
                 "required": ["path", "content", "overwrite"]
@@ -117,6 +124,7 @@ public class WriteTool extends AbstractTool {
 
             boolean overwrite = Boolean.TRUE.equals(parameters.get("overwrite"));
             boolean allowEmpty = Boolean.TRUE.equals(parameters.get("allow_empty"));
+            boolean allowSupportedObjectEdit = SupportLockGuard.isAllowed(parameters);
 
             if (!overwrite) {
                 return ToolResult.failure(
@@ -125,7 +133,7 @@ public class WriteTool extends AbstractTool {
             }
 
             try {
-                return writeFile(pathStr, content, allowEmpty);
+                return writeFile(pathStr, content, allowEmpty, allowSupportedObjectEdit);
             } catch (CoreException e) {
                 logError("Ошибка создания файла", e);
                 return ToolResult.failure("Ошибка записи файла: " + e.getMessage());
@@ -136,8 +144,8 @@ public class WriteTool extends AbstractTool {
     /**
      * Записывает содержимое в файл workspace.
      */
-    private ToolResult writeFile(String pathStr, String content, boolean allowEmpty)
-            throws CoreException {
+    private ToolResult writeFile(String pathStr, String content, boolean allowEmpty,
+            boolean allowSupportedObjectEdit) throws CoreException {
 
         // Normalize path
         String normalizedPath = normalizePath(pathStr);
@@ -181,6 +189,15 @@ public class WriteTool extends AbstractTool {
         IFile file = findOrCreateFile(root, normalizedPath);
         if (file == null) {
             return ToolResult.failure("Не удалось получить файл: " + pathStr);
+        }
+
+        // Antipattern #70 gate: files of a vendor object on support with the
+        // lock are refused without the explicit consent flag.
+        try {
+            SupportLockGuard.checkWorkspaceFile(file, allowSupportedObjectEdit, "write_file"); //$NON-NLS-1$
+        } catch (MetadataOperationException e) {
+            logWarning("[WRITE_FILE] " + e.getMessage());
+            return ToolResult.failure("[" + e.getCode() + "] " + e.getMessage()); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
@@ -228,6 +245,16 @@ public class WriteTool extends AbstractTool {
         result.append("**Статус:** ").append(created ? "создан" : "перезаписан").append("\n");
         result.append("**BM-синхронизация:** ")
                 .append(bmSynced ? "готово" : "не подтверждена (модель может отставать)");
+
+        // Antipattern #72 warning: a string literal assigned to a known
+        // reference attribute (Роли.Роль) silently becomes an empty reference.
+        if (BslSilentTypeLinter.isBslPath(normalizedPath)) {
+            String lintBlock = BslSilentTypeLinter.formatForResult(
+                    file.getFullPath().toString(), BslSilentTypeLinter.lint(content));
+            if (lintBlock != null) {
+                result.append("\n\n").append(lintBlock); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
 
         logInfo((created ? "Файл создан: " : "Файл обновлен: ") + file.getFullPath());
 

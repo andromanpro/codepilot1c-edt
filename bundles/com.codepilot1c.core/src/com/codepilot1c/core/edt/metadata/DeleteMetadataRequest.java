@@ -7,10 +7,15 @@ public record DeleteMetadataRequest(
         String projectName,
         String targetFqn,
         boolean recursive,
-        boolean force
+        boolean force,
+        boolean allowSupportedObjectEdit
 ) {
     public DeleteMetadataRequest(String projectName, String targetFqn, boolean recursive) {
-        this(projectName, targetFqn, recursive, false);
+        this(projectName, targetFqn, recursive, false, false);
+    }
+
+    public DeleteMetadataRequest(String projectName, String targetFqn, boolean recursive, boolean force) {
+        this(projectName, targetFqn, recursive, force, false);
     }
 
     public void validate() {

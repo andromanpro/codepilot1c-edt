@@ -17,6 +17,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -105,6 +106,10 @@ public class MutateFormModelTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Required unchanged token from edt_validate_request for this exact operations payload."
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "form_fqn", "operations", "validation_token"]
@@ -173,7 +178,8 @@ public class MutateFormModelTool extends AbstractTool {
                 UpdateFormModelRequest request = new UpdateFormModelRequest(
                         projectName,
                         asRequiredString(validatedPayload, "form_fqn"), //$NON-NLS-1$
-                        asListOfMaps(validatedPayload.get("operations"))); //$NON-NLS-1$
+                        asListOfMaps(validatedPayload.get("operations")), //$NON-NLS-1$
+                        SupportLockGuard.isAllowed(parameters));
                 UpdateFormModelResult result = formService.updateFormModel(request);
                 LOG.info("[%s] SUCCESS in %s form=%s operations=%d stubsWritten=%d stubsSkipped=%d", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
