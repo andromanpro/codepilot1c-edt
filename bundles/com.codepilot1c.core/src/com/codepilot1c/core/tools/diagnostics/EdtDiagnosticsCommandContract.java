@@ -45,6 +45,7 @@ public final class EdtDiagnosticsCommandContract {
         table.put("analyze_error", List.of("tool_result")); //$NON-NLS-1$ //$NON-NLS-2$
         table.put("update_infobase", List.of("project_name")); //$NON-NLS-1$ //$NON-NLS-2$
         table.put("launch_app", List.of("project_name")); //$NON-NLS-1$ //$NON-NLS-2$
+        table.put("uuid_check", List.of("project")); //$NON-NLS-1$ //$NON-NLS-2$
         REQUIRED_FIELDS_BY_COMMAND = Map.copyOf(table);
     }
 

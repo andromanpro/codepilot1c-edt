@@ -7,10 +7,15 @@ public record RenameMetadataRequest(
         String projectName,
         String targetFqn,
         String newName,
-        String predefinedItem
+        String predefinedItem,
+        boolean allowSupportedObjectEdit
 ) {
     public RenameMetadataRequest(String projectName, String targetFqn, String newName) {
-        this(projectName, targetFqn, newName, null);
+        this(projectName, targetFqn, newName, null, false);
+    }
+
+    public RenameMetadataRequest(String projectName, String targetFqn, String newName, String predefinedItem) {
+        this(projectName, targetFqn, newName, predefinedItem, false);
     }
 
     public void validate() {

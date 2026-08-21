@@ -15,6 +15,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -70,6 +71,10 @@ public class CreateFormTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request for this form-creation request."
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "owner_fqn", "name", "validation_token"]
@@ -158,7 +163,8 @@ public class CreateFormTool extends AbstractTool {
                         asOptionalBoolean(validatedPayload.get("set_as_default")), //$NON-NLS-1$
                         asOptionalString(validatedPayload, "synonym"), //$NON-NLS-1$
                         asOptionalString(validatedPayload, "comment"), //$NON-NLS-1$
-                        asOptionalLong(validatedPayload.get("wait_ms"))); //$NON-NLS-1$
+                        asOptionalLong(validatedPayload.get("wait_ms")), //$NON-NLS-1$
+                        SupportLockGuard.isAllowed(parameters));
 
                 CreateFormResult result = formService.createForm(request);
                 String createdName = extractNameFromFormFqn(result.formFqn());

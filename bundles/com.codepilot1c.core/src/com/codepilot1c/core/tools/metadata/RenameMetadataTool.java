@@ -13,6 +13,7 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationResult;
 import com.codepilot1c.core.edt.metadata.RenameMetadataRequest;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 
@@ -47,6 +48,10 @@ public class RenameMetadataTool extends AbstractTool {
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request для operation=rename_metadata; передавать без изменений"
+                },
+                "allow_supported_object_edit": {
+                  "type": "boolean",
+                  "description": "Явное согласие менять объект типовой конфигурации, находящийся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                 }
               },
               "required": ["project", "target_fqn", "new_name", "validation_token"]
@@ -99,7 +104,8 @@ public class RenameMetadataTool extends AbstractTool {
                 String predefinedItem = predefined == null ? null : String.valueOf(predefined);
 
                 RenameMetadataRequest request = new RenameMetadataRequest(
-                        projectName, targetFqn, newName, predefinedItem);
+                        projectName, targetFqn, newName, predefinedItem,
+                        SupportLockGuard.isAllowed(parameters));
                 MetadataOperationResult result = metadataService.renameMetadata(request);
                 LOG.info("[%s] SUCCESS in %s, fqn=%s", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),

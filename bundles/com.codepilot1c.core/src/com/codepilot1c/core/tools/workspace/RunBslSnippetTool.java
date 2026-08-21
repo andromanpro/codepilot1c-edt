@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import com.codepilot1c.core.diagnostics.BslSilentTypeLinter;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.tools.AbstractTool;
@@ -160,7 +161,12 @@ public class RunBslSnippetTool extends AbstractTool {
                 runParams.put("timeout_s", timeoutSeconds); //$NON-NLS-1$
 
                 ToolResult runResult = runner.execute(runParams).join();
-                return interpret(runResult, receiverModule, snippetPath);
+                ToolResult interpreted = interpret(runResult, receiverModule, snippetPath);
+                // Antipattern #72 warning: a string literal assigned to a known
+                // reference attribute (Роли.Роль) silently becomes an empty reference.
+                String lintBlock = BslSilentTypeLinter.formatForResult(
+                        null, BslSilentTypeLinter.lint(snippet));
+                return lintBlock == null ? interpreted : appendWarningBlock(interpreted, lintBlock);
             } finally {
                 // The receiver removes the file itself; this only covers the case where it never ran,
                 // so that a later ordinary test run does not pick up a stale snippet.
@@ -171,6 +177,20 @@ public class RunBslSnippetTool extends AbstractTool {
                 }
             }
         });
+    }
+
+    /** Appends a warning block to the result, preserving outcome, type and structured data. */
+    private static ToolResult appendWarningBlock(ToolResult result, String block) {
+        if (result.isSuccess()) {
+            String combined = result.getContent() + "\n\n" + block; //$NON-NLS-1$
+            return result.hasStructuredData()
+                    ? ToolResult.success(combined, result.getType(), result.getStructuredData())
+                    : ToolResult.success(combined, result.getType());
+        }
+        String combined = result.getErrorMessage() + "\n\n" + block; //$NON-NLS-1$
+        return result.hasStructuredData()
+                ? ToolResult.failure(combined, result.getStructuredData())
+                : ToolResult.failure(combined);
     }
 
     private static Path resolveSnippetPath(String explicitPath) {

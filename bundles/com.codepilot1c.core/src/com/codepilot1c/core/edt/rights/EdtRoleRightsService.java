@@ -38,6 +38,7 @@ import com.codepilot1c.core.edt.metadata.MetadataConfigurationCollections;
 import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.logging.VibeLogger;
 
 /**
@@ -156,8 +157,23 @@ public class EdtRoleRightsService {
      * Supported ops: {@code set_right}, {@code set_config_right}, {@code set_flags}, {@code clear_object}.
      */
     public MutateResult mutateRoleRights(String projectName, String role, List<Map<String, Object>> operations) {
+        return mutateRoleRights(projectName, role, operations, false);
+    }
+
+    public MutateResult mutateRoleRights(String projectName, String role, List<Map<String, Object>> operations,
+            boolean allowSupportedObjectEdit) {
         IProject project = requireProject(projectName);
         String roleFqn = normalizeRoleFqn(role);
+        if (project.getLocation() != null) {
+            // Antipattern #70 gate: rights of a vendor role on support with the lock
+            // must not be edited without explicit consent.
+            String roleName = roleFqn.contains(".") //$NON-NLS-1$
+                    ? roleFqn.substring(roleFqn.indexOf('.') + 1) : roleFqn;
+            java.nio.file.Path mdoPath = project.getLocation().toFile().toPath()
+                    .resolve("src").resolve("Roles").resolve(roleName).resolve(roleName + ".mdo"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            SupportLockGuard.checkProjectPath(project, mdoPath, allowSupportedObjectEdit,
+                    "mutate_role_rights", roleFqn); //$NON-NLS-1$
+        }
         if (operations == null || operations.isEmpty()) {
             throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
                     "operations must not be empty", false); //$NON-NLS-1$

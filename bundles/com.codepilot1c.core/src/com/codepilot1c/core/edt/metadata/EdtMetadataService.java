@@ -425,6 +425,7 @@ public class EdtMetadataService {
                 bindAsDefault);
         gateway.ensureMutationRuntimeAvailable();
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.ownerFqn(), request.allowSupportedObjectEdit(), "create_form"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -523,6 +524,7 @@ public class EdtMetadataService {
         IProject project = requireProject(request.projectName());
         boolean externalProject = isExternalProject(project);
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.formFqn(), request.allowSupportedObjectEdit(), "mutate_form_model"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -1168,6 +1170,7 @@ public class EdtMetadataService {
         FormUsage usageForDefault = effectiveUsage != null
                 ? effectiveUsage
                 : resolveEffectiveFormUsage(ownerFqn, effectiveName, usage);
+        guardSupportLock(project, formFqn, request.allowSupportedObjectEdit(), "apply_form_recipe"); //$NON-NLS-1$
 
         LOG.info("[%s] applyFormRecipe START project=%s form=%s mode=%s attributes=%d layoutOps=%d", //$NON-NLS-1$
                 opId,
@@ -1205,7 +1208,8 @@ public class EdtMetadataService {
                     request.setAsDefault(),
                     request.synonym(),
                     request.comment(),
-                    request.waitMs());
+                    request.waitMs(),
+                    request.allowSupportedObjectEdit());
             CreateFormResult created = createForm(createRequest);
             formFqn = created.formFqn();
         } else if (mode == FormRecipeMode.CREATE) {
@@ -1455,6 +1459,7 @@ public class EdtMetadataService {
         IProject project = requireProject(request.projectName());
         readinessChecker.ensureReady(project);
         LOG.debug("[%s] Project is ready: %s", opId, project.getName()); //$NON-NLS-1$
+        guardSupportLock(project, request.parentFqn(), request.allowSupportedObjectEdit(), "add_metadata_child"); //$NON-NLS-1$
         repairConfigurationMissingUuids(project, opId);
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
@@ -4671,6 +4676,7 @@ public class EdtMetadataService {
         gateway.ensureMutationRuntimeAvailable();
         IProject project = requireProject(request.projectName());
         readinessChecker.ensureReady(project);
+        guardSupportLock(project, request.targetFqn(), request.allowSupportedObjectEdit(), "update_metadata"); //$NON-NLS-1$
 
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
@@ -4858,6 +4864,7 @@ public class EdtMetadataService {
         }
 
         String targetFqn = request.targetFqn();
+        guardSupportLock(project, targetFqn, request.allowSupportedObjectEdit(), "delete_metadata"); //$NON-NLS-1$
         ensureNoIncomingReferences(project, configuration, targetFqn, request.force());
         executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -4922,6 +4929,7 @@ public class EdtMetadataService {
                     "Cannot resolve project configuration", false); //$NON-NLS-1$
         }
 
+        guardSupportLock(project, request.targetFqn(), request.allowSupportedObjectEdit(), "rename_metadata"); //$NON-NLS-1$
         MdObject target = resolveByFqn(configuration, request.targetFqn());
         if (target == null) {
             throw new MetadataOperationException(
@@ -5117,6 +5125,10 @@ public class EdtMetadataService {
                     MetadataOperationCode.METADATA_NOT_FOUND,
                     "Module file not found for object: " + request.objectFqn(), true); //$NON-NLS-1$
         }
+
+        // Only the actual creation is a mutation: returning an existing module
+        // path above stays available for vendor objects on support.
+        guardSupportLock(project, request.objectFqn(), request.allowSupportedObjectEdit(), "ensure_module_artifact"); //$NON-NLS-1$
 
         IFile targetFile = project.getFile(candidates.get(0));
         try {
@@ -5945,7 +5957,8 @@ public class EdtMetadataService {
                 setAsDefault,
                 request.synonym(),
                 request.comment(),
-                waitMs);
+                waitMs,
+                request.allowSupportedObjectEdit());
     }
 
     private FormUsage resolveEffectiveFormUsage(String ownerFqn, String requestedName, FormUsage requestedUsage) {
@@ -7043,6 +7056,33 @@ public class EdtMetadataService {
         return null;
     }
 
+    /**
+     * Antipattern #70 gate: refuse a generic mutation of a vendor-supplied object
+     * that is on support with the "changes not allowed" lock, unless the caller
+     * passed the explicit {@code allow_supported_object_edit} flag. The subject is
+     * identified by the top-level object's {@code .mdo} on disk, so the check works
+     * the same way for BM mutations and direct file edits.
+     */
+    private void guardSupportLock(IProject project, String fqn, boolean allowEdit, String operation) {
+        if (project == null || allowEdit || fqn == null || fqn.isBlank() || project.getLocation() == null) {
+            return;
+        }
+        String topKind = topKindFromFqn(fqn);
+        java.nio.file.Path srcRoot = project.getLocation().toFile().toPath().resolve("src"); //$NON-NLS-1$
+        java.nio.file.Path mdoPath;
+        if (topKind != null && isConfigurationRootFqn(topKind)) {
+            mdoPath = srcRoot.resolve("Configuration").resolve("Configuration.mdo"); //$NON-NLS-1$ //$NON-NLS-2$
+        } else {
+            String folder = tryMapTopFolder(topKind);
+            String name = topNameFromFqn(fqn);
+            if (folder == null || name == null) {
+                return;
+            }
+            mdoPath = srcRoot.resolve(folder).resolve(name).resolve(name + ".mdo"); //$NON-NLS-1$
+        }
+        SupportLockGuard.checkProjectPath(project, mdoPath, false, operation, fqn);
+    }
+
     private MdObject resolveByFqn(Configuration configuration, String fqn) {
         LOG.debug("resolveByFqn: %s", fqn); //$NON-NLS-1$
         String[] parts = fqn != null ? fqn.split("\\.") : new String[0]; //$NON-NLS-1$
@@ -7290,80 +7330,15 @@ public class EdtMetadataService {
         return value instanceof EMap<?, ?> map ? (EMap<String, String>) map : null;
     }
 
+    // Обход вынесен в MdObjectFqnResolver: та же логика жила второй копией в пути чтения
+    // (EdtMetadataInspectorService), где фикс про non-containment Subsystem.subsystems так и не
+    // появился — update_metadata вложенную подсистему находил, edt_metadata_details по тому же
+    // FQN отвечал "Object not found".
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
-        String normalizedMarker = normalizeToken(marker);
-        for (EStructuralFeature feature : parent.eClass().getEAllStructuralFeatures()) {
-            if (!(feature instanceof EReference reference) || !reference.isMany()) {
-                continue;
-            }
-            // Nested metadata hierarchy is not always plain EMF containment. In the EDT
-            // metadata model, nested subsystems (Subsystem.subsystems) are a NON-containment,
-            // resolve-proxies EReference (verified via bytecode: initEReference isContainment=false,
-            // isResolveProxies=true) — physically the subsystems are contained by Configuration,
-            // and the tree is expressed through cross-references. A containment-only walker drops
-            // that feature and never finds nested children. Allow a non-containment reference only
-            // when the FQN marker explicitly matches the feature/type, so we don't start traversing
-            // arbitrary back-references (e.g. parentSubsystem) and produce false matches.
-            boolean markerMatchesFeature = matchesMarker(
-                    normalizedMarker, feature.getName(), reference.getEReferenceType().getName());
-            if (!reference.isContainment() && !markerMatchesFeature) {
-                continue;
-            }
-            @SuppressWarnings("unchecked")
-            Collection<Object> values = (Collection<Object>) parent.eGet(feature);
-            if (values == null) {
-                continue;
-            }
-            for (Object value : values) {
-                if (!(value instanceof MdObject child)) {
-                    continue;
-                }
-                // Non-containment references return proxies outside a BM transaction — resolve
-                // them before reading the name (resolveProxies=true for these references).
-                if (child.eIsProxy() || child.getName() == null) {
-                    Object resolved = EcoreUtil.resolve(child, parent);
-                    if (resolved instanceof MdObject resolvedChild) {
-                        child = resolvedChild;
-                    }
-                }
-                if (!childName.equalsIgnoreCase(child.getName())) {
-                    continue;
-                }
-                if (markerMatchesFeature
-                        || matchesMarker(normalizedMarker, feature.getName(), child.eClass().getName())) {
-                    return child;
-                }
-            }
-        }
-        return null;
+        return MdObjectFqnResolver.findNestedChild(parent, marker, childName);
     }
 
-    private boolean matchesMarker(String marker, String featureName, String className) {
-        if (marker == null || marker.isBlank()) {
-            return true;
-        }
-        String normalizedFeature = normalizeToken(featureName);
-        String singularFeature = singularize(normalizedFeature);
-        String normalizedClass = normalizeToken(className);
-        String shortClass = normalizeToken(extractShortClassMarker(className));
-        return marker.equals(normalizedFeature)
-                || marker.equals(singularFeature)
-                || marker.equals(normalizedClass)
-                || marker.equals(shortClass);
-    }
 
-    private String extractShortClassMarker(String className) {
-        String normalized = className != null ? className : ""; //$NON-NLS-1$
-        String[] tails = {
-                "Attribute", "TabularSection", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
-        };
-        for (String tail : tails) {
-            if (normalized.endsWith(tail)) {
-                return tail;
-            }
-        }
-        return normalized;
-    }
 
     private MdObject createChildByFactory(MdObject parent, MetadataChildKind kind) {
         String childSuffix = kind.getDisplayName();

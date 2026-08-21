@@ -7,6 +7,7 @@ import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.edt.rights.EdtRoleRightsService;
 import com.codepilot1c.core.edt.rights.EdtRoleRightsService.MutateResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
@@ -55,7 +56,8 @@ public class MutateRoleRightsTool extends AbstractTool {
                   },
                   "description": "Rights operations. Use inspect_role_rights first to see current values and exact object FQNs."
                 },
-                "validation_token": {"type": "string", "description": "Required unchanged token from edt_validate_request for this exact payload."}
+                "validation_token": {"type": "string", "description": "Required unchanged token from edt_validate_request for this exact payload."},
+                "allow_supported_object_edit": {"type": "boolean", "description": "Явное согласие менять роль типовой конфигурации, находящуюся на поддержке с замком (антипаттерн #70). По умолчанию false: мутация типовой роли с запретом изменений отклоняется."}
               },
               "required": ["project", "role", "operations", "validation_token"]
             }
@@ -117,7 +119,8 @@ public class MutateRoleRightsTool extends AbstractTool {
                 MutateResult result = service.mutateRoleRights(
                         projectName,
                         asRequiredString(validatedPayload, "role"), //$NON-NLS-1$
-                        asListOfMaps(validatedPayload.get("operations"))); //$NON-NLS-1$
+                        asListOfMaps(validatedPayload.get("operations")), //$NON-NLS-1$
+                        SupportLockGuard.isAllowed(parameters));
                 LOG.info("[%s] SUCCESS in %s role=%s applied=%d", opId, //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
                         result.roleFqn(), Integer.valueOf(result.operationsApplied()));

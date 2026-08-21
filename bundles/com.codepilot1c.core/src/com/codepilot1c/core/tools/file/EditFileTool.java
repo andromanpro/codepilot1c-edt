@@ -32,8 +32,11 @@ import org.eclipse.core.runtime.Path;
 
 import com.codepilot1c.core.session.Session;
 import com.codepilot1c.core.session.SessionManager;
+import com.codepilot1c.core.diagnostics.BslSilentTypeLinter;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.metadata.SupportLockGuard;
 import com.codepilot1c.core.edit.FuzzyMatcher;
 import com.codepilot1c.core.edit.MatchResult;
 import com.codepilot1c.core.edit.MatchStrategy;
@@ -90,6 +93,10 @@ public class EditFileTool extends AbstractTool {
                     "allow_metadata_descriptor_edit": {
                         "type": "boolean",
                         "description": "Аварийный override: разрешить редактирование .mdo (не рекомендуется, используйте только когда BM API не покрывает кейс)."
+                    },
+                    "allow_supported_object_edit": {
+                        "type": "boolean",
+                        "description": "Явное согласие править файл объекта типовой конфигурации, находящегося на поддержке с замком (антипаттерн #70). По умолчанию false: правка файлов типового объекта с запретом изменений отклоняется — доработка выполняется расширением."
                     }
                 },
                 "required": ["path"]
@@ -133,6 +140,7 @@ public class EditFileTool extends AbstractTool {
             String edits = params.optString("edits", null); //$NON-NLS-1$
             boolean create = params.optBoolean("create", false); //$NON-NLS-1$
             boolean allowMetadataDescriptorEdit = params.optBoolean("allow_metadata_descriptor_edit", false); //$NON-NLS-1$
+            boolean allowSupportedObjectEdit = params.optBoolean(SupportLockGuard.PARAMETER_NAME, false);
 
             LOG.debug("edit_file: path=%s, hasContent=%b, hasOldText=%b, hasEdits=%b, create=%b", //$NON-NLS-1$
                     LogSanitizer.truncatePath(pathStr), content != null, oldText != null, edits != null, create);
@@ -185,6 +193,15 @@ public class EditFileTool extends AbstractTool {
                     LOG.warn("edit_file: параметр create=true игнорируется и запрещен"); //$NON-NLS-1$
                 }
 
+                // Antipattern #70 gate: files of a vendor object on support with the
+                // lock are refused without the explicit consent flag.
+                try {
+                    SupportLockGuard.checkWorkspaceFile(file, allowSupportedObjectEdit, "edit_file"); //$NON-NLS-1$
+                } catch (MetadataOperationException e) {
+                    LOG.warn("edit_file: %s", e.getMessage()); //$NON-NLS-1$
+                    return ToolResult.failure("[" + e.getCode() + "] " + e.getMessage()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+
                 ToolResult result;
                 EditMode mode = resolveEditMode(content, edits, oldText, newText);
                 if (content != null && (mode == EditMode.SEARCH_REPLACE_BLOCKS || mode == EditMode.FUZZY_REPLACE)) {
@@ -230,6 +247,19 @@ public class EditFileTool extends AbstractTool {
                     BmSyncHelper.flushAfterWrite(file);
                 }
 
+                // Antipattern #72 warning: a string literal assigned to a known
+                // reference attribute (Роли.Роль) silently becomes an empty reference.
+                if (result.isSuccess() && BslSilentTypeLinter.isBslPath(normalizedPath)) {
+                    List<String> lintWarnings = mode == EditMode.SEARCH_REPLACE_BLOCKS
+                            ? BslSilentTypeLinter.lintReplaceSegments(edits)
+                            : BslSilentTypeLinter.lint(mode == EditMode.FUZZY_REPLACE ? newText : content);
+                    String lintBlock = BslSilentTypeLinter.formatForResult(
+                            file.getFullPath().toString(), lintWarnings);
+                    if (lintBlock != null) {
+                        result = appendWarningBlock(result, lintBlock);
+                    }
+                }
+
                 LOG.debug("edit_file: завершено за %s, success=%b", //$NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startTime),
                         result.isSuccess());
@@ -240,6 +270,14 @@ public class EditFileTool extends AbstractTool {
                 return ToolResult.failure("Error editing file: " + e.getMessage()); //$NON-NLS-1$
             }
         });
+    }
+
+    /** Appends a warning block to a successful result, preserving type and structured data. */
+    private static ToolResult appendWarningBlock(ToolResult result, String block) {
+        String combined = result.getContent() + "\n\n" + block; //$NON-NLS-1$
+        return result.hasStructuredData()
+                ? ToolResult.success(combined, result.getType(), result.getStructuredData())
+                : ToolResult.success(combined, result.getType());
     }
 
     /**
