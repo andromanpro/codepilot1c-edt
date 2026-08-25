@@ -133,6 +133,22 @@ public class EdtStartFailureDiagnosticsTest {
         assertEquals(Optional.empty(), fixture.registry().find(ID));
     }
 
+    @Test public void cleanupStillTerminatesTheOwnedProcessWhenTheOperatingSystemHidesTheCommandLine()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.probe = uri -> new ProbeResult(false, 503, "HTTP 503");
+        // An unreadable command line means "cannot tell", not "not ours": the handle came from our
+        // own launcher, so refusing to terminate here would leak the process we started.
+        fixture.hideCommandLineOnLaunch = true;
+
+        assertThrows(SupervisorException.class,
+                () -> fixture.supervisor().start(new StartRequest("/workspace", "/edt", 9123,
+                        Duration.ofMillis(250))));
+
+        assertTrue(fixture.process.destroyCalled);
+        assertEquals(Optional.empty(), fixture.registry().find(ID));
+    }
+
     private static void assertNoLaunchSecrets(Map<String, Object> details) {
         String rendered = String.valueOf(details);
         assertFalse("diagnostics must not leak the launch command line", rendered.contains("-vmargs"));
@@ -149,6 +165,7 @@ public class EdtStartFailureDiagnosticsTest {
         final List<URI> shutdownRequests = new ArrayList<>();
         boolean interruptOnWait;
         String rewriteCommandLineOnLaunch;
+        boolean hideCommandLineOnLaunch;
         com.codepilot1c.cli.EndpointProbe probe = uri -> new ProbeResult(true, 200, "HTTP 200");
 
         Fixture() {
@@ -161,8 +178,9 @@ public class EdtStartFailureDiagnosticsTest {
 
         EdtSupervisor supervisor() {
             ProcessLauncher launcher = (command, stdout, stderr) -> {
-                process.commandLine = rewriteCommandLineOnLaunch != null
-                        ? rewriteCommandLineOnLaunch : String.join(" ", command);
+                process.commandLine = hideCommandLineOnLaunch ? null
+                        : rewriteCommandLineOnLaunch != null
+                                ? rewriteCommandLineOnLaunch : String.join(" ", command);
                 processes.put(process.pid(), process);
                 return process;
             };

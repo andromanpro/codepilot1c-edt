@@ -310,7 +310,7 @@ public final class EdtSupervisor {
      */
     private void terminateOwnedStart(ProcessHandleFacade process, String instanceId) {
         if (!process.isAlive()) return;
-        if (!matches(process, instanceId)) return;
+        if (isForeignProcess(process, instanceId)) return;
         process.destroy();
         if (!awaitExit(process, DEFAULT_STOP_TIMEOUT) && process.isAlive()) {
             process.destroyForcibly();
@@ -333,6 +333,20 @@ public final class EdtSupervisor {
     }
 
     private void deleteQuietly(String id) { delete(id); }
+
+    /**
+     * Whether this PID demonstrably belongs to someone else.
+     *
+     * <p>An unreadable command line means "cannot tell", not "not ours". Since the handle came from
+     * our own launcher, treating that case as foreign would leak the process this start created, so
+     * only a command line that is present and lacks the instance marker blocks termination.</p>
+     */
+    private static boolean isForeignProcess(ProcessHandleFacade process, String instanceId) {
+        String marker = "-Dcodepilot.instance.id=" + instanceId;
+        return process.commandLine()
+                .map(value -> !List.of(value.split("\\s+")).contains(marker))
+                .orElse(false);
+    }
 
     private static boolean matches(ProcessHandleFacade process, String instanceId) {
         String marker = "-Dcodepilot.instance.id=" + instanceId;
