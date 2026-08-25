@@ -128,13 +128,17 @@ public final class EdtSupervisor {
                     "unable to start EDT process", diagnostics.toMap());
         }
 
+        // Captured immediately, while the PID is certainly still ours, so a later comparison can
+        // disprove recycling even if the command line becomes unreadable.
+        Optional<Instant> launchedAt = process.startInstant();
+
         InstanceRecord record = new InstanceRecord(InstanceRecord.SCHEMA_VERSION, instanceId, process.pid(),
                 request.port(), baseUri.toASCIIString(), workspace.toString(), installation.home(), "headless", "cli",
                 clock.instant(), null, null, logFile.toString());
         try {
             registry.write(record);
         } catch (IOException exception) {
-            terminateOwnedStart(process, instanceId);
+            terminateOwnedStart(process, instanceId, launchedAt, diagnostics);
             throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "registry_write_failed",
                     "unable to register EDT process", diagnostics.toMap());
         }
@@ -151,7 +155,7 @@ public final class EdtSupervisor {
                         diagnostics.toMap());
             }
             if (!clock.instant().isBefore(deadline)) {
-                terminateOwnedStart(process, instanceId);
+                terminateOwnedStart(process, instanceId, launchedAt, diagnostics);
                 deleteQuietly(instanceId);
                 throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "readiness_timeout",
                         "EDT did not become ready before timeout; inspect the captured process log",
@@ -160,7 +164,7 @@ public final class EdtSupervisor {
             try { wait.pause(POLL_INTERVAL); }
             catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                terminateOwnedStart(process, instanceId);
+                terminateOwnedStart(process, instanceId, launchedAt, diagnostics);
                 deleteQuietly(instanceId);
                 throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "start_interrupted",
                         "EDT startup was interrupted", diagnostics.toMap());
@@ -303,19 +307,44 @@ public final class EdtSupervisor {
     /**
      * Terminates the process this start launched, and only it.
      *
-     * <p>The handle came straight from the launcher, but a start can run for the full readiness
-     * window; if the child died early the operating system may already have recycled its PID into an
-     * unrelated program. The same {@code -Dcodepilot.instance.id} marker the stop path verifies is
-     * therefore re-checked here, so a failed start can never signal a process it does not own.</p>
+     * <p>A start can run for the full readiness window; if the child died early the operating system
+     * may already have recycled its PID into an unrelated program. Ownership is therefore re-proven
+     * before anything is signalled, and the outcome is published in the failure diagnostics so an
+     * operator can tell a completed cleanup from a skipped one.</p>
      */
-    private void terminateOwnedStart(ProcessHandleFacade process, String instanceId) {
+    private void terminateOwnedStart(ProcessHandleFacade process, String instanceId,
+            Optional<Instant> launchedAt, StartDiagnostics diagnostics) {
         if (!process.isAlive()) return;
-        if (isForeignProcess(process, instanceId)) return;
+        if (!ownsProcess(process, instanceId, launchedAt)) {
+            diagnostics.recordCleanup("skipped_unverified_identity");
+            return;
+        }
         process.destroy();
         if (!awaitExit(process, DEFAULT_STOP_TIMEOUT) && process.isAlive()) {
             process.destroyForcibly();
             awaitExit(process, DEFAULT_STOP_TIMEOUT);
         }
+        diagnostics.recordCleanup("terminated");
+    }
+
+    /**
+     * Whether this PID is provably still the process this start launched.
+     *
+     * <p>Two independent proofs are accepted: the {@code -Dcodepilot.instance.id} marker on the
+     * command line, or - when the operating system will not disclose the command line - an
+     * unchanged start instant, which rules out the PID having been recycled into another program.
+     * When neither can be established the answer is no: signalling a process whose identity cannot
+     * be proven risks killing an unrelated one, and that outweighs leaking a process the operator
+     * is told about through the {@code cleanup} diagnostic.</p>
+     */
+    private static boolean ownsProcess(ProcessHandleFacade process, String instanceId,
+            Optional<Instant> launchedAt) {
+        Optional<String> commandLine = process.commandLine();
+        if (commandLine.isPresent()) {
+            String marker = "-Dcodepilot.instance.id=" + instanceId;
+            return List.of(commandLine.orElseThrow().split("\\s+")).contains(marker);
+        }
+        return launchedAt.isPresent() && launchedAt.equals(process.startInstant());
     }
 
     private boolean awaitExit(ProcessHandleFacade process, Duration timeout) {
@@ -341,13 +370,6 @@ public final class EdtSupervisor {
      * our own launcher, treating that case as foreign would leak the process this start created, so
      * only a command line that is present and lacks the instance marker blocks termination.</p>
      */
-    private static boolean isForeignProcess(ProcessHandleFacade process, String instanceId) {
-        String marker = "-Dcodepilot.instance.id=" + instanceId;
-        return process.commandLine()
-                .map(value -> !List.of(value.split("\\s+")).contains(marker))
-                .orElse(false);
-    }
-
     private static boolean matches(ProcessHandleFacade process, String instanceId) {
         String marker = "-Dcodepilot.instance.id=" + instanceId;
         return process.commandLine().map(value -> List.of(value.split("\\s+")).contains(marker)).orElse(false);
@@ -382,6 +404,7 @@ public final class EdtSupervisor {
         private final URI baseUri;
         private final EdtInstallation installation;
         private ProbeResult lastProbe;
+        private String cleanup;
 
         StartDiagnostics(String instanceId, Path workspace, int port, Path logFile, URI baseUri,
                 EdtInstallation installation) {
@@ -395,6 +418,8 @@ public final class EdtSupervisor {
 
         void record(ProbeResult probe) { this.lastProbe = probe; }
 
+        void recordCleanup(String outcome) { this.cleanup = outcome; }
+
         Map<String, Object> toMap() {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("instanceId", instanceId);
@@ -404,6 +429,9 @@ public final class EdtSupervisor {
             value.put("readinessUrl", baseUri.toASCIIString());
             value.put("edtHome", installation.home());
             value.put("launcherKind", installation.kind().token());
+            if (cleanup != null) {
+                value.put("cleanup", cleanup);
+            }
             if (lastProbe != null) {
                 Map<String, Object> probe = new LinkedHashMap<>();
                 probe.put("reachable", lastProbe.reachable());

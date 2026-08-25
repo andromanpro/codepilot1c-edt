@@ -6076,6 +6076,14 @@ public class EdtMetadataService {
             MetadataChildKind effectiveKind
     ) {
         List<String> createdFqns = new ArrayList<>();
+        // Defence in depth: the validation service already refuses a batch for these kinds, but the
+        // mutation must never fall through to addChildrenBatch and create fieldless HTTP children.
+        HttpServiceChildProperties.rejectBatch(effectiveKind, request.properties());
+        if (HttpServiceChildProperties.applies(effectiveKind) && !request.hasSingleName()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "child_kind=" + effectiveKind.getDisplayName() + " requires an explicit name", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
         if (request.hasSingleName()) {
             validateReservedChildName(parent, effectiveKind, request.name());
             MdObject child = effectiveKind == MetadataChildKind.FORM

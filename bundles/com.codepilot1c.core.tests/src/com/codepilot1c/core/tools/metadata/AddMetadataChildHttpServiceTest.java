@@ -191,6 +191,38 @@ public class AddMetadataChildHttpServiceTest {
         assertEquals("RootPOST", properties.get("handler")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    @Test
+    public void batchChildrenAreRefusedForHttpKindsBecauseTheirRequiredFieldsArePerChild() {
+        // A batch entry carries only name/synonym/comment, so URL templates and methods would be
+        // created with no path, verb or handler. Fail closed rather than half-create them.
+        MetadataRequestValidationService validation = new MetadataRequestValidationService();
+
+        MetadataOperationException templateBatch = assertThrows(MetadataOperationException.class,
+                () -> validation.normalizeAddChildPayload("P", "HTTPService.api", "URLTemplate", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        null, null, null,
+                        Map.of("template", "/state", "children", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                                java.util.List.of(Map.of("name", "A"), Map.of("name", "B"))))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals(MetadataOperationCode.INVALID_METADATA_CHANGE, templateBatch.getCode());
+        assertTrue(templateBatch.getMessage(), templateBatch.getMessage().contains("children")); //$NON-NLS-1$
+
+        MetadataOperationException methodBatch = assertThrows(MetadataOperationException.class,
+                () -> validation.normalizeAddChildPayload("P", "HTTPService.api.URLTemplate.Root", //$NON-NLS-1$ //$NON-NLS-2$
+                        "HTTPMethod", null, null, null, //$NON-NLS-1$
+                        Map.of("http_method", "GET", "handler", "H", "children", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                                java.util.List.of(Map.of("name", "A"))))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(MetadataOperationCode.INVALID_METADATA_CHANGE, methodBatch.getCode());
+    }
+
+    @Test
+    public void httpChildrenAlwaysRequireAnExplicitSingleName() {
+        MetadataRequestValidationService validation = new MetadataRequestValidationService();
+
+        MetadataOperationException failure = assertThrows(MetadataOperationException.class,
+                () -> validation.normalizeAddChildPayload("P", "HTTPService.api", "URLTemplate", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        null, null, null, Map.of("template", "/state"))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(MetadataOperationCode.INVALID_METADATA_NAME, failure.getCode());
+    }
+
     private static final class StubMetadataService extends EdtMetadataService {
         private AddMetadataChildRequest lastRequest;
 

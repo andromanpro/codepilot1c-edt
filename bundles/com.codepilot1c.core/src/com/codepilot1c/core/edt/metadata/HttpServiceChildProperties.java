@@ -1,6 +1,7 @@
 package com.codepilot1c.core.edt.metadata;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -45,6 +46,7 @@ public final class HttpServiceChildProperties {
         if (!applies(kind)) {
             return properties;
         }
+        rejectBatch(kind, properties);
         Map<String, Object> normalized = new LinkedHashMap<>();
         if (properties != null) {
             normalized.putAll(properties);
@@ -69,6 +71,27 @@ public final class HttpServiceChildProperties {
 
     public static String resolveHandler(Map<String, Object> properties) {
         return normalizeHandler(properties == null ? null : properties.get(HANDLER));
+    }
+
+    /**
+     * Refuses {@code properties.children} for HTTP service children.
+     *
+     * <p>A batch entry carries only {@code name}/{@code synonym}/{@code comment}, which cannot
+     * express a URL template path, an HTTP verb or a handler. Accepting one would create
+     * {@code URLTemplate} and {@code Method} objects with those required fields unset, so the batch
+     * is refused outright rather than half-applied. Each HTTP child is created by its own
+     * single-name request.</p>
+     */
+    public static void rejectBatch(MetadataChildKind kind, Map<String, Object> properties) {
+        if (!applies(kind) || properties == null) {
+            return;
+        }
+        if (properties.get("children") instanceof List<?> children && !children.isEmpty()) { //$NON-NLS-1$
+            throw invalid("child_kind=" + kind.getDisplayName() //$NON-NLS-1$
+                    + " does not support batch creation via properties.children: a URL template needs its own" //$NON-NLS-1$
+                    + " template path and an HTTP method its own verb and handler, which a batch entry cannot" //$NON-NLS-1$
+                    + " carry. Create each child with its own request."); //$NON-NLS-1$
+        }
     }
 
     private static String normalizeTemplate(Object raw) {

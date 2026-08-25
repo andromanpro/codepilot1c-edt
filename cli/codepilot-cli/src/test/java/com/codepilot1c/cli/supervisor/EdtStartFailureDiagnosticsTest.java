@@ -39,6 +39,7 @@ import com.codepilot1c.cli.supervisor.EdtSupervisor.StartRequest;
 public class EdtStartFailureDiagnosticsTest {
     private static final String ID = "11111111-2222-3333-4444-555555555555";
     private static final String OTHER_ID = "99999999-8888-7777-6666-555555555555";
+    private static final Instant LAUNCHED_AT = Instant.parse("2026-08-25T07:00:00Z");
 
     @Test public void readinessTimeoutCarriesSafeActionableDiagnostics() {
         Fixture fixture = new Fixture();
@@ -133,12 +134,12 @@ public class EdtStartFailureDiagnosticsTest {
         assertEquals(Optional.empty(), fixture.registry().find(ID));
     }
 
-    @Test public void cleanupStillTerminatesTheOwnedProcessWhenTheOperatingSystemHidesTheCommandLine()
+    @Test public void cleanupTerminatesAnUnreadableCommandLineOnlyWhenTheStartInstantStillProvesOwnership()
             throws Exception {
         Fixture fixture = new Fixture();
         fixture.probe = uri -> new ProbeResult(false, 503, "HTTP 503");
-        // An unreadable command line means "cannot tell", not "not ours": the handle came from our
-        // own launcher, so refusing to terminate here would leak the process we started.
+        // The OS hides the command line, but the PID still carries the very start instant recorded
+        // when we launched it, which is the standard proof that no recycling happened.
         fixture.hideCommandLineOnLaunch = true;
 
         assertThrows(SupervisorException.class,
@@ -147,6 +148,55 @@ public class EdtStartFailureDiagnosticsTest {
 
         assertTrue(fixture.process.destroyCalled);
         assertEquals(Optional.empty(), fixture.registry().find(ID));
+    }
+
+    @Test public void cleanupNeverTerminatesARecycledPidWhoseCommandLineIsUnreadable() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.probe = uri -> new ProbeResult(false, 503, "HTTP 503");
+        fixture.hideCommandLineOnLaunch = true;
+        // Same PID, different process: the start instant moved, so ownership is disproven.
+        fixture.recycleStartInstantAfterLaunch = true;
+
+        SupervisorException failure = assertThrows(SupervisorException.class,
+                () -> fixture.supervisor().start(new StartRequest("/workspace", "/edt", 9123,
+                        Duration.ofMillis(250))));
+
+        assertEquals("readiness_timeout", failure.error());
+        assertFalse("a recycled PID must never be killed", fixture.process.destroyCalled);
+        assertFalse(fixture.process.forceCalled);
+        assertEquals(Optional.empty(), fixture.registry().find(ID));
+        assertEquals("skipped_unverified_identity", failure.details().get("cleanup"));
+    }
+
+    @Test public void cleanupFailsClosedWhenNeitherCommandLineNorStartInstantCanProveOwnership()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.probe = uri -> new ProbeResult(false, 503, "HTTP 503");
+        fixture.hideCommandLineOnLaunch = true;
+        fixture.hideStartInstant = true;
+
+        SupervisorException failure = assertThrows(SupervisorException.class,
+                () -> fixture.supervisor().start(new StartRequest("/workspace", "/edt", 9123,
+                        Duration.ofMillis(250))));
+
+        assertFalse("an unprovable identity must not be signalled", fixture.process.destroyCalled);
+        assertFalse(fixture.process.forceCalled);
+        // The operator still learns a process may survive, and the registry record is still removed.
+        assertEquals("skipped_unverified_identity", failure.details().get("cleanup"));
+        assertEquals(Optional.empty(), fixture.registry().find(ID));
+    }
+
+    @Test public void successfulCleanupIsReportedAsTerminatedSoTheTwoOutcomesAreDistinguishable()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.probe = uri -> new ProbeResult(false, 503, "HTTP 503");
+
+        SupervisorException failure = assertThrows(SupervisorException.class,
+                () -> fixture.supervisor().start(new StartRequest("/workspace", "/edt", 9123,
+                        Duration.ofMillis(250))));
+
+        assertTrue(fixture.process.destroyCalled);
+        assertEquals("terminated", failure.details().get("cleanup"));
     }
 
     private static void assertNoLaunchSecrets(Map<String, Object> details) {
@@ -166,6 +216,8 @@ public class EdtStartFailureDiagnosticsTest {
         boolean interruptOnWait;
         String rewriteCommandLineOnLaunch;
         boolean hideCommandLineOnLaunch;
+        boolean hideStartInstant;
+        boolean recycleStartInstantAfterLaunch;
         com.codepilot1c.cli.EndpointProbe probe = uri -> new ProbeResult(true, 200, "HTTP 200");
 
         Fixture() {
@@ -181,6 +233,8 @@ public class EdtStartFailureDiagnosticsTest {
                 process.commandLine = hideCommandLineOnLaunch ? null
                         : rewriteCommandLineOnLaunch != null
                                 ? rewriteCommandLineOnLaunch : String.join(" ", command);
+                process.startInstant = hideStartInstant ? null : LAUNCHED_AT;
+                if (recycleStartInstantAfterLaunch) process.startInstantAfterFirstRead = LAUNCHED_AT.plusSeconds(1);
                 processes.put(process.pid(), process);
                 return process;
             };
@@ -205,6 +259,9 @@ public class EdtStartFailureDiagnosticsTest {
         boolean destroyCalled;
         boolean forceCalled;
         String commandLine;
+        Instant startInstant = LAUNCHED_AT;
+        Instant startInstantAfterFirstRead;
+        private boolean startInstantRead;
         FakeProcess(long pid, String commandLine) {
             this.pid = pid;
             this.commandLine = commandLine;
@@ -214,6 +271,13 @@ public class EdtStartFailureDiagnosticsTest {
         @Override public boolean destroy() { destroyCalled = true; alive = false; return true; }
         @Override public boolean destroyForcibly() { forceCalled = true; alive = false; return true; }
         @Override public Optional<String> commandLine() { return Optional.ofNullable(commandLine); }
+        @Override public Optional<Instant> startInstant() {
+            if (startInstantRead && startInstantAfterFirstRead != null) {
+                return Optional.of(startInstantAfterFirstRead);
+            }
+            startInstantRead = true;
+            return Optional.ofNullable(startInstant);
+        }
     }
 
     private static final class MutableClock extends Clock {

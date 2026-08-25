@@ -195,6 +195,16 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    /**
+     * Top-level {@code add_metadata_child} parameters that the tool folds into {@code properties}.
+     * Keeping the list here means the validate step and the mutation step agree by construction.
+     */
+    private static final List<String> ADD_CHILD_TOP_LEVEL_PROPERTIES = List.of(
+            "template_type", //$NON-NLS-1$
+            HttpServiceChildProperties.TEMPLATE,
+            HttpServiceChildProperties.HTTP_METHOD,
+            HttpServiceChildProperties.HANDLER);
+
     public Map<String, Object> normalizeAddChildPayload(
             String projectName,
             String parentFqn,
@@ -1184,7 +1194,8 @@ public class MetadataRequestValidationService {
         return normalized;
     }
 
-    private Map<String, Object> normalizePayload(ValidationRequest request, List<String> checks) {
+    /** Package-private so same-package tests can drive normalization without a live EDT project. */
+    Map<String, Object> normalizePayload(ValidationRequest request, List<String> checks) {
         return switch (request.operation()) {
             case CREATE_METADATA -> {
                 Map<String, Object> payload = normalizeCreatePayload(
@@ -1334,10 +1345,14 @@ public class MetadataRequestValidationService {
             }
             case ADD_METADATA_CHILD -> {
                 Map<String, Object> childProps = new java.util.LinkedHashMap<>(asMap(request.payload().get("properties"))); //$NON-NLS-1$
-                // Merge template_type from top-level payload into properties if not already present
-                Object templateTypeVal = request.payload().get("template_type"); //$NON-NLS-1$
-                if (templateTypeVal != null && !childProps.containsKey("template_type")) { //$NON-NLS-1$
-                    childProps.put("template_type", templateTypeVal); //$NON-NLS-1$
+                // add_metadata_child publishes these as top-level parameters and merges them into
+                // properties before mutating, so the token has to be minted over the same merge.
+                // An explicit properties entry wins, so exactly one payload is ever bound.
+                for (String topLevel : ADD_CHILD_TOP_LEVEL_PROPERTIES) {
+                    Object value = request.payload().get(topLevel);
+                    if (value != null && !childProps.containsKey(topLevel)) {
+                        childProps.put(topLevel, value);
+                    }
                 }
                 Map<String, Object> payload = normalizeAddChildPayload(
                         coalesceProject(request.projectName(), request.payload()),
