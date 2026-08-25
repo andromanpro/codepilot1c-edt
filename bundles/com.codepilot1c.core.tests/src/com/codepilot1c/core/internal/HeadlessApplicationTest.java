@@ -5,6 +5,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -83,6 +85,7 @@ public class HeadlessApplicationTest {
     public void productionCoordinatorMakesHostStartupFailureReadable() {
         CoreHeadlessApplicationCoordinator coordinator = new CoreHeadlessApplicationCoordinator(
                 new CountDownLatch(1),
+                () -> { },
                 () -> {
                     throw new IllegalStateException("bind failed"); //$NON-NLS-1$
                 });
@@ -96,6 +99,52 @@ public class HeadlessApplicationTest {
             return;
         }
         throw new AssertionError("Expected headless host startup failure"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void productionCoordinatorRunsEdtBootstrapBeforeStartingTheHost() {
+        List<String> order = new ArrayList<>();
+        CoreHeadlessApplicationCoordinator coordinator = new CoreHeadlessApplicationCoordinator(
+                new CountDownLatch(1),
+                () -> order.add("bootstrap"), //$NON-NLS-1$
+                () -> {
+                    order.add("host"); //$NON-NLS-1$
+                    throw new IllegalStateException("stop after recording order"); //$NON-NLS-1$
+                });
+
+        try {
+            coordinator.start();
+        } catch (IllegalStateException expected) {
+            // expected: the host starter test double always throws once it records its entry
+        }
+
+        assertEquals(List.of("bootstrap", "host"), order); //$NON-NLS-1$ //$NON-NLS-2$
+        coordinator.stop();
+    }
+
+    @Test
+    public void productionCoordinatorNeverStartsTheHostWhenEdtBootstrapFails() {
+        AtomicBoolean hostStarted = new AtomicBoolean();
+        CoreHeadlessApplicationCoordinator coordinator = new CoreHeadlessApplicationCoordinator(
+                new CountDownLatch(1),
+                () -> {
+                    throw new IllegalStateException("IConfigurationProvider is unavailable in EDT runtime"); //$NON-NLS-1$
+                },
+                () -> {
+                    hostStarted.set(true);
+                    return null;
+                });
+
+        try {
+            coordinator.start();
+        } catch (IllegalStateException e) {
+            assertEquals("Failed to bootstrap EDT runtime services", e.getMessage()); //$NON-NLS-1$
+            assertEquals("IConfigurationProvider is unavailable in EDT runtime", e.getCause().getMessage()); //$NON-NLS-1$
+            assertFalse(hostStarted.get());
+            coordinator.stop();
+            return;
+        }
+        throw new AssertionError("Expected EDT bootstrap failure"); //$NON-NLS-1$
     }
 
     private static void clearSignalProperties() {

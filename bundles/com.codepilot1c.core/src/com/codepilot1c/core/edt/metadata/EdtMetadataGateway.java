@@ -206,6 +206,13 @@ public class EdtMetadataGateway {
         getGlobalEditingContext();
     }
 
+    public void ensureWorkspaceRuntimeAvailable() {
+        IWorkspace workspace = ResourcesPlugin.getWorkspace();
+        if (workspace == null || workspace.getRoot() == null) {
+            throw serviceUnavailable("ResourcesPlugin workspace"); //$NON-NLS-1$
+        }
+    }
+
     public void ensureExtensionRuntimeAvailable() {
         ensureValidationRuntimeAvailable();
         getV8ProjectManager();

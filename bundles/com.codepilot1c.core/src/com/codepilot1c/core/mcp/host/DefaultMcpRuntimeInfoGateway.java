@@ -8,13 +8,13 @@ import org.eclipse.core.runtime.Platform;
 import org.osgi.framework.Bundle;
 
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
  * EDT-backed runtime boundary for MCP readiness and discovery metadata.
  */
 public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway {
 
-    private static final String NOT_READY_REASON = "EDT runtime services are not ready"; //$NON-NLS-1$
     private static final String DEGRADED_REASON = "EDT runtime services failed readiness probe"; //$NON-NLS-1$
 
     private final EdtMetadataGateway edtGateway;
@@ -103,9 +103,10 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
     @Override
     public McpReadiness readiness() {
         try {
-            return edtGateway.isEdtAvailable()
-                ? McpReadiness.available()
-                : McpReadiness.starting(NOT_READY_REASON);
+            edtGateway.ensureWorkspaceRuntimeAvailable();
+            return McpReadiness.available();
+        } catch (MetadataOperationException e) {
+            return McpReadiness.starting(e.getMessage());
         } catch (RuntimeException e) {
             return McpReadiness.notReady(DEGRADED_REASON);
         }
