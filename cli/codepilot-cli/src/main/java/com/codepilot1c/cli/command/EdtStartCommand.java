@@ -27,13 +27,16 @@ final class EdtStartCommand implements Callable<Integer> {
     private int port;
     @Option(names = "--timeout", defaultValue = "120", description = "Readiness timeout in seconds.")
     private long timeoutSeconds;
+    @Option(names = "--vm", description = "JVM the Eclipse launcher must use; needed when the EDT "
+            + "installation ships no -vm and the host default JVM has a different architecture.")
+    private String vm;
 
     EdtStartCommand(RootCommand root) { this.root = root; }
 
     @Override public Integer call() {
         try {
             StartResult started = root.services().supervisor().start(new EdtSupervisor.StartRequest(
-                    workspace, edtHome, port, Duration.ofSeconds(timeoutSeconds)));
+                    workspace, edtHome, port, Duration.ofSeconds(timeoutSeconds), vm));
             InstanceRecord instance = started.instance();
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("command", "edt start");
@@ -57,7 +60,18 @@ final class EdtStartCommand implements Callable<Integer> {
         result.put("status", "failed");
         result.put("error", exception.error());
         result.put("message", exception.getMessage());
-        CommandOutput.print(root, "error[" + exception.error() + "]: " + exception.getMessage(), result);
+        if (!exception.details().isEmpty()) result.put("diagnostics", exception.details());
+        CommandOutput.print(root, "error[" + exception.error() + "]: " + exception.getMessage()
+                + describe(exception), result);
         return exception.exitCode();
+    }
+
+    /** Human-readable tail so the non-JSON mode reaches the same log as the JSON diagnostics. */
+    private String describe(SupervisorException exception) {
+        Object logFile = exception.details().get("logFile");
+        Object instanceId = exception.details().get("instanceId");
+        if (logFile == null) return "";
+        return System.lineSeparator() + "  instance: " + instanceId
+                + System.lineSeparator() + "  log: " + logFile;
     }
 }

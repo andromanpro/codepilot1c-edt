@@ -28,6 +28,7 @@ import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.EnsureModuleArtifactRequest;
+import com.codepilot1c.core.edt.metadata.HttpServiceChildProperties;
 import com.codepilot1c.core.edt.metadata.MetadataChildKind;
 import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
@@ -204,8 +205,11 @@ public class MetadataRequestValidationService {
             Map<String, Object> properties
     ) {
         MetadataChildKind kind = MetadataChildKind.fromString(childKindValue);
+        // HTTP service children carry their own required fields; canonicalize them before the token
+        // is minted so the bound payload is byte-for-byte the payload the mutation will apply.
+        Map<String, Object> effectiveProperties = HttpServiceChildProperties.normalize(kind, properties);
         AddMetadataChildRequest request = new AddMetadataChildRequest(
-                projectName, parentFqn, kind, name, synonym, comment, properties);
+                projectName, parentFqn, kind, name, synonym, comment, effectiveProperties);
         request.validate();
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -219,9 +223,9 @@ public class MetadataRequestValidationService {
         if (comment != null && !comment.isBlank()) {
             payload.put("comment", comment); //$NON-NLS-1$
         }
-        if (properties != null && !properties.isEmpty()) {
-            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
-            payload.put("properties", properties); //$NON-NLS-1$
+        if (effectiveProperties != null && !effectiveProperties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(effectiveProperties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
+            payload.put("properties", effectiveProperties); //$NON-NLS-1$
         }
         return payload;
     }

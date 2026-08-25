@@ -8,7 +8,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -92,18 +94,38 @@ public final class EdtSupervisor {
             throw failure(ExitCodes.EDT_UNAVAILABLE, "port_unavailable", "requested loopback port is unavailable");
         }
 
+        if (request.vm() != null && !request.vm().isBlank()
+                && !files.exists(Path.of(request.vm()))) {
+            throw failure(ExitCodes.USAGE, "invalid_vm", "--vm must point at an existing JVM library or executable");
+        }
+
         EdtInstallation installation = selectInstallation(request.edtHome());
+        if (!installation.supportsHeadlessApplication()) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("workspace", workspace.toString());
+            details.put("port", request.port());
+            details.put("edtHome", installation.home());
+            details.put("launcher", installation.launcher());
+            details.put("launcherKind", installation.kind().token());
+            throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "edt_launcher_unsupported",
+                    "the discovered EDT launcher is 1cedtcli, which has no -application option and cannot host"
+                            + " the headless MCP host; point --edt-home at an installation exposing the Eclipse"
+                            + " launcher (1cedt)", details);
+        }
         String instanceId = ids.get().toString();
         Path logFile = logsDirectory.resolve(instanceId + ".log");
         URI baseUri = URI.create("http://127.0.0.1:" + request.port());
+        StartDiagnostics diagnostics = new StartDiagnostics(instanceId, workspace, request.port(), logFile,
+                baseUri, installation);
         ProcessHandleFacade process;
         try {
             files.createDirectories(logsDirectory);
             files.createDirectories(registry.directory());
-            process = launcher.start(buildCommand(installation.launcher(), workspace, request.port(), instanceId,
-                    registry.directory()), logFile, logFile);
+            process = launcher.start(buildCommand(installation, workspace, request.port(), instanceId,
+                    registry.directory(), request.vm()), logFile, logFile);
         } catch (IOException exception) {
-            throw failure(ExitCodes.EDT_UNAVAILABLE, "process_start_failed", "unable to start EDT process");
+            throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "process_start_failed",
+                    "unable to start EDT process", diagnostics.toMap());
         }
 
         InstanceRecord record = new InstanceRecord(InstanceRecord.SCHEMA_VERSION, instanceId, process.pid(),
@@ -112,29 +134,36 @@ public final class EdtSupervisor {
         try {
             registry.write(record);
         } catch (IOException exception) {
-            terminateFailedStart(process);
-            throw failure(ExitCodes.EDT_UNAVAILABLE, "registry_write_failed", "unable to register EDT process");
+            terminateOwnedStart(process, instanceId);
+            throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "registry_write_failed",
+                    "unable to register EDT process", diagnostics.toMap());
         }
 
         Instant deadline = clock.instant().plus(request.timeout());
         while (true) {
             ProbeResult probe = readiness.probe(baseUri);
+            diagnostics.record(probe);
             if (probe.reachable()) return new StartResult(record, "ready", probe.httpStatus(), probe.detail());
             if (!process.isAlive()) {
-                deleteQuietly(record.instanceId());
-                throw failure(ExitCodes.EDT_UNAVAILABLE, "process_exited", "EDT exited before becoming ready");
+                deleteQuietly(instanceId);
+                throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "process_exited",
+                        "EDT exited before becoming ready; inspect the captured process log",
+                        diagnostics.toMap());
             }
             if (!clock.instant().isBefore(deadline)) {
-                terminateFailedStart(process);
-                deleteQuietly(record.instanceId());
-                throw failure(ExitCodes.EDT_UNAVAILABLE, "readiness_timeout", "EDT did not become ready before timeout");
+                terminateOwnedStart(process, instanceId);
+                deleteQuietly(instanceId);
+                throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "readiness_timeout",
+                        "EDT did not become ready before timeout; inspect the captured process log",
+                        diagnostics.toMap());
             }
             try { wait.pause(POLL_INTERVAL); }
             catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                terminateFailedStart(process);
-                deleteQuietly(record.instanceId());
-                throw failure(ExitCodes.EDT_UNAVAILABLE, "start_interrupted", "EDT startup was interrupted");
+                terminateOwnedStart(process, instanceId);
+                deleteQuietly(instanceId);
+                throw new SupervisorException(ExitCodes.EDT_UNAVAILABLE, "start_interrupted",
+                        "EDT startup was interrupted", diagnostics.toMap());
             }
         }
     }
@@ -223,6 +252,37 @@ public final class EdtSupervisor {
         return result;
     }
 
+    /**
+     * Builds the Equinox launch for an installation that can host the headless application.
+     *
+     * @throws IllegalArgumentException when the installation exposes only {@code 1cedtcli}, which
+     *     rejects {@code -nosplash} and has no {@code -application} option. Callers must fail closed
+     *     rather than hand it arguments it cannot honour.
+     */
+    public static List<String> buildCommand(EdtInstallation installation, Path workspace, int port,
+            String instanceId, Path registryDirectory) {
+        return buildCommand(installation, workspace, port, instanceId, registryDirectory, null);
+    }
+
+    /**
+     * @param vm optional JVM for {@code -vm}; emitted before {@code -vmargs}, the only position the
+     *     Equinox launcher honours. {@code null} or blank leaves the launch untouched.
+     */
+    public static List<String> buildCommand(EdtInstallation installation, Path workspace, int port,
+            String instanceId, Path registryDirectory, String vm) {
+        if (!installation.supportsHeadlessApplication()) {
+            throw new IllegalArgumentException(
+                    "launcher " + installation.launcher() + " cannot host an Equinox application");
+        }
+        List<String> command = new ArrayList<>(
+                buildCommand(installation.launcher(), workspace, port, instanceId, registryDirectory));
+        if (vm != null && !vm.isBlank()) {
+            command.addAll(command.indexOf("-vmargs"), List.of("-vm", vm));
+        }
+        return List.copyOf(command);
+    }
+
+    /** Retained for callers that already resolved an Equinox RCP launcher path. */
     public static List<String> buildCommand(String launcher, Path workspace, int port, String instanceId,
             Path registryDirectory) {
         return List.of(launcher, "-nosplash", "-application", "com.codepilot1c.core.headless", "-data",
@@ -240,8 +300,17 @@ public final class EdtSupervisor {
                 "no validated EDT installation with 1cedtcli/1cedt launcher was found"));
     }
 
-    private void terminateFailedStart(ProcessHandleFacade process) {
+    /**
+     * Terminates the process this start launched, and only it.
+     *
+     * <p>The handle came straight from the launcher, but a start can run for the full readiness
+     * window; if the child died early the operating system may already have recycled its PID into an
+     * unrelated program. The same {@code -Dcodepilot.instance.id} marker the stop path verifies is
+     * therefore re-checked here, so a failed start can never signal a process it does not own.</p>
+     */
+    private void terminateOwnedStart(ProcessHandleFacade process, String instanceId) {
         if (!process.isAlive()) return;
+        if (!matches(process, instanceId)) return;
         process.destroy();
         if (!awaitExit(process, DEFAULT_STOP_TIMEOUT) && process.isAlive()) {
             process.destroyForcibly();
@@ -283,7 +352,68 @@ public final class EdtSupervisor {
         catch (RuntimeException exception) { return false; }
     }
 
-    public record StartRequest(String workspace, String edtHome, int port, Duration timeout) { }
+    /**
+     * Non-secret identity and last-probe state for one start attempt.
+     *
+     * <p>Every deterministic start failure publishes this so an operator can reach the captured
+     * process log and see which instance, workspace and port failed. It deliberately excludes the
+     * launch command line: those arguments carry the registry directory and every
+     * {@code -D} property, none of which belongs in user-facing failure output.</p>
+     */
+    private static final class StartDiagnostics {
+        private final String instanceId;
+        private final Path workspace;
+        private final int port;
+        private final Path logFile;
+        private final URI baseUri;
+        private final EdtInstallation installation;
+        private ProbeResult lastProbe;
+
+        StartDiagnostics(String instanceId, Path workspace, int port, Path logFile, URI baseUri,
+                EdtInstallation installation) {
+            this.instanceId = instanceId;
+            this.workspace = workspace;
+            this.port = port;
+            this.logFile = logFile;
+            this.baseUri = baseUri;
+            this.installation = installation;
+        }
+
+        void record(ProbeResult probe) { this.lastProbe = probe; }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("instanceId", instanceId);
+            value.put("workspace", workspace.toString());
+            value.put("port", port);
+            value.put("logFile", logFile.toString());
+            value.put("readinessUrl", baseUri.toASCIIString());
+            value.put("edtHome", installation.home());
+            value.put("launcherKind", installation.kind().token());
+            if (lastProbe != null) {
+                Map<String, Object> probe = new LinkedHashMap<>();
+                probe.put("reachable", lastProbe.reachable());
+                probe.put("httpStatus", lastProbe.httpStatus());
+                probe.put("detail", lastProbe.detail());
+                value.put("lastProbe", probe);
+            }
+            return value;
+        }
+    }
+
+    /**
+     * @param vm optional path to the JVM the Equinox launcher must use, mapped to {@code -vm}.
+     *     1C ships x86_64 EDT builds whose {@code 1cedt.ini} carries no {@code -vm}; on a host whose
+     *     default JVM has a different architecture the launcher then blocks on a native
+     *     "a JRE must be available" dialog, producing an alive process, an empty log and a readiness
+     *     timeout. Supplying the JVM explicitly is the only deterministic way out.
+     */
+    public record StartRequest(String workspace, String edtHome, int port, Duration timeout, String vm) {
+        /** Source-compatible constructor for callers that let the launcher resolve its own JVM. */
+        public StartRequest(String workspace, String edtHome, int port, Duration timeout) {
+            this(workspace, edtHome, port, timeout, null);
+        }
+    }
     public record StartResult(InstanceRecord instance, String state, int httpStatus, String detail) { }
     public record StopRequest(String instanceId, boolean all, boolean force, Duration timeout) { }
     public record StopItem(String instanceId, long pid, String state, boolean stopped) { }

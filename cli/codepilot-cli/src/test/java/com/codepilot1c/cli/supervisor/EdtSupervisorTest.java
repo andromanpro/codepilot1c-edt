@@ -227,7 +227,8 @@ public class EdtSupervisorTest {
 
         Fixture() {
             host.directories.add("/edt");
-            host.files.add("/edt/1cedtcli");
+            // The Equinox RCP launcher: only it accepts -application, so only it can be started.
+            host.files.add("/edt/1cedt");
             host.directories.add("/workspace");
         }
 
