@@ -52,6 +52,38 @@ public class AddMetadataChildHttpServiceTest {
     }
 
     @Test
+    public void schemaIsStrictlyValidJsonAndKeepsEveryPreviouslyPublishedField() throws Exception {
+        String schema = new AddMetadataChildTool().getParameterSchema();
+
+        // Strict parse: a lenient parser silently tolerates the bare quote that broke tools/list.
+        com.google.gson.stream.JsonReader reader =
+                new com.google.gson.stream.JsonReader(new java.io.StringReader(schema));
+        reader.setLenient(false);
+        reader.skipValue();
+        assertEquals(com.google.gson.stream.JsonToken.END_DOCUMENT, reader.peek());
+        reader.close();
+
+        com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(schema).getAsJsonObject();
+        com.google.gson.JsonObject properties = root.getAsJsonObject("properties"); //$NON-NLS-1$
+        for (String field : new String[] {"project", "parent_fqn", "child_kind", "name", "synonym", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                "comment", "form_usage", "managed", "set_as_default", "wait_ms", "template_type", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                "properties", "validation_token", "template", "http_method", "handler"}) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            assertTrue("schema must publish " + field, properties.has(field)); //$NON-NLS-1$
+        }
+
+        String childKinds = properties.getAsJsonObject("child_kind").get("enum").toString(); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(childKinds, childKinds.contains("URLTemplate")); //$NON-NLS-1$
+        assertTrue(childKinds, childKinds.contains("HTTPMethod")); //$NON-NLS-1$
+        // The schema tokens must round-trip to the kinds the mutation layer switches on.
+        assertEquals(MetadataChildKind.HTTP_URL_TEMPLATE, MetadataChildKind.fromString("URLTemplate")); //$NON-NLS-1$
+        assertEquals(MetadataChildKind.HTTP_METHOD, MetadataChildKind.fromString("HTTPMethod")); //$NON-NLS-1$
+
+        String templateDescription = properties.getAsJsonObject("template").get("description").getAsString(); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(templateDescription, templateDescription.contains("/state")); //$NON-NLS-1$
+        assertTrue(templateDescription, templateDescription.contains("/items/{id}")); //$NON-NLS-1$
+    }
+
+    @Test
     public void urlTemplateAliasesResolveToTheUrlTemplateKind() {
         for (String alias : new String[] {"URLTemplate", "urltemplate", "url_template", "шаблонurl"}) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             assertEquals(alias, MetadataChildKind.HTTP_URL_TEMPLATE, MetadataChildKind.fromString(alias));

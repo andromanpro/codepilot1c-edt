@@ -11,10 +11,33 @@
 
    <license url="%licenseURL">%license</license>
 
-   <requires>
-      <import feature="org.eclipse.tm.terminal.feature" version="0.0.0" match="compatible"/>
-      <import feature="org.eclipse.cdt.native" version="0.0.0" match="compatible"/>
-   </requires>
+   <!--
+      Scope the p2 install footprint to exactly what this product calls.
+
+      Importing the whole org.eclipse.tm.terminal.feature and org.eclipse.cdt.native features made
+      p2 satisfy every plugin in both, which added seven bundles to a host EDT instead of the two
+      that changed. Three of those seven are used nowhere in this product:
+      org.eclipse.tm.terminal.connector.ssh, org.eclipse.tm.terminal.connector.telnet and
+      org.eclipse.cdt.native.serial (it exports only org.eclipse.cdt.serial, which nothing here or
+      in the chain below imports). They were pure feature-import fallout and are now gone.
+
+      The remaining four are genuinely required and are included explicitly so the set is auditable
+      and an offline install resolves without reaching outside this site:
+
+        org.eclipse.tm.terminal.connector.local  - OpenTerminalHandler resolves the launcher id
+            org.eclipse.tm.terminal.connector.local.launcher.local at runtime; no OSGi manifest
+            header can express that, so nothing else would pull it in.
+        org.eclipse.tm.terminal.connector.process - Require-Bundle of connector.local, not optional.
+        org.eclipse.cdt.core.native              - exports org.eclipse.cdt.utils.pty and
+            org.eclipse.cdt.utils.spawner, which both connectors Import-Package as
+            mandatory:=native.
+        org.eclipse.cdt.core.* platform fragments - Fragment-Host org.eclipse.cdt.core.native;
+            they carry the native pty/spawner binaries. p2 installs only the one matching the host,
+            which is why a macOS install adds org.eclipse.cdt.core.macosx alone.
+
+      terminal.view.core / terminal.view.ui are not listed: the UI bundle declares those packages in
+      its Import-Package, so p2 resolves them against the host EDT, which already ships them.
+   -->
 
    <plugin
          id="com.codepilot1c.core"
@@ -29,5 +52,74 @@
          install-size="0"
          version="0.0.0"
          unpack="false"/>
+
+   <plugin
+         id="org.eclipse.tm.terminal.connector.local"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.tm.terminal.connector.process"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.native"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.macosx"
+         os="macosx"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         fragment="true"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.linux"
+         os="linux"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         fragment="true"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.linux.x86_64"
+         os="linux"
+         arch="x86_64"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         fragment="true"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.win32"
+         os="win32"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         fragment="true"
+         unpack="false"/>
+
+   <plugin
+         id="org.eclipse.cdt.core.win32.x86_64"
+         os="win32"
+         arch="x86_64"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         fragment="true"
+         unpack="false"/>
+
 
 </feature>

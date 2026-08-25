@@ -76,7 +76,7 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "template": {
                   "type": "string",
-                  "description": "Точный путь URL-шаблона (child_kind=URLTemplate), например \"/state\" или \"/items/{id}\". Без пробелов, query и fragment."
+                  "description": "Точный путь URL-шаблона (child_kind=URLTemplate), например \\"/state\\" или \\"/items/{id}\\". Без пробелов, query и fragment."
                 },
                 "http_method": {
                   "type": "string",
