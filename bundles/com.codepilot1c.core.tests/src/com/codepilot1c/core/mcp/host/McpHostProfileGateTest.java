@@ -727,7 +727,7 @@ public class McpHostProfileGateTest {
         return id;
     }
 
-    private CapturingTool register(CapturingTool tool) {
+    private <T extends ITool> T register(T tool) {
         registry.register(tool);
         return tool;
     }
@@ -841,7 +841,7 @@ public class McpHostProfileGateTest {
         private final boolean mutating;
         private final boolean requiresConfirmation;
         private final boolean destructive;
-        private int calls;
+        int calls;
         private Map<String, Object> parameters;
         private ToolExecutionContext context;
         private ToolResult result = ToolResult.success("ok"); //$NON-NLS-1$

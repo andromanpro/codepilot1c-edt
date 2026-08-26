@@ -15,6 +15,7 @@ import com.codepilot1c.core.edt.metadata.ModuleArtifactKind;
 import com.codepilot1c.core.edt.metadata.ModuleArtifactResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolResult;
 
 public class EnsureModuleArtifactToolTest {
@@ -47,6 +48,13 @@ public class EnsureModuleArtifactToolTest {
         assertTrue(result.getContent().contains("/tmp/Documents/ПриходТоваров/ObjectModule.bsl")); //$NON-NLS-1$
     }
 
+    @Test
+    public void toolMetadataPublishesValidationTokenContract() {
+        ToolMeta metadata = EnsureModuleArtifactTool.class.getAnnotation(ToolMeta.class);
+
+        assertTrue(metadata.requiresValidationToken());
+    }
+
     private static final class StubMetadataService extends EdtMetadataService {
         private EnsureModuleArtifactRequest lastRequest;
 
@@ -68,7 +76,9 @@ public class EnsureModuleArtifactToolTest {
         private Map<String, Object> normalizedPayload;
 
         @Override
-        public Map<String, Object> consumeToken(String token, ValidationOperation operation, String projectName) {
+        public Map<String, Object> consumeToken(
+                String token, ValidationOperation operation, String projectName,
+                Map<String, Object> normalizedPayload) {
             if (!"token-1".equals(token)) { //$NON-NLS-1$
                 throw new MetadataOperationException(
                         MetadataOperationCode.KNOWLEDGE_REQUIRED,
@@ -76,13 +86,7 @@ public class EnsureModuleArtifactToolTest {
             }
             this.operation = operation;
             this.projectName = projectName;
-            this.normalizedPayload = Map.of(
-                    "project", projectName, //$NON-NLS-1$
-                    "object_fqn", "Document.ПриходТоваров", //$NON-NLS-1$ //$NON-NLS-2$
-                    "module_kind", "OBJECT", //$NON-NLS-1$ //$NON-NLS-2$
-                    "create_if_missing", Boolean.FALSE, //$NON-NLS-1$
-                    "initial_content", "Procedure BeforeWrite() EndProcedure" //$NON-NLS-1$ //$NON-NLS-2$
-            );
+            this.normalizedPayload = normalizedPayload;
             return normalizedPayload;
         }
     }
