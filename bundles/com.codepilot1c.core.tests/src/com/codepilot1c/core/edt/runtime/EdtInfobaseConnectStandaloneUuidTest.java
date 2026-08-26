@@ -18,36 +18,25 @@ import java.io.File;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.core.runtime.IStatus;
 import org.eclipse.wst.server.core.IRuntime;
-import org.eclipse.wst.server.core.IServer;
 import org.junit.Test;
 
-import com._1c.g5.v8.dt.common.Pair;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
-import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com.codepilot1c.core.edt.runtime.EdtInfobaseConnectService.ConnectRequest;
 import com.codepilot1c.core.edt.runtime.EdtInfobaseConnectService.ConnectionKind;
-import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntime;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
-import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerBehaviourDelegate;
-import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerDelegate;
-import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
 
 /**
  * Regression test for the {@code connect_infobase(standalone)} fix
@@ -81,8 +70,9 @@ public class EdtInfobaseConnectStandaloneUuidTest {
         Path home = Path.of(System.getProperty("user.home")); //$NON-NLS-1$
         Path databasePath = Files.createTempDirectory(home, "edt-standalone-uuid-regression"); //$NON-NLS-1$
         try {
-            CapturingStandaloneServerService captor = new CapturingStandaloneServerService();
-            TestableConnectService service = new TestableConnectService(new StubGateway(captor));
+            AtomicReference<InfobaseReference> captor = new AtomicReference<>();
+            TestableConnectService service = new TestableConnectService(
+                    new StubGateway(newCapturingStandaloneServerService(captor)));
             IProject project = newProjectProxy("Demo"); //$NON-NLS-1$
 
             ConnectRequest request = new ConnectRequest(
@@ -105,7 +95,7 @@ public class EdtInfobaseConnectStandaloneUuidTest {
                         EdtToolErrorCode.STANDALONE_SERVER_CREATE_FAILED, expected.getCode());
             }
 
-            InfobaseReference captured = captor.captured.get();
+            InfobaseReference captured = captor.get();
             assertNotNull("EDT's createServerWithInfobase must have been invoked", captured); //$NON-NLS-1$
             assertNotNull("REGRESSION: standalone connect must assign a non-null UUID to the " //$NON-NLS-1$
                     + "InfobaseReference before handing it to EDT's StandaloneServerService — " //$NON-NLS-1$
@@ -163,103 +153,45 @@ public class EdtInfobaseConnectStandaloneUuidTest {
     }
 
     /**
-     * Captures the {@link InfobaseReference} passed to
-     * {@link IStandaloneServerService#createServerWithInfobase} and then throws so the
+     * Builds a dynamic {@link IStandaloneServerService} that captures the
+     * {@link InfobaseReference} handed to {@code createServerWithInfobase} and then throws so the
      * production code never reaches the post-EDT bookkeeping (which would need more stubs).
+     *
+     * <p>A {@link Proxy} rather than a hand-written implementation: {@code IStandaloneServerService}
+     * gains and renames methods between 1C:EDT releases, and this regression only depends on
+     * {@code getRuntimes} and {@code createServerWithInfobase}.</p>
+     *
+     * @param captured sink for the intercepted reference, never {@code null}
+     * @return the capturing service, never {@code null}
      */
-    private static final class CapturingStandaloneServerService implements IStandaloneServerService {
-        final AtomicReference<InfobaseReference> captured = new AtomicReference<>();
-        private final IRuntime runtime = newRuntimeProxy();
-
-        @Override
-        public List<IRuntime> getRuntimes() {
-            // Must be non-empty so connectStandalone's findRuntime() does not bail with
-            // STANDALONE_RUNTIME_NOT_FOUND before reaching createServerWithInfobase.
-            return List.of(runtime);
-        }
-
-        @Override
-        public Optional<IRuntime> findRuntime(String platformVersion, IProgressMonitor monitor) {
-            // Fall through to getRuntimes() so the test does not depend on version matching.
-            return Optional.empty();
-        }
-
-        @Override
-        public Pair<IServer, StandaloneServerInfobase> createServerWithInfobase(String platformVersion,
-                String projectName, InfobaseReference infobase, int clusterPort,
-                String clusterRegistryDirectory, String publicationPath, IProgressMonitor monitor) {
-            captured.set(infobase);
-            // Abort after capture — the test only cares about what was handed to EDT.
-            throw new RuntimeException("aborted-by-regression-captor"); //$NON-NLS-1$
-        }
-
-        // -- Remaining IStandaloneServerService surface: not used by connectStandalone but the
-        //    interface must be fully implemented. ---------------------------------------------------
-
-        @Override
-        public List<IServer> getServers() { return Collections.emptyList(); }
-
-        @Override
-        public IServer createServer(IRuntime r, IProgressMonitor monitor) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<IServer> getServer(StandaloneServerInfobase infobase) {
-            return Optional.empty();
-        }
-
-        @Override
-        public URI getDesignerUrl(StandaloneServerInfobase infobase) { return null; }
-
-        @Override
-        public URI getInfobaseUrl(StandaloneServerInfobase infobase) { return null; }
-
-        @Override
-        public IStatus validateRuntimeInstallation(RuntimeInstallation installation) { return null; }
-
-        @Override
-        public Optional<IStandaloneServerRuntime> getStandaloneServerRuntime(IRuntime r,
-                IProgressMonitor monitor) {
-            return Optional.empty();
-        }
-
-        @Override
-        public Path getServerLocation(IServer server) { return null; }
-
-        @Override
-        public Path getServerDataLocation(IServer server) { return null; }
-
-        @Override
-        public String getServerVersion(IServer server) { return ""; } //$NON-NLS-1$
-
-        @Override
-        public IStatus validateServerLocation(Path path) { return null; }
-
-        @Override
-        public IStatus deleteServer(IServer server, IProgressMonitor monitor) { return null; }
-
-        @Override
-        public IStatus startServer(IServer server, String mode, IProgressMonitor monitor) { return null; }
-
-        @Override
-        public IStatus stopServer(IServer server, IProgressMonitor monitor) { return null; }
-
-        @Override
-        public void execServerOperation(IServer server, Consumer<IServer.IOperationListener> consumer,
-                IProgressMonitor monitor) {
-            // no-op
-        }
-
-        @Override
-        public StandaloneServerBehaviourDelegate findBehaviourDelegate(IServer server) { return null; }
-
-        @Override
-        public StandaloneServerDelegate findServerDelegate(IServer server) { return null; }
-
-        @Override
-        public boolean isStandaloneServer(IServer server) { return false; }
-
+    private static IStandaloneServerService newCapturingStandaloneServerService(
+            AtomicReference<InfobaseReference> captured) {
+        IRuntime runtime = newRuntimeProxy();
+        return (IStandaloneServerService) Proxy.newProxyInstance(
+                IStandaloneServerService.class.getClassLoader(),
+                new Class<?>[] { IStandaloneServerService.class },
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getRuntimes": //$NON-NLS-1$
+                            // Must be non-empty so connectStandalone's findRuntime() does not bail
+                            // with STANDALONE_RUNTIME_NOT_FOUND before the EDT call.
+                            return List.of(runtime);
+                        case "findRuntime": //$NON-NLS-1$
+                            // Fall through to getRuntimes() so the test does not depend on
+                            // version matching.
+                            return Optional.empty();
+                        case "createServerWithInfobase": //$NON-NLS-1$
+                            captured.set((InfobaseReference) args[2]);
+                            // Abort after capture - the test only cares about what reached EDT.
+                            throw new RuntimeException("aborted-by-regression-captor"); //$NON-NLS-1$
+                        case "getServers": //$NON-NLS-1$
+                            return Collections.emptyList();
+                        case "toString": //$NON-NLS-1$
+                            return "CapturingStandaloneServerService"; //$NON-NLS-1$
+                        default:
+                            return defaultReturn(method);
+                    }
+                });
     }
 
     // ---- proxies -----------------------------------------------------------------------------

@@ -19,6 +19,7 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
 
     private final EdtMetadataGateway edtGateway;
     private final McpEdtVersionSupplier edtVersionSupplier;
+    private McpSemanticReadinessProbe readinessProbe;
 
     public DefaultMcpRuntimeInfoGateway() {
         this(new EdtMetadataGateway(), DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
@@ -26,6 +27,11 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
 
     public DefaultMcpRuntimeInfoGateway(EdtMetadataGateway edtGateway) {
         this(edtGateway, DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
+    }
+
+    public DefaultMcpRuntimeInfoGateway(McpSemanticReadinessProbe readinessProbe) {
+        this(new EdtMetadataGateway(), DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
+        this.readinessProbe = readinessProbe;
     }
 
     public DefaultMcpRuntimeInfoGateway(McpEdtVersionSupplier edtVersionSupplier) {
@@ -100,15 +106,15 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
                 || "com.codepilot1c.core.headless".equals(System.getProperty("eclipse.application")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    private McpSemanticReadinessProbe probe() {
+        if (readinessProbe == null) {
+            readinessProbe = new McpSemanticReadinessProbe(edtGateway);
+        }
+        return readinessProbe;
+    }
+
     @Override
     public McpReadiness readiness() {
-        try {
-            edtGateway.ensureWorkspaceRuntimeAvailable();
-            return McpReadiness.available();
-        } catch (MetadataOperationException e) {
-            return McpReadiness.starting(e.getMessage());
-        } catch (RuntimeException e) {
-            return McpReadiness.notReady(DEGRADED_REASON);
-        }
+        return probe().evaluate();
     }
 }

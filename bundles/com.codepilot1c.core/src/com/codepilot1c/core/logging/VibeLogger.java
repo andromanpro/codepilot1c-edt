@@ -320,8 +320,11 @@ public class VibeLogger {
 
             String fullMessage = "[" + entry.getCategory() + "] " + entry.getMessage(); //$NON-NLS-1$ //$NON-NLS-2$
             log.log(new Status(severity, bundle.getSymbolicName(), fullMessage, entry.getThrowable()));
-        } catch (Exception e) {
-            // Fallback to stderr
+        } catch (Throwable failure) {
+            // Surefire can load Platform outside the framework classloader.
+            // Keep the diagnostic visible rather than letting a logging
+            // boundary failure hide the original operation or disappear.
+            System.err.println("Eclipse log unavailable: " + failure); //$NON-NLS-1$
             System.err.println(entry.toString());
         }
     }

@@ -1290,8 +1290,14 @@ public class AgentRunner implements IAgentRunner {
         payload.put("execution_time_ms", Long.valueOf(event.getExecutionTimeMs())); //$NON-NLS-1$
         payload.put("result_type", result.getType().name()); //$NON-NLS-1$
 
+        // The authorization map is a short-lived optimization for an executing call,
+        // not the authority for trace redaction.  A result can be emitted after a
+        // cancelled/replayed call has already been removed from that map; resolve the
+        // registered tool as a fail-closed fallback so that such a boundary can never
+        // turn a sensitive result into trace content.
         boolean sensitive = Boolean.TRUE.equals(
-                authorizedToolSensitivity.remove(event.getCallId()));
+                authorizedToolSensitivity.remove(event.getCallId()))
+                || isSensitiveTool(event.getToolName());
         if (sensitive) {
             String resultText = result.isSuccess() ? result.getContent() : result.getErrorMessage();
             payload.put("content_omitted", Boolean.TRUE); //$NON-NLS-1$
@@ -1301,5 +1307,10 @@ public class AgentRunner implements IAgentRunner {
             payload.put("error_message", result.getErrorMessage()); //$NON-NLS-1$
         }
         return payload;
+    }
+
+    private boolean isSensitiveTool(String toolName) {
+        ITool tool = toolRegistry.getTool(toolName);
+        return tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
     }
 }

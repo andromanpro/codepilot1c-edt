@@ -59,7 +59,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import sun.misc.Unsafe;
 
 public class McpHostProfileGateTest {
 
@@ -67,7 +66,7 @@ public class McpHostProfileGateTest {
     private String previousTraceEnabled;
     private Path traceRoot;
     private ToolRegistry registry;
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
     private final List<String> registeredProfileIds = new ArrayList<>();
 
     @Before
@@ -78,7 +77,7 @@ public class McpHostProfileGateTest {
         System.setProperty(ArtifactLayout.PROP_TRACE_DIR, traceRoot.toString());
         System.setProperty(AgentTraceSession.PROP_TRACE_ENABLED, Boolean.TRUE.toString());
         registry = isolatedRegistry();
-        previousRegistry = installRegistry(registry);
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
@@ -86,7 +85,7 @@ public class McpHostProfileGateTest {
         for (String profileId : registeredProfileIds) {
             AgentProfileRegistry.getInstance().unregister(profileId);
         }
-        installRegistry(previousRegistry);
+        registryLease.close();
         restoreProperty(ArtifactLayout.PROP_TRACE_DIR, previousTraceDir);
         restoreProperty(AgentTraceSession.PROP_TRACE_ENABLED, previousTraceEnabled);
     }
@@ -794,34 +793,14 @@ public class McpHostProfileGateTest {
         }
     }
 
-    private static ToolRegistry isolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        setField(registry, "tools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicTools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicToolCapabilities", //$NON-NLS-1$
-                new HashMap<String, DynamicToolCapability>());
-        setField(registry, "gson", new Gson()); //$NON-NLS-1$
-        return registry;
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
+    private static ToolRegistry isolatedRegistry() {
+        return ToolRegistry.createDetached();
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.set(target, value);
-    }
-
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
     }
 
     private record TraceRun(McpHostSession session, String toolName) {

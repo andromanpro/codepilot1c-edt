@@ -15,17 +15,14 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -52,33 +49,22 @@ import com.codepilot1c.core.tools.ToolRegistry.ToolResolution;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.meta.ToolDescriptorRegistry;
 import com.codepilot1c.core.tools.meta.ToolDescriptor;
-import com.codepilot1c.core.tools.surface.ToolSurfaceAugmentor;
-import com.google.gson.Gson;
-
-import sun.misc.Unsafe;
 
 public class ChatViewPermissionGateTest {
 
     private static final Function<String, Map<String, Object>> EMPTY_PARSER = ignored -> Map.of();
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
 
     @Before
-    public void installIsolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        Map<String, ITool> builtins = new HashMap<>();
-        builtins.put("read_file", new CountingTool("read_file")); //$NON-NLS-1$ //$NON-NLS-2$
-        setField(registry, "tools", builtins); //$NON-NLS-1$
-        setField(registry, "dynamicTools", new ConcurrentHashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicToolCapabilities", //$NON-NLS-1$
-                new ConcurrentHashMap<String, DynamicToolCapability>());
-        setField(registry, "gson", new Gson()); //$NON-NLS-1$
-        setField(registry, "augmentor", ToolSurfaceAugmentor.passthrough()); //$NON-NLS-1$
-        previousRegistry = installRegistry(registry);
+    public void installIsolatedRegistry() {
+        ToolRegistry registry = ToolRegistry.createDetached();
+        registry.register(new CountingTool("read_file")); //$NON-NLS-1$
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
-    public void restoreRegistry() throws Exception {
-        installRegistry(previousRegistry);
+    public void restoreRegistry() {
+        registryLease.close();
     }
 
     @Test
@@ -724,26 +710,6 @@ public class ChatViewPermissionGateTest {
 
     private static ToolCall call(String name, String arguments) {
         return new ToolCall("call-" + name, name, arguments); //$NON-NLS-1$
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
-    }
-
-    private static void setField(Object target, String name, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
-    }
-
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
     }
 
     private static int occurrences(String text, String needle) {

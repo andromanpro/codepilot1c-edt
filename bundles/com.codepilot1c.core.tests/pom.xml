@@ -82,16 +82,23 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.11.0</version>
+                <version>3.14.1</version>
                 <configuration>
-                    <release>17</release>
-                    <testRelease>17</testRelease>
+                    <release>25</release>
+                    <testRelease>25</testRelease>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-junit47</artifactId>
+                        <version>3.2.5</version>
+                    </dependency>
+                </dependencies>
                 <configuration>
                     <includes>
                         <include>**/*Test.java</include>
@@ -99,6 +106,12 @@
                     <systemPropertyVariables>
                         <core.bundle.path>${project.basedir}/../com.codepilot1c.core/target/com.codepilot1c.core-${project.version}.jar</core.bundle.path>
                     </systemPropertyVariables>
+                    <properties>
+                        <property>
+                            <name>listener</name>
+                            <value>com.codepilot1c.core.harness.EquinoxTestRuntimeListener</value>
+                        </property>
+                    </properties>
                 </configuration>
             </plugin>
         </plugins>

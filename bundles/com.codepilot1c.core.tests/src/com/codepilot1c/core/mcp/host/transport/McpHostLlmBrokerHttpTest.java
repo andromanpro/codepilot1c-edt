@@ -198,9 +198,11 @@ public class McpHostLlmBrokerHttpTest {
             assertTrue(provider.started.await(2, TimeUnit.SECONDS));
             assertNotNull(first.get(2, TimeUnit.SECONDS));
 
-            assertError(fixture.post(CHAT, null), 409, "busy"); //$NON-NLS-1$
+            CompletableFuture<HttpResponse<InputStream>> waiter = fixture.postAsync(CHAT);
+            assertEquals(200, waiter.get(2, TimeUnit.SECONDS).statusCode());
             fixture.broker.cancelActive();
             assertTrue(provider.returned.await(2, TimeUnit.SECONDS));
+            assertEquals(1, provider.invocations.get());
         }
     }
 
@@ -270,11 +272,24 @@ public class McpHostLlmBrokerHttpTest {
         }
 
         HttpResponse<String> post(String body, String token) throws Exception {
+            return post(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), body, token);
+        }
+
+        CompletableFuture<HttpResponse<InputStream>> postAsync(String body) {
+            HttpRequest request = HttpRequest.newBuilder(uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+        }
+
+        private HttpResponse<String> post(HttpClient requestClient, String body, String token)
+                throws Exception {
             HttpRequest.Builder builder = HttpRequest.newBuilder(uri("/llm/v1/chat")) //$NON-NLS-1$
                     .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             authorize(builder, token);
-            return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            return requestClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         }
 
         CompletableFuture<HttpResponse<InputStream>> postStreaming(String body) {

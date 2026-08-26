@@ -7,97 +7,85 @@
  */
 package com.codepilot1c.core.internal;
 
-import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
-import org.osgi.framework.Bundle;
-import org.osgi.framework.BundleContext;
-import org.osgi.framework.BundleException;
-import org.osgi.framework.FrameworkUtil;
+import org.eclipse.core.resources.ResourcesPlugin;
 
-import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
-import com._1c.g5.v8.dt.core.platform.IBmModelManager;
-import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
-import com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider;
-import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
+import com._1c.g5.wiring.ServiceInitialization;
 
 /**
- * Actively activates the EDT bundles that publish the mutation-readiness services.
+ * Drives 1C:EDT's own supported non-UI initialization before the headless host is exposed.
  *
- * <p>GUI workbench startup implicitly triggers OSGi lazy activation of these bundles by loading
- * their classes from workbench extension points (editors, wizards, views). The headless
- * application never touches those extension points, so the bundles stay resolved but never
- * active and their declared services never register with the framework. This boundary
- * reproduces that activation explicitly, using only public OSGi API ({@link FrameworkUtil} to
- * find the bundle that exports each required service interface, {@link Bundle#start(int)} to
- * activate it) so it stays correct across EDT releases without hard-coding bundle symbolic
- * names or versions.</p>
+ * <p>1C:EDT publishes its global services from bundles contributed to the
+ * {@code com._1c.g5.wiring.serviceProvider} extension point. Those bundles are activated by
+ * {@code com._1c.g5.wiring} only after someone calls the exported
+ * {@link ServiceInitialization#startInitialization()} - the product ships with
+ * {@code -De1c.wiring.managedInitialization=true}, which defers activation until that call.
+ * 1C:EDT's own auto-started {@code com.e1c.g5.dt.core.start} bundle makes exactly this call once
+ * the {@code IWorkspace} OSGi service appears. Requesting it here removes the dependency on that
+ * race for a host that must answer readiness probes deterministically, and it uses the same
+ * supported entry point rather than a private one.</p>
+ *
+ * <p>Deliberately <em>not</em> {@code Bundle.start()}: resolving a bundle through
+ * {@code FrameworkUtil.getBundle(serviceInterface)} finds the bundle that <em>exports the
+ * interface</em>, not the one that publishes the implementation, and starting bundles by hand
+ * bypasses the wiring and lifecycle ordering 1C:EDT depends on.</p>
+ *
+ * <p>Supported-version constraint: {@code com._1c.g5.wiring} package version {@code 2.4.0} or
+ * later, which is what 1C:EDT 2026.2.0.289 ships. On a runtime without it the class is missing and
+ * {@link #activate()} fails explicitly instead of leaving the host permanently not ready.</p>
  */
 public class EdtRuntimeBootstrap {
 
-    private static final List<String> REQUIRED_IMPLEMENTATION_BUNDLE_NAMES = List.of(
-            "com._1c.g5.v8.dt.core"); //$NON-NLS-1$
+    private final Supplier<Object> workspaceSupplier;
+    private final Runnable managedInitialization;
+    private final AtomicBoolean initializationRequested = new AtomicBoolean();
 
-    private static final List<Class<?>> REQUIRED_SERVICE_TYPES = List.of(
-            IConfigurationProvider.class,
-            IDtProjectManager.class,
-            IDerivedDataManagerProvider.class,
-            IBmModelManager.class,
-            IBmPlatformGlobalEditingContext.class);
+    /** Creates the production bootstrap backed by the Eclipse workspace and 1C:EDT wiring. */
+    public EdtRuntimeBootstrap() {
+        this(ResourcesPlugin::getWorkspace, ServiceInitialization::startInitialization);
+    }
 
     /**
-     * Starts the bundle exporting each required EDT service interface.
+     * @param workspaceSupplier supplies the Eclipse workspace, or {@code null} when unavailable
+     * @param managedInitialization requests 1C:EDT managed initialization
+     */
+    EdtRuntimeBootstrap(Supplier<Object> workspaceSupplier, Runnable managedInitialization) {
+        this.workspaceSupplier = workspaceSupplier;
+        this.managedInitialization = managedInitialization;
+    }
+
+    /**
+     * Opens the workspace and requests 1C:EDT managed initialization once.
      *
-     * @throws EdtRuntimeBootstrapException if a bundle exporting a required service type cannot
-     *     be resolved, or fails to activate
+     * @throws EdtRuntimeBootstrapException when no Eclipse workspace is available, or when this
+     *     1C:EDT runtime does not expose the supported managed-initialization entry point
      */
     public void activate() {
-        for (String symbolicName : REQUIRED_IMPLEMENTATION_BUNDLE_NAMES) {
-            activateBundle(symbolicName);
-        }
-        for (Class<?> serviceType : REQUIRED_SERVICE_TYPES) {
-            activateOwningBundle(serviceType);
-        }
-    }
-
-    private void activateBundle(String symbolicName) {
-        Bundle self = FrameworkUtil.getBundle(EdtRuntimeBootstrap.class);
-        if (self == null || self.getBundleContext() == null) {
-            throw new EdtRuntimeBootstrapException(
-                    "No OSGi bundle context is available for EDT runtime bootstrap"); //$NON-NLS-1$
-        }
-        Bundle owner = findBundle(self.getBundleContext(), symbolicName);
-        if (owner == null) {
-            throw new EdtRuntimeBootstrapException(
-                    "No bundle named " + symbolicName); //$NON-NLS-1$
-        }
-        activate(owner, symbolicName);
-    }
-
-    private void activateOwningBundle(Class<?> serviceType) {
-        Bundle owner = FrameworkUtil.getBundle(serviceType);
-        if (owner == null) {
-            throw new EdtRuntimeBootstrapException(
-                    "No bundle exports " + serviceType.getName()); //$NON-NLS-1$
-        }
-        activate(owner, serviceType.getName());
-    }
-
-    private static Bundle findBundle(BundleContext context, String symbolicName) {
-        for (Bundle bundle : context.getBundles()) {
-            if (symbolicName.equals(bundle.getSymbolicName())) {
-                return bundle;
-            }
-        }
-        return null;
-    }
-
-    private static void activate(Bundle owner, String purpose) {
+        // Touching ResourcesPlugin both proves the workspace is usable and publishes the
+        // IWorkspace service the EDT startup chain waits for.
+        Object workspace;
         try {
-            owner.start(Bundle.START_TRANSIENT);
-        } catch (BundleException e) {
+            workspace = workspaceSupplier.get();
+        } catch (RuntimeException | LinkageError e) {
             throw new EdtRuntimeBootstrapException(
-                    "Failed to activate " + owner.getSymbolicName() //$NON-NLS-1$
-                            + " for " + purpose, e); //$NON-NLS-1$
+                    "Eclipse workspace is unavailable for the headless EDT bootstrap", e); //$NON-NLS-1$
+        }
+        if (workspace == null) {
+            throw new EdtRuntimeBootstrapException(
+                    "Eclipse workspace is unavailable for the headless EDT bootstrap"); //$NON-NLS-1$
+        }
+
+        if (!initializationRequested.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            managedInitialization.run();
+        } catch (RuntimeException | LinkageError e) {
+            initializationRequested.set(false);
+            throw new EdtRuntimeBootstrapException(
+                    "EDT managed initialization is unavailable in this EDT runtime", e); //$NON-NLS-1$
         }
     }
 }

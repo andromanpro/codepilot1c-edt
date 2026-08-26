@@ -49,14 +49,13 @@ import com.codepilot1c.core.ui.ChatToolGate;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
-import sun.misc.Unsafe;
 
 public class GsdFeatureDisablementIntegrationTest {
 
     private static final String PROBE = "gsd_feature_gate_probe"; //$NON-NLS-1$
 
     private String previousJvmValue;
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
     private ToolRegistry registry;
 
     @Before
@@ -64,7 +63,7 @@ public class GsdFeatureDisablementIntegrationTest {
         previousJvmValue = System.getProperty(GsdFeatureGate.JVM_PROPERTY);
         System.setProperty(GsdFeatureGate.JVM_PROPERTY, "false"); //$NON-NLS-1$
         registry = isolatedRegistry();
-        previousRegistry = installRegistry(registry);
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
@@ -74,7 +73,7 @@ public class GsdFeatureDisablementIntegrationTest {
         } else {
             System.setProperty(GsdFeatureGate.JVM_PROPERTY, previousJvmValue);
         }
-        installRegistry(previousRegistry);
+        registryLease.close();
     }
 
     @Test
@@ -162,42 +161,11 @@ public class GsdFeatureDisablementIntegrationTest {
                 new EmptyPrompts(), McpHostConfig.MutationPolicy.ALLOW);
     }
 
-    private static ToolRegistry isolatedRegistry() throws Exception {
-        ToolRegistry result = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        Map<String, ITool> builtins = new HashMap<>();
-        builtins.put("read_file", new NamedTool("read_file")); //$NON-NLS-1$ //$NON-NLS-2$
-        builtins.put("gsd_get_state", new NamedTool("gsd_get_state")); //$NON-NLS-1$ //$NON-NLS-2$
-        setField(result, "tools", builtins); //$NON-NLS-1$
-        setField(result, "dynamicTools", //$NON-NLS-1$
-                new ConcurrentHashMap<String, ITool>());
-        setField(result, "dynamicToolCapabilities", //$NON-NLS-1$
-                new ConcurrentHashMap<String, DynamicToolCapability>());
-        setField(result, "effectiveToolSlots", new HashMap<>()); //$NON-NLS-1$
-        setField(result, "gson", new Gson()); //$NON-NLS-1$
-        setField(result, "descriptorRegistry", ToolDescriptorRegistry.createDetached()); //$NON-NLS-1$
-        setField(result, "augmentor", ToolSurfaceAugmentor.passthrough()); //$NON-NLS-1$
-        setField(result, "executionService", new ToolExecutionService(result)); //$NON-NLS-1$
+    private static ToolRegistry isolatedRegistry() {
+        ToolRegistry result = ToolRegistry.createDetached();
+        result.register(new NamedTool("read_file")); //$NON-NLS-1$
+        result.register(new NamedTool("gsd_get_state")); //$NON-NLS-1$
         return result;
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry replacement) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, replacement);
-        return previous;
-    }
-
-    private static void setField(Object target, String name, Object value) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
-    }
-
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
     }
 
     private static McpMessage request(String method, Object params) {

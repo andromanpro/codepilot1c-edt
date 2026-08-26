@@ -68,9 +68,13 @@ public class ToolRegistry {
     private static final String TOOL_PROVIDER_EXTENSION_POINT =
             "com.codepilot1c.core.toolProvider"; //$NON-NLS-1$
 
-    private static final Object INSTANCE_LOCK = new Object();
+    /* Kept for older test fixtures; all production synchronization uses the
+     * shared pair monitor below. */
+    @Deprecated
+    private static final Object INSTANCE_LOCK = RegistryPairLifecycle.LOCK;
     private static volatile ToolRegistry instance;
     private static volatile Function<ToolRegistry, List<ITool>> initializationOverride;
+    private static ScopedTestLease activeTestLease;
 
     private final Map<String, ITool> tools = new HashMap<>();
     private final Map<String, ITool> dynamicTools = new ConcurrentHashMap<>();
@@ -101,7 +105,7 @@ public class ToolRegistry {
         ToolRegistry current = instance;
         boolean initialize = false;
         if (current == null) {
-            synchronized (INSTANCE_LOCK) {
+            synchronized (RegistryPairLifecycle.LOCK) {
                 current = instance;
                 if (current == null) {
                     current = new ToolRegistry();
@@ -113,13 +117,85 @@ public class ToolRegistry {
         if (initialize) {
             current.initializeSingleton();
         }
-        return current.awaitInitialization();
+        ToolRegistry initialized = current.awaitInitialization();
+        // Legacy test fixtures created before the supported detached factory
+        // may not have run a constructor. Treat their absent lifecycle as an
+        // already supplied isolated instance; do not dereference it here.
+        if (initialized.initialization != null && initialized.initialization.isRefinementComplete()) {
+            initialized.ensureDescriptorOwnership();
+        }
+        return initialized;
+    }
+
+    /** Creates a complete, non-global registry composition for isolated tests. */
+    public static ToolRegistry createDetached() {
+        ToolRegistry detached = new ToolRegistry();
+        detached.descriptorRegistry = ToolDescriptorRegistry.createDetached();
+        detached.initialization.structuralReady();
+        detached.initialization.refinementComplete();
+        return detached;
+    }
+
+    /**
+     * Atomically installs an isolated registry with its matching descriptors.
+     * Nested or concurrent leases fail before any global state is mutated.
+     */
+    public static ScopedTestLease installScopedForTesting(ToolRegistry replacement) {
+        if (replacement == null) {
+            throw new IllegalArgumentException("Tool registry replacement is required"); //$NON-NLS-1$
+        }
+        synchronized (RegistryPairLifecycle.LOCK) {
+            if (activeTestLease != null) {
+                throw new IllegalStateException("A tool registry test lease is already active"); //$NON-NLS-1$
+            }
+            ToolRegistry previousRegistry = instance;
+            ToolDescriptorRegistry previousDescriptors =
+                    ToolDescriptorRegistry.replaceForScopedTestLease(replacement.descriptorRegistry());
+            instance = replacement;
+            ScopedTestLease lease = new ScopedTestLease(previousRegistry, previousDescriptors);
+            activeTestLease = lease;
+            return lease;
+        }
+    }
+
+    /** Scoped ownership returned by {@link #installScopedForTesting(ToolRegistry)}. */
+    public static final class ScopedTestLease implements AutoCloseable {
+        private final ToolRegistry previousRegistry;
+        private final ToolDescriptorRegistry previousDescriptors;
+        private boolean closed;
+
+        private ScopedTestLease(ToolRegistry previousRegistry,
+                ToolDescriptorRegistry previousDescriptors) {
+            this.previousRegistry = previousRegistry;
+            this.previousDescriptors = previousDescriptors;
+        }
+
+        @Override
+        public void close() {
+            synchronized (RegistryPairLifecycle.LOCK) {
+                if (closed) {
+                    return;
+                }
+                if (activeTestLease != this) {
+                    throw new IllegalStateException("Tool registry test lease ownership was lost"); //$NON-NLS-1$
+                }
+                instance = previousRegistry;
+                ToolDescriptorRegistry.replaceForScopedTestLease(previousDescriptors);
+                activeTestLease = null;
+                closed = true;
+            }
+        }
     }
 
     private void initializeSingleton() {
         ToolDescriptorRegistry.BootstrapLease descriptorBootstrap = null;
         List<RegistrationClaim> claims = List.of();
         try {
+            // A newly installed process-wide registry cannot safely inherit
+            // opaque descriptor slots from the registry it replaced. Claim
+            // ownership before the first structural publication; reentrant
+            // readers defer their ownership check until refinement completes.
+            descriptorRegistry().claimToolRegistryOwnership(this);
             descriptorBootstrap = descriptorRegistry().beginExternalBootstrap();
             Function<ToolRegistry, List<ITool>> override = initializationOverride;
             List<ITool> defaults = override != null
@@ -806,9 +882,26 @@ public class ToolRegistry {
                 ToolSlot current = currentSlot(captured.name());
                 if (current != null
                         && current.identity() == captured.slotIdentity()) {
-                    publishDescriptor(descriptors, current, current, descriptor);
+                    // Ownership hand-off intentionally starts from an empty
+                    // descriptor surface.  Only this current snapshot may
+                    // claim such an absent slot; normal stale publishers
+                    // still require their exact predecessor identity.
+                    ToolSlot predecessor = descriptors.get(captured.name()) == null
+                            ? null : current;
+                    publishDescriptor(descriptors, predecessor, current, descriptor);
                 }
             }
+        }
+    }
+
+    /**
+     * Rebinds the global descriptor store after a process-wide registry
+     * replacement, then republishes only this registry's live slots.
+     */
+    private void ensureDescriptorOwnership() {
+        ToolDescriptorRegistry descriptors = descriptorRegistry();
+        if (descriptors.claimToolRegistryOwnership(this)) {
+            refreshToolDescriptors();
         }
     }
 
@@ -973,6 +1066,14 @@ public class ToolRegistry {
             if (state == InitializationState.FAILED) {
                 throw propagateInitializationFailure(failure);
             }
+        }
+
+        private boolean isRefinementComplete() {
+            InitializationState current = state;
+            if (current == InitializationState.FAILED) {
+                throw propagateInitializationFailure(failure);
+            }
+            return current == InitializationState.REFINEMENT_COMPLETE;
         }
     }
 

@@ -720,13 +720,10 @@ public class GsdStateStoreTest {
         Path gsd = Files.createDirectories(root.resolve(GsdStateStore.GSD_DIR_NAME));
         Files.writeString(gsd.resolve(GsdStateStore.STATE_JSON), portablePopulatedStateJson(),
                 StandardCharsets.UTF_8);
+        // Capability is supplied by the actual filesystem provider.  In particular,
+        // it must not be inferred from OS name: modern macOS JDKs may support SDS.
         boolean secureDirectoryStream =
                 SecureDirectoryMutation.supportsSecureDirectoryStreams(root);
-        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT) //$NON-NLS-1$ //$NON-NLS-2$
-                .contains("mac")) { //$NON-NLS-1$
-            assertFalse("macOS default provider must exercise the native non-SDS path", //$NON-NLS-1$
-                    secureDirectoryStream);
-        }
         Map<String, String> before = snapshot(root);
 
         GsdState loaded = new GsdStateStore(root).loadReadOnly();
@@ -734,6 +731,8 @@ public class GsdStateStoreTest {
         assertEquals("portable-cycle", loaded.cycleId()); //$NON-NLS-1$
         assertEquals(7L, loaded.revision());
         assertEquals(before, snapshot(root));
+        assertEquals(secureDirectoryStream,
+                SecureDirectoryMutation.supportsSecureDirectoryStreams(root));
     }
 
     @Test

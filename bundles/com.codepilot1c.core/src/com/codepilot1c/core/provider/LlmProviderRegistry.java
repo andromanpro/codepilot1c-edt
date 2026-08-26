@@ -290,11 +290,17 @@ public final class LlmProviderRegistry {
         }
 
         // Fall back to legacy provider selection
-        IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
-        String providerId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, "claude"); //$NON-NLS-1$
-        ILlmProvider legacy = legacyProviders.get(providerId);
-        if (legacy != null && legacy.isConfigured()) {
-            return legacy;
+        try {
+            IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
+            String providerId = prefs.get(VibePreferenceConstants.PREF_PROVIDER_ID, "claude"); //$NON-NLS-1$
+            ILlmProvider legacy = legacyProviders.get(providerId);
+            if (legacy != null && legacy.isConfigured()) {
+                return legacy;
+            }
+        } catch (RuntimeException unavailablePreferences) {
+            // The registry is also used by standalone/headless embeddings. A
+            // missing Eclipse preference service must not prevent their
+            // already-configured providers from being selected below.
         }
 
         // Try any configured legacy provider
