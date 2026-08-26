@@ -160,9 +160,7 @@ public final class McpHostLlmBroker {
         // The normalized wire form is an idempotency key: identical requests share
         // exactly one provider invocation, while unrelated calls remain independent.
         String key = gson.toJson(payload);
-        Flight created = new Flight(key, provider);
-        Flight flight = activeFlights.putIfAbsent(key, created);
-        stream(exchange, request, flight != null ? flight : created, flight == null);
+        stream(exchange, request, key, provider);
     }
 
     /** Cancels the currently owned provider request, if any. */
@@ -170,22 +168,34 @@ public final class McpHostLlmBroker {
         activeFlights.values().forEach(this::cancelOwned);
     }
 
-    private void stream(HttpExchange exchange, LlmRequest request, Flight flight, boolean owner)
+    private void stream(HttpExchange exchange, LlmRequest request, String key, ILlmProvider provider)
             throws IOException {
         exchange.getResponseHeaders().set("Content-Type", SSE_CONTENT_TYPE); //$NON-NLS-1$
         exchange.getResponseHeaders().set("Cache-Control", "no-cache, no-store"); //$NON-NLS-1$ //$NON-NLS-2$
         exchange.getResponseHeaders().set("Connection", "keep-alive"); //$NON-NLS-1$ //$NON-NLS-2$
         exchange.getResponseHeaders().set("X-Accel-Buffering", "no"); //$NON-NLS-1$ //$NON-NLS-2$
-        exchange.sendResponseHeaders(200, 0);
         Subscriber subscriber = null;
+        Flight flight = null;
+        boolean owner = false;
         try (OutputStream output = exchange.getResponseBody()) {
             subscriber = new Subscriber(output);
-            if (!flight.addSubscriber(subscriber)) {
-                // The previous flight completed between map lookup and admission.
-                // Its removal is linearized before notifying waiters, so a fresh
-                // request can now be admitted without retaining stale state.
-                return;
+            while (true) {
+                Flight created = new Flight(key, provider);
+                Flight mapped = activeFlights.putIfAbsent(key, created);
+                flight = mapped != null ? mapped : created;
+                owner = mapped == null;
+                if (flight.addSubscriber(subscriber)) {
+                    break;
+                }
+                // A terminal flight can remain mapped until its owning handler
+                // releases it. Remove only the exact stale instance, then retry;
+                // compare-and-remove can never evict a newer owner flight.
+                activeFlights.remove(key, flight);
             }
+            // Admission happens before the response commits so a stale terminal
+            // flight can be retried without leaving a connected-only SSE stream.
+            exchange.sendResponseHeaders(200, 0);
+            final Flight admittedFlight = flight;
             // HttpServer does not commit a chunked response until at least one
             // byte is written.  A standards-compliant SSE comment establishes
             // the response without inventing an application event or waiting
@@ -193,23 +203,23 @@ public final class McpHostLlmBroker {
             writeComment(subscriber, ": connected\n\n"); //$NON-NLS-1$
             try {
                 if (owner) {
-                    startKeepalive(flight);
-                    flight.provider.streamComplete(request, chunk -> emitChunk(flight, chunk));
-                    if (!flight.terminal.get() && !flight.disconnected.get()) {
-                        emit(flight, "done", object("finishReason", "stop")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                        flight.terminal.set(true);
+                    startKeepalive(admittedFlight);
+                    admittedFlight.provider.streamComplete(request, chunk -> emitChunk(admittedFlight, chunk));
+                    if (!admittedFlight.terminal.get() && !admittedFlight.disconnected.get()) {
+                        emit(admittedFlight, "done", object("finishReason", "stop")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        admittedFlight.terminal.set(true);
                     }
                 } else {
-                    flight.awaitTerminal();
+                    admittedFlight.awaitTerminal();
                 }
             } catch (ClientDisconnectedException e) {
                 // Removing this subscriber below cancels only when nobody remains.
             } catch (Exception e) {
-                if (!flight.disconnected.get() && flight.terminal.compareAndSet(false, true)) {
+                if (!admittedFlight.disconnected.get() && admittedFlight.terminal.compareAndSet(false, true)) {
                     LOG.warn("LLM broker provider request failed: %s", e.getClass().getSimpleName()); //$NON-NLS-1$
                     BrokerFailure failure = brokerFailure(e);
                     try {
-                        emit(flight, "error", errorPayload(failure.code(), failure.message(), //$NON-NLS-1$
+                        emit(admittedFlight, "error", errorPayload(failure.code(), failure.message(), //$NON-NLS-1$
                                 failure.status()));
                     } catch (ClientDisconnectedException ignored) {
                         // Client left while the terminal error was being written.
@@ -217,10 +227,10 @@ public final class McpHostLlmBroker {
                 }
             }
         } finally {
-            if (subscriber != null) flight.removeSubscriber(subscriber);
+            if (subscriber != null && flight != null) flight.removeSubscriber(subscriber);
             // The handler that owns the provider releases only after the terminal
             // state has been broadcast. Joining handlers only detach themselves.
-            if (owner) {
+            if (owner && flight != null) {
                 release(flight);
             }
             exchange.close();
@@ -672,7 +682,7 @@ public final class McpHostLlmBroker {
 
         boolean addSubscriber(Subscriber subscriber) {
             synchronized (lifecycleLock) {
-                if (finished.get()) return false;
+                if (terminal.get() || finished.get()) return false;
                 subscribers.add(subscriber);
                 return true;
             }
