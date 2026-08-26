@@ -138,6 +138,17 @@ public class MetadataRequestValidationService {
         return validatedPayload;
     }
 
+    /** Consumes a token only for the exact canonical payload supplied to the mutation tool. */
+    public Map<String, Object> consumeToken(
+            String token,
+            ValidationOperation operation,
+            String projectName,
+            Map<String, Object> normalizedPayload
+    ) {
+        ensureRuntimeReady(projectName);
+        return tokenStore.consumeToken(token, operation, projectName, normalizedPayload);
+    }
+
     public Map<String, Object> normalizeCreatePayload(
             String projectName,
             String kindValue,

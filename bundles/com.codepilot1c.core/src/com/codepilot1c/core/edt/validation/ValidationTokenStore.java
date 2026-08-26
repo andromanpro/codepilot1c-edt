@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 import com.google.gson.Gson;
 
@@ -33,6 +34,15 @@ public class ValidationTokenStore {
 
     private final Gson gson = new Gson();
     private final ConcurrentHashMap<String, TokenEntry> tokens = new ConcurrentHashMap<>();
+    private final LongSupplier nowEpochMs;
+
+    public ValidationTokenStore() {
+        this(() -> Instant.now().toEpochMilli());
+    }
+
+    ValidationTokenStore(LongSupplier nowEpochMs) {
+        this.nowEpochMs = nowEpochMs;
+    }
 
     public static ValidationTokenStore getInstance() {
         return INSTANCE;
@@ -48,7 +58,7 @@ public class ValidationTokenStore {
         String payloadHash = payloadHash(normalizedPayload);
         @SuppressWarnings("unchecked")
         Map<String, Object> storedPayload = (Map<String, Object>) canonicalize(normalizedPayload);
-        long expiresAt = Instant.now().toEpochMilli() + TTL_MS;
+        long expiresAt = nowEpochMs.getAsLong() + TTL_MS;
         String token = UUID.randomUUID().toString();
         tokens.put(token, new TokenEntry(operation, normalizeProject(projectName), payloadHash, storedPayload, expiresAt));
         LOG.debug("[%s] Issued token=%s operation=%s project=%s payloadHash=%s expiresAt=%d activeTokens=%d", // $NON-NLS-1$
@@ -66,6 +76,19 @@ public class ValidationTokenStore {
             String token,
             ValidationOperation operation,
             String projectName
+    ) {
+        return consumeToken(token, operation, projectName, null);
+    }
+
+    /**
+     * Consumes a token only when the canonical mutation payload exactly matches
+     * the payload approved by {@link #issueToken(ValidationOperation, String, Map)}.
+     */
+    public Map<String, Object> consumeToken(
+            String token,
+            ValidationOperation operation,
+            String projectName,
+            Map<String, Object> normalizedPayload
     ) {
         String opId = LogSanitizer.newId("consume-token"); //$NON-NLS-1$
         cleanupExpired();
@@ -85,7 +108,7 @@ public class ValidationTokenStore {
                     "Unknown validation_token. Request a new token via edt_validate_request.", true); //$NON-NLS-1$
         }
 
-        long now = Instant.now().toEpochMilli();
+        long now = nowEpochMs.getAsLong();
         if (entry.expiresAtEpochMs < now) {
             tokens.remove(token);
             LOG.warn("[%s] Expired token=%s operation=%s project=%s", // $NON-NLS-1$
@@ -109,6 +132,15 @@ public class ValidationTokenStore {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_VALIDATION_TOKEN,
                     "validation_token does not match current operation/project.", false); //$NON-NLS-1$
+        }
+
+        if (normalizedPayload != null && !entry.payloadHash.equals(payloadHash(normalizedPayload))) {
+            LOG.warn("[%s] Token payload mismatch token=%s operation=%s project=%s", // $NON-NLS-1$
+                    opId, LogSanitizer.truncate(token, 80), operation, projectName);
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_VALIDATION_TOKEN,
+                    "validation_token does not match the exact validated payload. "
+                            + "Request a new token via edt_validate_request.", false); //$NON-NLS-1$
         }
 
         // One-time token: prevent replay on destructive mutations.
@@ -155,7 +187,7 @@ public class ValidationTokenStore {
     }
 
     private void cleanupExpired() {
-        long now = Instant.now().toEpochMilli();
+        long now = nowEpochMs.getAsLong();
         for (Map.Entry<String, TokenEntry> entry : tokens.entrySet()) {
             if (entry.getValue().expiresAtEpochMs < now) {
                 tokens.remove(entry.getKey());

@@ -39,6 +39,7 @@ import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
@@ -238,6 +239,12 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Unknown tool: " + toolName)); //$NON-NLS-1$
         }
 
+        if (!profileGateEnabled && isValidationTokenTool(tool, arguments)) {
+            return denyByProfile(request, session, toolName, arguments, null,
+                    "profile_required_for_scoped_confirmation", "profile", //$NON-NLS-1$ //$NON-NLS-2$
+                    "Configure an explicit engineering session profile before using a scoped validation token."); //$NON-NLS-1$
+        }
+
         if (profileGateEnabled) {
             if (sessionProfile == null) {
                 return denyByProfile(request, session, toolName, arguments, null,
@@ -256,8 +263,14 @@ public class McpHostRequestRouter {
                         gate.layer(), ruleDescription);
             }
             if (gate.decision() == ProfilePermissionGate.GateDecision.ASK) {
-                return denyByProfile(request, session, toolName, arguments, gate.resource(),
-                        "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
+                if (hasScopedValidationTokenConfirmation(tool, arguments)) {
+                    // A validation-token tool verifies and consumes its one-time token in its
+                    // own execution path. The explicitly configured profile remains the
+                    // authority that permits this tool; an MCP host has no interactive sink.
+                } else {
+                    return denyByProfile(request, session, toolName, arguments, gate.resource(),
+                            "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
+                }
             }
         }
 
@@ -271,7 +284,8 @@ public class McpHostRequestRouter {
         }
 
         EffectiveToolPolicy effectivePolicy = effectiveToolPolicy(resolution, arguments);
-        if (effectivePolicy.requiresConfirmation()) {
+        if (effectivePolicy.requiresConfirmation()
+                && !hasScopedValidationTokenConfirmation(tool, arguments)) {
             return denyConfirmationUnavailable(request, session, toolName, arguments);
         }
 
@@ -326,6 +340,28 @@ public class McpHostRequestRouter {
         LOG.warn("mcp_permission_denied tool=%s profile=%s layer=tool resource=null reason_code=%s", //$NON-NLS-1$
                 toolName, configuredProfileId, reasonCode);
         return ok(request, toMcpToolResult(denied));
+    }
+
+    /**
+     * A scoped validation token is a tool-contract confirmation substitute only
+     * in an explicitly configured and resolved profile. Token validity, exact
+     * payload binding, expiry, and one-time consumption remain enforced by the
+     * tool's validation service before it performs a mutation.
+     */
+    private boolean hasScopedValidationTokenConfirmation(
+            ITool tool, Map<String, Object> arguments) {
+        if (!profileGateEnabled || sessionProfile == null || tool == null
+                || arguments == null) {
+            return false;
+        }
+        return isValidationTokenTool(tool, arguments);
+    }
+
+    private boolean isValidationTokenTool(ITool tool, Map<String, Object> arguments) {
+        ToolMeta metadata = tool.getClass().getAnnotation(ToolMeta.class);
+        Object token = arguments.get("validation_token"); //$NON-NLS-1$
+        return metadata != null && metadata.requiresValidationToken()
+                && token != null && !String.valueOf(token).isBlank();
     }
 
     private PermissionDecision resolvePermissionDecision(String toolName, Map<String, Object> arguments) {

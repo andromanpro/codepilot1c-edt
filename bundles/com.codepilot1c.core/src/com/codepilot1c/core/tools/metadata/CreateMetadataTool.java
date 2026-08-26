@@ -172,7 +172,8 @@ public class CreateMetadataTool extends AbstractTool {
                 Map<String, Object> validatedPayload = validationService.consumeToken(
                         validationToken,
                         ValidationOperation.CREATE_METADATA,
-                        projectName);
+                        projectName,
+                        normalizedPayload);
                 LOG.debug("[%s] Validation token consumed successfully", opId); //$NON-NLS-1$
                 LOG.debug("[%s] Validated payload from token: %s", opId, // $NON-NLS-1$
                         LogSanitizer.truncate(LogSanitizer.redactSecrets(String.valueOf(validatedPayload)), 4000));

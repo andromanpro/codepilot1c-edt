@@ -49,6 +49,7 @@ import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.TaskTool;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolExecutionService;
@@ -492,6 +493,34 @@ public class McpHostProfileGateTest {
     }
 
     @Test
+    public void permittedProfileAdmitsExactlyScopedValidationTokenConfirmation() {
+        ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
+                "scoped_metadata_mutation")); //$NON-NLS-1$
+        String profileId = registerProfile(Set.of(tool.getName()),
+                List.of(PermissionRule.ask(tool.getName()).forAllResources()), false);
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
+                .route(call(tool.getName(), Map.of("validation_token", "test-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(isToolError(response));
+        assertEquals(1, tool.calls);
+    }
+
+    @Test
+    public void emptyProfileRejectsScopedValidationTokenWithRemediableError() {
+        ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
+                "scoped_metadata_mutation")); //$NON-NLS-1$
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, "") //$NON-NLS-1$
+                .route(call(tool.getName(), Map.of("validation_token", "test-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertTrue(text(response).contains("reason_code=profile_required_for_scoped_confirmation")); //$NON-NLS-1$
+        assertTrue(text(response).contains("Configure an explicit engineering session profile")); //$NON-NLS-1$
+        assertEquals(0, tool.calls);
+    }
+
+    @Test
     public void unknownConfiguredProfileFailsClosed() {
         CapturingTool tool = register(new CapturingTool("unknown_profile_tool", false)); //$NON-NLS-1$
         McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW,
@@ -806,7 +835,7 @@ public class McpHostProfileGateTest {
     private record TraceRun(McpHostSession session, String toolName) {
     }
 
-    private static final class CapturingTool implements ITool {
+    private static class CapturingTool implements ITool {
 
         private final String name;
         private final boolean mutating;
@@ -873,6 +902,15 @@ public class McpHostProfileGateTest {
         @Override
         public boolean isDestructive() {
             return destructive;
+        }
+    }
+
+    @ToolMeta(name = "scoped_metadata_mutation", mutating = true,
+            requiresValidationToken = true)
+    private static final class ScopedValidationTokenTool extends CapturingTool {
+
+        private ScopedValidationTokenTool(String name) {
+            super(name, true, true, true);
         }
     }
 
