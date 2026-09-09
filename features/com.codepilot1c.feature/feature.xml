@@ -12,31 +12,17 @@
    <license url="%licenseURL">%license</license>
 
    <!--
-      Scope the p2 install footprint to exactly what this product calls.
+      Keep the install root limited to CodePilot bundles only.
 
-      Importing the whole org.eclipse.tm.terminal.feature and org.eclipse.cdt.native features made
-      p2 satisfy every plugin in both, which added seven bundles to a host EDT instead of the two
-      that changed. Three of those seven are used nowhere in this product:
-      org.eclipse.tm.terminal.connector.ssh, org.eclipse.tm.terminal.connector.telnet and
-      org.eclipse.cdt.native.serial (it exports only org.eclipse.cdt.serial, which nothing here or
-      in the chain below imports). They were pure feature-import fallout and are now gone.
+      Do not list Eclipse Terminal/CDT implementation bundles here. When the update site is built
+      on a newer EDT/Eclipse target, explicit plugin entries turn into exact p2 IU requirements for
+      that target's bundle versions. Installing such a site into an older supported EDT then fails
+      before CodePilot is touched, for example when org.eclipse.cdt.core.native from Eclipse 2025-12
+      requires org.eclipse.core.runtime [3.33.0,4.0.0) but the host EDT ships an older runtime.
 
-      The remaining four are genuinely required and are included explicitly so the set is auditable
-      and an offline install resolves without reaching outside this site:
-
-        org.eclipse.tm.terminal.connector.local  - OpenTerminalHandler resolves the launcher id
-            org.eclipse.tm.terminal.connector.local.launcher.local at runtime; no OSGi manifest
-            header can express that, so nothing else would pull it in.
-        org.eclipse.tm.terminal.connector.process - Require-Bundle of connector.local, not optional.
-        org.eclipse.cdt.core.native              - exports org.eclipse.cdt.utils.pty and
-            org.eclipse.cdt.utils.spawner, which both connectors Import-Package as
-            mandatory:=native.
-        org.eclipse.cdt.core.* platform fragments - Fragment-Host org.eclipse.cdt.core.native;
-            they carry the native pty/spawner binaries. p2 installs only the one matching the host,
-            which is why a macOS install adds org.eclipse.cdt.core.macosx alone.
-
-      terminal.view.core / terminal.view.ui are not listed: the UI bundle declares those packages in
-      its Import-Package, so p2 resolves them against the host EDT, which already ships them.
+      CodePilot UI imports the terminal view API packages in its OSGi manifest; p2 resolves those
+      against the host EDT. The local terminal launcher is therefore host-provided compatibility,
+      not a CodePilot update-site payload.
    -->
 
    <plugin
@@ -51,74 +37,6 @@
          download-size="0"
          install-size="0"
          version="0.0.0"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.tm.terminal.connector.local"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.tm.terminal.connector.process"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.native"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.macosx"
-         os="macosx"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         fragment="true"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.linux"
-         os="linux"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         fragment="true"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.linux.x86_64"
-         os="linux"
-         arch="x86_64"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         fragment="true"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.win32"
-         os="win32"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         fragment="true"
-         unpack="false"/>
-
-   <plugin
-         id="org.eclipse.cdt.core.win32.x86_64"
-         os="win32"
-         arch="x86_64"
-         download-size="0"
-         install-size="0"
-         version="0.0.0"
-         fragment="true"
          unpack="false"/>
 
 

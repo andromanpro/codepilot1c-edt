@@ -18,19 +18,26 @@ import org.junit.Test;
  * third-party features, {@code org.eclipse.tm.terminal.feature} and {@code org.eclipse.cdt.native},
  * so p2 had to satisfy every plugin in both.</p>
  *
- * <p>Only one hidden requirement is real. {@code OpenTerminalHandler} resolves the launcher id
- * {@code org.eclipse.tm.terminal.connector.local.launcher.local} at runtime, which no OSGi manifest
- * header expresses, so the feature has to state it. Everything else that bundle needs -
- * {@code connector.process}, and the CDT native pty/spawner behind it - follows from that bundle's
- * own requirements. The SSH and Telnet connectors and {@code cdt.native.serial} are used nowhere and
- * came in purely as feature-import fallout.</p>
+ * <p>Later, explicit Terminal/CDT plugin entries caused the opposite compatibility failure: a site
+ * built on a newer EDT target published exact IUs such as {@code org.eclipse.cdt.core.native
+ * 6.6.0}, and p2 tried to install that bundle into older supported EDT builds whose
+ * {@code org.eclipse.core.runtime} did not satisfy it. Keep the feature root limited to CodePilot
+ * bundles; host-provided Eclipse Terminal APIs remain expressed by the UI bundle manifest.</p>
  */
 public class FeatureDependencyScopeTest {
 
-    /** Bundles nothing in this product references; importing whole features dragged them in. */
-    private static final String[] UNINTENDED = {
+    /** Platform-provided bundles must not be exact-version payload roots in this product feature. */
+    private static final String[] PLATFORM_PROVIDED = {
+            "org.eclipse.tm.terminal.connector.local", //$NON-NLS-1$
+            "org.eclipse.tm.terminal.connector.process", //$NON-NLS-1$
             "org.eclipse.tm.terminal.connector.ssh", //$NON-NLS-1$
             "org.eclipse.tm.terminal.connector.telnet", //$NON-NLS-1$
+            "org.eclipse.cdt.core.native", //$NON-NLS-1$
+            "org.eclipse.cdt.core.macosx", //$NON-NLS-1$
+            "org.eclipse.cdt.core.linux", //$NON-NLS-1$
+            "org.eclipse.cdt.core.linux.x86_64", //$NON-NLS-1$
+            "org.eclipse.cdt.core.win32", //$NON-NLS-1$
+            "org.eclipse.cdt.core.win32.x86_64", //$NON-NLS-1$
             "org.eclipse.cdt.native.serial", //$NON-NLS-1$
     };
 
@@ -50,28 +57,22 @@ public class FeatureDependencyScopeTest {
     }
 
     @Test
-    public void featureStatesTheOneRequirementNoManifestHeaderCanExpress() throws Exception {
-        String feature = readFeature();
+    public void featureDoesNotDeclareHostPlatformBundlesAsPayloadRoots() throws Exception {
+        String declarations = stripComments(readFeature());
 
-        assertTrue("the local terminal connector is resolved by id at runtime, so it must be" //$NON-NLS-1$
-                + " declared explicitly:\n" + feature, //$NON-NLS-1$
-                feature.contains("id=\"org.eclipse.tm.terminal.connector.local\"")); //$NON-NLS-1$
-        // Its own Require-Bundle and the native pty/spawner packages behind it.
-        assertTrue(feature, feature.contains("id=\"org.eclipse.tm.terminal.connector.process\"")); //$NON-NLS-1$
-        assertTrue(feature, feature.contains("id=\"org.eclipse.cdt.core.native\"")); //$NON-NLS-1$
-        assertTrue(feature, feature.contains("id=\"org.eclipse.cdt.core.macosx\"")); //$NON-NLS-1$
+        for (String providedByHost : PLATFORM_PROVIDED) {
+            assertFalse("feature.xml must not pin host platform bundle " + providedByHost //$NON-NLS-1$
+                    + " as an exact p2 IU requirement:\n" + declarations, //$NON-NLS-1$
+                    declarations.contains("id=\"" + providedByHost + "\"")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
     }
 
     @Test
-    public void featureNeverNamesABundleThisProductDoesNotUse() throws Exception {
-        String feature = readFeature();
+    public void featureContainsOnlyCodePilotBundleRoots() throws Exception {
+        String declarations = stripComments(readFeature());
 
-        // Compare declarations, not prose: the file documents by name why these are excluded.
-        String declarations = stripComments(feature);
-        for (String unintended : UNINTENDED) {
-            assertFalse("feature.xml must not require " + unintended + ":\n" + declarations, //$NON-NLS-1$ //$NON-NLS-2$
-                    declarations.contains(unintended));
-        }
+        assertTrue(declarations, declarations.contains("id=\"com.codepilot1c.core\"")); //$NON-NLS-1$
+        assertTrue(declarations, declarations.contains("id=\"com.codepilot1c.ui\"")); //$NON-NLS-1$
     }
 
     /** Located relative to the core bundle the build hands to Surefire. */
