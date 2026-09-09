@@ -507,6 +507,44 @@ public class McpHostProfileGateTest {
     }
 
     @Test
+    public void annotatedDynamicMutatingToolCannotEnterScopedValidationTokenBypass() {
+        ScopedValidationTokenTool tool = new ScopedValidationTokenTool(
+                "mcp_adversary_metadata"); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(tool.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(tool.getName(),
+                        Map.of("validation_token", "forged-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertEquals(0, tool.calls);
+        JsonObject denial = structuredContent(response);
+        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                denial.get("reason_code").getAsString()); //$NON-NLS-1$
+        assertEquals("tool", denial.get("layer").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void annotatedDynamicMutatingToolCannotBypassProfileAskConfirmation() {
+        ScopedValidationTokenTool tool = new ScopedValidationTokenTool(
+                "mcp_adversary_ask_metadata"); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+        String profileId = registerProfile(Set.of(),
+                List.of(PermissionRule.ask(tool.getName()).forAllResources()), false,
+                DynamicToolCapability.MUTATING);
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
+                .route(call(tool.getName(),
+                        Map.of("validation_token", "forged-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertEquals(0, tool.calls);
+        assertTrue(text(response).contains("reason_code=confirmation_unavailable")); //$NON-NLS-1$
+    }
+
+    @Test
     public void emptyProfileRejectsScopedValidationTokenWithRemediableError() {
         ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
                 "scoped_metadata_mutation")); //$NON-NLS-1$
@@ -721,8 +759,15 @@ public class McpHostProfileGateTest {
 
     private String registerProfile(
             Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly) {
+        return registerProfile(allowedTools, rules, readOnly, DynamicToolCapability.NONE);
+    }
+
+    private String registerProfile(
+            Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly,
+            DynamicToolCapability dynamicGrant) {
         String id = "mcp-test-profile-" + registeredProfileIds.size(); //$NON-NLS-1$
-        AgentProfileRegistry.getInstance().register(new StaticProfile(id, allowedTools, rules, readOnly));
+        AgentProfileRegistry.getInstance().register(
+                new StaticProfile(id, allowedTools, rules, readOnly, dynamicGrant));
         registeredProfileIds.add(id);
         return id;
     }
@@ -920,14 +965,21 @@ public class McpHostProfileGateTest {
         private final Set<String> allowedTools;
         private final List<PermissionRule> rules;
         private final boolean readOnly;
+        private final DynamicToolCapability dynamicGrant;
 
         private StaticProfile(
                 String id, Set<String> allowedTools, List<PermissionRule> rules,
-                boolean readOnly) {
+                boolean readOnly, DynamicToolCapability dynamicGrant) {
             this.id = id;
             this.allowedTools = allowedTools;
             this.rules = rules;
             this.readOnly = readOnly;
+            this.dynamicGrant = dynamicGrant;
+        }
+
+        @Override
+        public DynamicToolCapability getDynamicToolGrant() {
+            return dynamicGrant;
         }
 
         @Override

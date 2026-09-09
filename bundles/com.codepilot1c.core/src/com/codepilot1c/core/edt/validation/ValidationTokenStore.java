@@ -143,8 +143,15 @@ public class ValidationTokenStore {
                             + "Request a new token via edt_validate_request.", false); //$NON-NLS-1$
         }
 
-        // One-time token: prevent replay on destructive mutations.
-        tokens.remove(token);
+        // One-time token: atomically claim the exact validated entry so that
+        // concurrent consumers of the same token cannot both proceed.
+        if (!tokens.remove(token, entry)) {
+            LOG.warn("[%s] Token already claimed concurrently token=%s operation=%s project=%s", // $NON-NLS-1$
+                    opId, LogSanitizer.truncate(token, 80), operation, projectName);
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_VALIDATION_TOKEN,
+                    "validation_token was already consumed. Request a new token via edt_validate_request.", true); //$NON-NLS-1$
+        }
         LOG.debug("[%s] Token consumed token=%s operation=%s project=%s activeTokens=%d", // $NON-NLS-1$
                 opId, LogSanitizer.truncate(token, 80), operation, projectName, tokens.size());
         return entry.normalizedPayload;

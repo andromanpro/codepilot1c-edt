@@ -263,7 +263,7 @@ public class McpHostRequestRouter {
                         gate.layer(), ruleDescription);
             }
             if (gate.decision() == ProfilePermissionGate.GateDecision.ASK) {
-                if (hasScopedValidationTokenConfirmation(tool, arguments)) {
+                if (hasScopedValidationTokenConfirmation(resolution, arguments)) {
                     // A validation-token tool verifies and consumes its one-time token in its
                     // own execution path. The explicitly configured profile remains the
                     // authority that permits this tool; an MCP host has no interactive sink.
@@ -285,7 +285,7 @@ public class McpHostRequestRouter {
 
         EffectiveToolPolicy effectivePolicy = effectiveToolPolicy(resolution, arguments);
         if (effectivePolicy.requiresConfirmation()
-                && !hasScopedValidationTokenConfirmation(tool, arguments)) {
+                && !hasScopedValidationTokenConfirmation(resolution, arguments)) {
             return denyConfirmationUnavailable(request, session, toolName, arguments);
         }
 
@@ -344,17 +344,21 @@ public class McpHostRequestRouter {
 
     /**
      * A scoped validation token is a tool-contract confirmation substitute only
-     * in an explicitly configured and resolved profile. Token validity, exact
-     * payload binding, expiry, and one-time consumption remain enforced by the
-     * tool's validation service before it performs a mutation.
+     * for an exact built-in resolution in an explicitly configured and resolved
+     * profile. Dynamically registered implementations never enter this path:
+     * their annotation is untrusted runtime metadata and they are not guaranteed
+     * to verify or consume the token at all, so they stay fail-closed. Token
+     * validity, exact payload binding, expiry, and one-time consumption remain
+     * enforced by the tool's validation service before it performs a mutation.
      */
     private boolean hasScopedValidationTokenConfirmation(
-            ITool tool, Map<String, Object> arguments) {
-        if (!profileGateEnabled || sessionProfile == null || tool == null
+            ToolResolution resolution, Map<String, Object> arguments) {
+        if (!profileGateEnabled || sessionProfile == null || resolution == null
+                || resolution.dynamic() || resolution.tool() == null
                 || arguments == null) {
             return false;
         }
-        return isValidationTokenTool(tool, arguments);
+        return isValidationTokenTool(resolution.tool(), arguments);
     }
 
     private boolean isValidationTokenTool(ITool tool, Map<String, Object> arguments) {
