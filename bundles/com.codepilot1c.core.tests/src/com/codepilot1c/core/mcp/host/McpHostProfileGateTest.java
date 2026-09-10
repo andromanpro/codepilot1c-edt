@@ -545,17 +545,16 @@ public class McpHostProfileGateTest {
     }
 
     @Test
-    public void emptyProfileRejectsScopedValidationTokenWithRemediableError() {
+    public void legacyHostWithoutProfileAdmitsScopedValidationTokenConfirmation() {
         ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
                 "scoped_metadata_mutation")); //$NON-NLS-1$
 
         McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, "") //$NON-NLS-1$
                 .route(call(tool.getName(), Map.of("validation_token", "test-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertTrue(isToolError(response));
-        assertTrue(text(response).contains("reason_code=profile_required_for_scoped_confirmation")); //$NON-NLS-1$
-        assertTrue(text(response).contains("Configure an explicit engineering session profile")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
+        assertFalse(isToolError(response));
+        assertFalse(text(response).contains("profile_required_for_scoped_confirmation")); //$NON-NLS-1$
+        assertEquals(1, tool.calls);
     }
 
     @Test

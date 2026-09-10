@@ -239,12 +239,6 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Unknown tool: " + toolName)); //$NON-NLS-1$
         }
 
-        if (!profileGateEnabled && isValidationTokenTool(tool, arguments)) {
-            return denyByProfile(request, session, toolName, arguments, null,
-                    "profile_required_for_scoped_confirmation", "profile", //$NON-NLS-1$ //$NON-NLS-2$
-                    "Configure an explicit engineering session profile before using a scoped validation token."); //$NON-NLS-1$
-        }
-
         if (profileGateEnabled) {
             if (sessionProfile == null) {
                 return denyByProfile(request, session, toolName, arguments, null,
@@ -344,17 +338,20 @@ public class McpHostRequestRouter {
 
     /**
      * A scoped validation token is a tool-contract confirmation substitute only
-     * for an exact built-in resolution in an explicitly configured and resolved
-     * profile. Dynamically registered implementations never enter this path:
-     * their annotation is untrusted runtime metadata and they are not guaranteed
-     * to verify or consume the token at all, so they stay fail-closed. Token
+     * for an exact built-in resolution. Dynamically registered implementations
+     * never enter this path: their annotation is untrusted runtime metadata and
+     * they are not guaranteed to verify or consume the token at all, so they stay
+     * fail-closed. When a session profile is explicitly configured, the profile
+     * gate above remains the authority that permits the tool before this helper
+     * can be consulted. With no configured profile the legacy MCP host path is
+     * intentionally profile-neutral: validation-token tools may use their own
+     * token contract as the non-interactive confirmation substitute. Token
      * validity, exact payload binding, expiry, and one-time consumption remain
      * enforced by the tool's validation service before it performs a mutation.
      */
     private boolean hasScopedValidationTokenConfirmation(
             ToolResolution resolution, Map<String, Object> arguments) {
-        if (!profileGateEnabled || sessionProfile == null || resolution == null
-                || resolution.dynamic() || resolution.tool() == null
+        if (resolution == null || resolution.dynamic() || resolution.tool() == null
                 || arguments == null) {
             return false;
         }
