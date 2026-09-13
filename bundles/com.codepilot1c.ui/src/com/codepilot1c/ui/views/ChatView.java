@@ -1865,7 +1865,8 @@ public class ChatView extends ViewPart {
      * Builds an LLM request with the current conversation and available tools.
      */
     private LlmRequest buildRequestWithTools(TurnRuntime turn) {
-        LlmRequest.Builder requestBuilder = LlmRequest.builder();
+        LlmRequest.Builder requestBuilder = LlmRequest.builder()
+                .providerSessionId(viewSession().getId());
 
         // Add system prompt for 1C development
         requestBuilder.systemMessage(getSystemPrompt(turn));
