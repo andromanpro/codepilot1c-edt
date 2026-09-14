@@ -1006,8 +1006,8 @@ public class EdtDcsService {
                         value(element, "query", dialect), //$NON-NLS-1$
                         value(element, "dataSource", dialect), //$NON-NLS-1$
                         value(element, "presentationExpression", dialect), //$NON-NLS-1$
-                        value(element, "autoFillAvailableFields", dialect), //$NON-NLS-1$
-                        value(element, "useQueryGroupIfPossible", dialect), //$NON-NLS-1$
+                        queryFlagValue(element, autoFillFieldName(dialect), kind, dialect),
+                        queryFlagValue(element, "useQueryGroupIfPossible", kind, dialect), //$NON-NLS-1$
                         value(element, "availableAsField", dialect), //$NON-NLS-1$
                         value(element, "valueListAllowed", dialect), //$NON-NLS-1$
                         value(element, "denyIncompleteValues", dialect), //$NON-NLS-1$
@@ -1045,7 +1045,11 @@ public class EdtDcsService {
             boolean created = false;
             // A platform query data set must point at a data source, and the
             // schema must declare it. Missing either makes the file unreadable.
-            String dataSource = ensureDataSource(document, root, dialect, request.normalizedDataSource());
+            String requestedSource = request.normalizedDataSource();
+            if (dialect == DcsDialect.PLATFORM && requestedSource == null && dataset != null) {
+                requestedSource = value(dataset, "dataSource", dialect); //$NON-NLS-1$
+            }
+            String dataSource = ensureDataSource(document, root, dialect, requestedSource);
             if (dataset == null) {
                 dataset = createNode(document, dialect, DcsNodeKind.DATA_SET);
                 dataset.setAttributeNS(XSI_NS, "xsi:type", dialect.queryDataSetType); //$NON-NLS-1$
@@ -1053,10 +1057,23 @@ public class EdtDcsService {
                 appendInOrder(root, dataset, dialect);
                 created = true;
             }
+            normalizeChildOrder(dataset, dialect);
             setValue(dataset, "query", request.normalizedQuery(), dialect); //$NON-NLS-1$
             setValue(dataset, "dataSource", dataSource, dialect); //$NON-NLS-1$
-            setValue(dataset, "autoFillAvailableFields", request.autoFillAvailableFields(), dialect); //$NON-NLS-1$
-            setValue(dataset, "useQueryGroupIfPossible", request.useQueryGroupIfPossible(), dialect); //$NON-NLS-1$
+            Boolean autoFill = request.autoFillAvailableFields();
+            if (dialect == DcsDialect.PLATFORM) {
+                // Older builds emitted an element the platform cannot read. Preserve
+                // its opt-out unless the caller explicitly supplies a replacement.
+                Element legacy;
+                while ((legacy = childElement(dataset, "autoFillAvailableFields")) != null) { //$NON-NLS-1$
+                    if (autoFill == null && "false".equalsIgnoreCase(legacy.getTextContent().trim())) { //$NON-NLS-1$
+                        autoFill = Boolean.FALSE;
+                    }
+                    dataset.removeChild(legacy);
+                }
+            }
+            setQueryFlag(dataset, autoFillFieldName(dialect), autoFill, dialect);
+            setQueryFlag(dataset, "useQueryGroupIfPossible", request.useQueryGroupIfPossible(), dialect); //$NON-NLS-1$
             writeDcsDocument(externalSchema.file(), document);
             return new DcsUpsertQueryDatasetResult(
                     request.normalizedProjectName(),
@@ -1065,7 +1082,7 @@ public class EdtDcsService {
                     created,
                     value(dataset, "query", dialect), //$NON-NLS-1$
                     value(dataset, "dataSource", dialect), //$NON-NLS-1$
-                    boolValue(dataset, "autoFillAvailableFields", dialect, true), //$NON-NLS-1$
+                    boolValue(dataset, autoFillFieldName(dialect), dialect, true),
                     boolValue(dataset, "useQueryGroupIfPossible", dialect, true)); //$NON-NLS-1$
         } catch (MetadataOperationException e) {
             throw e;
@@ -1091,6 +1108,7 @@ public class EdtDcsService {
                 appendInOrder(root, parameter, dialect);
                 created = true;
             }
+            normalizeChildOrder(parameter, dialect);
             setValue(parameter, "expression", request.normalizedExpression(), dialect); //$NON-NLS-1$
             setValue(parameter, "availableAsField", request.availableAsField(), dialect); //$NON-NLS-1$
             setValue(parameter, "valueListAllowed", request.valueListAllowed(), dialect); //$NON-NLS-1$
@@ -1131,6 +1149,7 @@ public class EdtDcsService {
                 appendInOrder(root, field, dialect);
                 created = true;
             }
+            normalizeChildOrder(field, dialect);
             setValue(field, "expression", request.normalizedExpression(), dialect); //$NON-NLS-1$
             setValue(field, "presentationExpression", request.normalizedPresentationExpression(), dialect); //$NON-NLS-1$
             writeDcsDocument(externalSchema.file(), document);
@@ -1219,6 +1238,8 @@ public class EdtDcsService {
                 // what made xsi:type unresolvable and the export fail.
                 if (DcsDialect.of(root) == DcsDialect.EDT_DT) {
                     root.setAttribute("xmlns:schema", DCS_EDT_DT_NS); //$NON-NLS-1$
+                } else {
+                    removeIndentation(root);
                 }
                 root.setAttribute("xmlns:xsi", XSI_NS); //$NON-NLS-1$
             }
@@ -1317,6 +1338,27 @@ public class EdtDcsService {
         return raw == null || raw.isBlank() ? defaultValue : Boolean.parseBoolean(raw);
     }
 
+    private String autoFillFieldName(DcsDialect dialect) {
+        return dialect == DcsDialect.PLATFORM ? "autoFillFields" : "autoFillAvailableFields"; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private String queryFlagValue(Element element, String name, DcsNodeKind kind, DcsDialect dialect) {
+        return dialect == DcsDialect.PLATFORM && kind == DcsNodeKind.DATA_SET
+                ? Boolean.toString(boolValue(element, name, dialect, true)) : value(element, name, dialect);
+    }
+
+    private void setQueryFlag(Element element, String name, Boolean newValue, DcsDialect dialect) {
+        // The platform serializer writes only false; absence means true.
+        if (dialect == DcsDialect.PLATFORM && Boolean.TRUE.equals(newValue)) {
+            Element child;
+            while ((child = childElement(element, name)) != null) {
+                element.removeChild(child);
+            }
+        } else {
+            setValue(element, name, newValue, dialect);
+        }
+    }
+
     /** Writes a named value in the dialect of the owning document; {@code null} is a no-op. */
     private void setValue(Element element, String name, String newValue, DcsDialect dialect) {
         if (newValue == null) {
@@ -1329,7 +1371,7 @@ public class EdtDcsService {
         Element child = childElement(element, name);
         if (child == null) {
             child = element.getOwnerDocument().createElementNS(dialect.namespaceUri, name);
-            element.appendChild(child);
+            insertChildInOrder(element, child);
         }
         child.setTextContent(newValue);
     }
@@ -1337,6 +1379,89 @@ public class EdtDcsService {
     private void setValue(Element element, String name, Boolean newValue, DcsDialect dialect) {
         if (newValue != null) {
             setValue(element, name, Boolean.toString(newValue.booleanValue()), dialect);
+        }
+    }
+
+    /**
+     * Child sequence the platform validates, as EDT's DcsV8Serializer writes it. Only a query data
+     * set gets the data-set order: object and union data sets have a different content model, and
+     * an empty order leaves their children exactly as they are.
+     */
+    private List<String> platformChildOrder(Element element) {
+        return switch (localName(element)) {
+            case "dataSet" -> isQueryDataSet(element) //$NON-NLS-1$
+                    ? List.of("name", "field", "dataSource", "query", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                            "autoFillFields", "useQueryGroupIfPossible") //$NON-NLS-1$ //$NON-NLS-2$
+                    : List.of();
+            case "parameter" -> List.of("name", "title", "valueType", "value", "useRestriction", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                    "expression", "availableValue", "valueListAllowed", "availableAsField", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    "functionalOptionsParameter", "inputParameters", "denyIncompleteValues", "use"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            case "calculatedField" -> List.of("dataPath", "expression", "title", "useRestriction", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                    "presentationExpression", "orderExpression", "appearance", "availableValue", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    "valueType", "inputParameters"); //$NON-NLS-1$ //$NON-NLS-2$
+            case "dataSource" -> List.of("name", "dataSourceType", "connectionString"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            default -> List.of();
+        };
+    }
+
+    private boolean isQueryDataSet(Element dataSet) {
+        String type = dataSet.getAttributeNS(XSI_NS, "type"); //$NON-NLS-1$
+        int colon = type.indexOf(':');
+        return "DataSetQuery".equals(colon < 0 ? type : type.substring(colon + 1)); //$NON-NLS-1$
+    }
+
+    private int childPosition(List<String> order, Element child) {
+        int position = order.indexOf(localName(child));
+        return position < 0 ? order.size() : position;
+    }
+
+    private void insertChildInOrder(Element parent, Element child) {
+        List<String> order = platformChildOrder(parent);
+        int position = childPosition(order, child);
+        for (Node sibling = parent.getFirstChild(); sibling != null; sibling = sibling.getNextSibling()) {
+            if (sibling instanceof Element element && childPosition(order, element) > position) {
+                parent.insertBefore(child, sibling);
+                return;
+            }
+        }
+        parent.appendChild(child);
+    }
+
+    private void normalizeChildOrder(Element parent, DcsDialect dialect) {
+        if (dialect != DcsDialect.PLATFORM) {
+            return;
+        }
+        List<String> order = platformChildOrder(parent);
+        List<Element> children = new ArrayList<>();
+        for (Node child = parent.getFirstChild(); child != null; child = child.getNextSibling()) {
+            if (child instanceof Element element) {
+                children.add(element);
+            }
+        }
+        // Repair files written by older builds, keeping repeated fields and
+        // unknown elements in their original relative order via a stable sort.
+        children.sort((left, right) -> Integer.compare(childPosition(order, left), childPosition(order, right)));
+        children.forEach(parent::appendChild);
+    }
+
+    private void removeIndentation(Element parent) {
+        boolean hasElements = false;
+        for (Node child = parent.getFirstChild(); child != null; child = child.getNextSibling()) {
+            if (child instanceof Element element) {
+                hasElements = true;
+                removeIndentation(element);
+            }
+        }
+        // A transformer adds its own indentation. Keeping old structural
+        // whitespace would accumulate blank lines after every upsert.
+        if (hasElements) {
+            for (Node child = parent.getFirstChild(); child != null;) {
+                Node next = child.getNextSibling();
+                if (child.getNodeType() == Node.TEXT_NODE && child.getTextContent().isBlank()) {
+                    parent.removeChild(child);
+                }
+                child = next;
+            }
         }
     }
 
@@ -1399,16 +1524,17 @@ public class EdtDcsService {
         for (Node child = root.getFirstChild(); child != null; child = child.getNextSibling()) {
             if (child instanceof Element element && "dataSource".equals(localName(element))) { //$NON-NLS-1$
                 Element existing = childElement(element, "name"); //$NON-NLS-1$
-                return existing == null ? name : safe(existing.getTextContent());
+                String existingName = existing == null ? "" : safe(existing.getTextContent()); //$NON-NLS-1$
+                if (!existingName.isBlank() && (requested == null || requested.isBlank()
+                        || normalize(existingName).equals(normalize(requested)))) {
+                    normalizeChildOrder(element, dialect);
+                    return existingName;
+                }
             }
         }
         Element source = document.createElementNS(dialect.namespaceUri, "dataSource"); //$NON-NLS-1$
-        Element sourceName = document.createElementNS(dialect.namespaceUri, "name"); //$NON-NLS-1$
-        sourceName.setTextContent(name);
-        source.appendChild(sourceName);
-        Element sourceType = document.createElementNS(dialect.namespaceUri, "dataSourceType"); //$NON-NLS-1$
-        sourceType.setTextContent("Local"); //$NON-NLS-1$
-        source.appendChild(sourceType);
+        setValue(source, "name", name, dialect); //$NON-NLS-1$
+        setValue(source, "dataSourceType", "Local", dialect); //$NON-NLS-1$ //$NON-NLS-2$
         appendInOrder(root, source, dialect);
         return name;
     }
