@@ -105,6 +105,7 @@ import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.form.service.item.IFormItemMovementService;
+import com._1c.g5.v8.dt.form.service.naming.IFormItemNamingService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
 import com._1c.g5.v8.dt.mcore.DateFractions;
 import com._1c.g5.v8.dt.mcore.Event;
@@ -1539,6 +1540,9 @@ public class EdtMetadataService {
         List<String> summaries = new ArrayList<>();
         IFormItemManagementService itemManagementService = resolveOptionalFormItemManagementService();
         IFormItemMovementService itemMovementService = resolveOptionalFormItemMovementService();
+        IFormItemNamingService itemNamingService = itemManagementService != null
+                ? resolveOptionalFormItemNamingService()
+                : null;
         int operationIndex = 1;
         for (Map<String, Object> operation : operations) {
             String rawOp = asString(operation.get("op")); //$NON-NLS-1$
@@ -1576,6 +1580,7 @@ public class EdtMetadataService {
                             groupType,
                             index,
                             itemManagementService);
+                    applyRequestedItemName(group, parentContainer, formModel, name, itemNamingService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "group_type"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(group, effectiveSet);
@@ -1608,6 +1613,7 @@ public class EdtMetadataService {
                             fieldDataPathValue,
                             index,
                             itemManagementService);
+                    applyRequestedItemName(field, parentContainer, formModel, name, itemNamingService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(field, effectiveSet);
@@ -1638,6 +1644,7 @@ public class EdtMetadataService {
                             dataPathValue,
                             index,
                             itemManagementService);
+                    applyRequestedItemName(table, parentContainer, formModel, name, itemNamingService);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(
                             set, "name", "title", "type", "data_path", "datapath"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
@@ -1752,6 +1759,7 @@ public class EdtMetadataService {
                             resolvedCommand,
                             index,
                             itemManagementService);
+                    applyRequestedItemName(button, parentContainer, formModel, name, itemNamingService);
                     Map<String, Object> set = extractOperationSet(operation);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "command_name", "command"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                     if (!effectiveSet.isEmpty()) {
@@ -2301,7 +2309,8 @@ public class EdtMetadataService {
         return set;
     }
 
-    private IFormItemManagementService resolveOptionalFormItemManagementService() {
+    /** Package-private so that tests can substitute EDT's item service; production resolves it from the form bundle. */
+    IFormItemManagementService resolveOptionalFormItemManagementService() {
         try {
             Bundle formBundle = requireBundle(FORM_BUNDLE_ID);
             Object injector = resolveFormInjector(formBundle);
@@ -2311,6 +2320,62 @@ public class EdtMetadataService {
                     e.getMessage());
             return null;
         }
+    }
+
+    /** EDT's naming service for form items; package-private for the same test substitution. */
+    IFormItemNamingService resolveOptionalFormItemNamingService() {
+        try {
+            Bundle formBundle = requireBundle(FORM_BUNDLE_ID);
+            Object injector = resolveFormInjector(formBundle);
+            return (IFormItemNamingService) resolveInjectorService(injector, IFormItemNamingService.class);
+        } catch (MetadataOperationException | ReflectiveOperationException e) {
+            LOG.warn("IFormItemNamingService unavailable, requested names are set directly: %s", //$NON-NLS-1$
+                    e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Gives a new item the name the caller asked for.
+     *
+     * <p>EDT's item service does not always use the descriptor name: a command button is named after
+     * its command ({@code ФормаОбновить} in the form command bar, {@code Обновить} elsewhere), whatever
+     * name was requested (FormItemManagementService.addButton, EDT 2025.2.3). The tool reported the
+     * button as created while a following move_item/set_item by the requested name answered "Form item
+     * not found". EDT's naming service renames the item together with its dependent parts (the extended
+     * tooltip) and keeps the name unique; without it the name is set directly.</p>
+     */
+    private void applyRequestedItemName(FormItem item, FormItemContainer parent, Form formModel, String name,
+            IFormItemNamingService namingService) {
+        if (item == null || name == null || name.isBlank() || name.equals(item.getName())) {
+            return;
+        }
+        // rename, not setUniqueNameWithChildren: the latter applies EDT's naming convention and turned
+        // КнопкаОбновить into ФормаКнопкаОбновить inside the form command bar (EDT 2025.2.3).
+        // rename sets exactly the requested name, renames the dependent parts (extended tooltip, context
+        // menu) after it and refuses a name another item already has.
+        if (namingService != null) {
+            try {
+                namingService.rename(name, item);
+                return;
+            } catch (IllegalArgumentException e) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                        "Cannot name the new " + item.eClass().getName() + " '" + name + "': " + e.getMessage(), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        false);
+            } catch (RuntimeException e) {
+                LOG.warn("IFormItemNamingService rename failed for %s, setting the name directly: %s", //$NON-NLS-1$
+                        name, e.getMessage());
+            }
+        }
+        FormItem holder = FormItemTree.find(formModel, null, name);
+        if (holder != null && holder != item) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "Form item name is already used: " + name + " (" + FormItemTree.describe(holder) + ")", //$NON-NLS-1$ //$NON-NLS-2$
+                    false);
+        }
+        item.setName(name);
     }
 
     /**
@@ -6937,11 +7002,7 @@ public class EdtMetadataService {
             if (owner == null || ownerUri == null) {
                 return null;
             }
-            String resourcePath = toProjectRelativePath(project, ownerUri);
-            if (isUsableMetadataResourcePath(resourcePath) && resourcePath.toLowerCase(Locale.ROOT).endsWith(".mdo")) { //$NON-NLS-1$
-                return resourcePath;
-            }
-            return null;
+            return ownerMdoPathFromUri(project, ownerUri);
         }
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
@@ -6958,8 +7019,26 @@ public class EdtMetadataService {
             if (owner == null || ownerUri == null) {
                 return null;
             }
-            return toProjectRelativePath(project, ownerUri);
+            return ownerMdoPathFromUri(project, ownerUri);
         });
+    }
+
+    /**
+     * Project-relative path of an owner .mdo taken from its object URI, or {@code null} when the URI
+     * does not point at one.
+     *
+     * <p>An object created in the current EDT session has a BM URI, not a file one: its path is the
+     * FQN ({@code Document.X}). The configuration branch used that string as the file to poll, never
+     * found it, and create_form answered FORM_MATERIALIZATION_TIMEOUT after the full wait although the
+     * form was created and exported (measured 2026-09-15). {@code null} lets the caller fall back to
+     * the {@code src/<Kind>/<Name>/<Name>.mdo} path, as the external-object branch always did.</p>
+     */
+    String ownerMdoPathFromUri(IProject project, URI ownerUri) {
+        String resourcePath = toProjectRelativePath(project, ownerUri);
+        if (isUsableMetadataResourcePath(resourcePath) && resourcePath.toLowerCase(Locale.ROOT).endsWith(".mdo")) { //$NON-NLS-1$
+            return resourcePath;
+        }
+        return null;
     }
 
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
