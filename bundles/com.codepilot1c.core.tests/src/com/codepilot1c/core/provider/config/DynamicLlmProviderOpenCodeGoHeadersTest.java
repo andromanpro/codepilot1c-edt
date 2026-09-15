@@ -56,6 +56,17 @@ public class DynamicLlmProviderOpenCodeGoHeadersTest {
         assertFalse(http.headers().firstValue("x-opencode-session").isPresent()); //$NON-NLS-1$
     }
 
+    @Test
+    public void nonStreamingFallbackPreservesOpencodeSessionHeader() throws Exception {
+        DynamicLlmProvider provider = provider("https://opencode.ai/zen/go/v1"); //$NON-NLS-1$
+        LlmRequest original = request("session-fallback"); //$NON-NLS-1$
+
+        LlmRequest fallback = buildNonStreamingFallbackRequest(provider, original);
+        HttpRequest http = buildHttpRequest(provider, fallback);
+
+        assertEquals("session-fallback", header(http, "x-opencode-session")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     private static DynamicLlmProvider provider(String baseUrl) {
         LlmProviderConfig config = new LlmProviderConfig();
         config.setName("test-provider"); //$NON-NLS-1$
@@ -84,6 +95,14 @@ public class DynamicLlmProviderOpenCodeGoHeadersTest {
                 "buildHttpRequest", String.class, LlmRequest.class); //$NON-NLS-1$
         requestBuilder.setAccessible(true);
         return (HttpRequest) requestBuilder.invoke(provider, body, request);
+    }
+
+    private static LlmRequest buildNonStreamingFallbackRequest(DynamicLlmProvider provider,
+            LlmRequest request) throws Exception {
+        Method fallbackBuilder = DynamicLlmProvider.class.getDeclaredMethod(
+                "buildNonStreamingFallbackRequest", LlmRequest.class); //$NON-NLS-1$
+        fallbackBuilder.setAccessible(true);
+        return (LlmRequest) fallbackBuilder.invoke(provider, request);
     }
 
     private static String header(HttpRequest request, String name) {

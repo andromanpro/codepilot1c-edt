@@ -450,7 +450,8 @@ public class DynamicLlmProvider implements ILlmProvider {
                 .maxTokens(request.getMaxTokens())
                 .temperature(request.getTemperature())
                 .stream(false)
-                .toolChoice(request.getToolChoice());
+                .toolChoice(request.getToolChoice())
+                .providerSessionId(request.getProviderSessionId());
         if (request.hasTools()) {
             builder.tools(request.getTools());
         }
