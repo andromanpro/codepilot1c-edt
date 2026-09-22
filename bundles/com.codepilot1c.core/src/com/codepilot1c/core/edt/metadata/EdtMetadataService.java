@@ -11074,10 +11074,14 @@ public class EdtMetadataService {
     }
 
     private void addTopLevelObject(Configuration configuration, MetadataKind kind, MdObject object) {
-        // In EDT model, top-level typed collections may be backed by generic content.
-        // First, ensure generic content link exists.
-        addMdObjectIfMissing(configuration.getContent(), object);
-
+        // NOT into configuration.getContent(): that list is the 8.1 compatibility leftover — the
+        // membership of objects in the ROOT NODE of the old subsystem tree ("Состав" of the
+        // configuration, cleared and hidden by the platform once 8.1 compatibility is off; the EDT
+        // metamodel marks it "not support"). Typed collections are not backed by it: a stock BSP
+        // 3.1.12 and the vendor configuration both ship thousands of objects with <Content/> empty.
+        // The former "ensure generic content link exists" line quietly grew that legacy list by one
+        // entry per created object — 155 of them in wms.tnext by 2026-09-22, invisible in EDT
+        // metadata comparison (CONFIGURATION__CONTENT is excluded there) and visible only in git.
         switch (kind) {
             case CATALOG -> configuration.getCatalogs().add((com._1c.g5.v8.dt.metadata.mdclass.Catalog) object);
             case DOCUMENT -> configuration.getDocuments().add((Document) object);
