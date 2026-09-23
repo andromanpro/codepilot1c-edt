@@ -17,10 +17,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import com.codepilot1c.core.agent.profiles.AgentCapability;
-import com.codepilot1c.core.agent.profiles.AgentProfile;
-import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
-import com.codepilot1c.core.agent.profiles.ProfileToolAccess;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
@@ -33,13 +30,8 @@ import com.codepilot1c.core.mcp.model.McpPromptResult;
 import com.codepilot1c.core.mcp.model.McpResource;
 import com.codepilot1c.core.mcp.model.McpResourceContent;
 import com.codepilot1c.core.model.ToolCall;
-import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionDecision;
-import com.codepilot1c.core.permissions.PermissionManager;
-import com.codepilot1c.core.permissions.PermissionRule;
-import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.tools.ITool;
-import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
@@ -55,11 +47,8 @@ public class McpHostRequestRouter {
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(McpHostRequestRouter.class);
     private static final String SERVER_NAME = "CodePilot1C MCP Host"; //$NON-NLS-1$
     private static final String SERVER_VERSION = "1.3.0"; //$NON-NLS-1$
-    private static final String COMPAT_PROFILE_ID = "mcp-host"; //$NON-NLS-1$
-    /** Global rules remain exclusively in {@link #resolvePermissionDecision}. */
-    private static final List<PermissionRule> NO_GLOBAL_RULES = List.of();
-    private static final ToolExecutionContext LEGACY_CONTEXT =
-            new ToolExecutionContext(COMPAT_PROFILE_ID, AgentCapability.MUTATING, 0);
+    private static final ToolExecutionContext MCP_CONTEXT =
+            new ToolExecutionContext("mcp-host", AgentCapability.MUTATING, 0); //$NON-NLS-1$
     private static final List<String> SUPPORTED_PROTOCOLS = List.of(
         "2025-11-25", //$NON-NLS-1$
         "2025-06-18", //$NON-NLS-1$
@@ -71,10 +60,6 @@ public class McpHostRequestRouter {
     private final List<IMcpResourceProvider> resourceProviders;
     private final IMcpPromptProvider promptProvider;
     private final McpHostConfig.MutationPolicy defaultMutationPolicy;
-    private final String configuredProfileId;
-    private final AgentProfile sessionProfile;
-    private final boolean profileGateEnabled;
-    private final ToolExecutionContext executionContext;
     private final McpContractMetadataService contractMetadataService;
 
     public McpHostRequestRouter(
@@ -119,24 +104,9 @@ public class McpHostRequestRouter {
         this.defaultMutationPolicy = defaultMutationPolicy != null
             ? defaultMutationPolicy
             : McpHostConfig.MutationPolicy.ALLOW;
-        this.configuredProfileId = sessionProfileId != null ? sessionProfileId.trim() : ""; //$NON-NLS-1$
-        if (configuredProfileId.isEmpty()) {
-            this.profileGateEnabled = false;
-            this.sessionProfile = null;
-            this.executionContext = LEGACY_CONTEXT;
-        } else {
-            this.profileGateEnabled = true;
-            this.sessionProfile = AgentProfileRegistry.getInstance()
-                    .getAvailableProfile(configuredProfileId)
-                    .orElse(null);
-            if (sessionProfile != null) {
-                this.executionContext = ToolExecutionContext.of(sessionProfile, 0);
-            } else {
-                this.executionContext = LEGACY_CONTEXT;
-                LOG.error("MCP host session profile is not resolvable: %s; all tool calls will be denied", //$NON-NLS-1$
-                        configuredProfileId);
-            }
-        }
+        // Retain the constructor parameter for persisted configurations and
+        // callers compiled against the older API. MCP authorization is always
+        // independent of agent profiles, including unknown profile IDs.
         this.contractMetadataService = contractMetadataService != null
             ? contractMetadataService
             : new McpContractMetadataService();
@@ -239,37 +209,8 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Unknown tool: " + toolName)); //$NON-NLS-1$
         }
 
-        if (profileGateEnabled) {
-            if (sessionProfile == null) {
-                return denyByProfile(request, session, toolName, arguments, null,
-                        "profile_unresolved", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-            if (!ProfileToolAccess.allows(sessionProfile, resolution)) {
-                return denyByProfile(request, session, toolName, arguments, null,
-                        "tool_not_in_profile", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-            ProfilePermissionGate.GateResult gate = ProfilePermissionGate.evaluate(
-                    sessionProfile.getDefaultPermissions(), NO_GLOBAL_RULES, toolName, arguments);
-            String ruleDescription = gate.rule() != null ? gate.rule().getDescription() : null;
-            if (gate.isDenied()) {
-                return denyByProfile(request, session, toolName, arguments, gate.resource(),
-                        "denied_by_" + gate.layer() + "_rule", //$NON-NLS-1$ //$NON-NLS-2$
-                        gate.layer(), ruleDescription);
-            }
-            if (gate.decision() == ProfilePermissionGate.GateDecision.ASK) {
-                if (hasScopedValidationTokenConfirmation(resolution, arguments)) {
-                    // A validation-token tool verifies and consumes its one-time token in its
-                    // own execution path. The explicitly configured profile remains the
-                    // authority that permits this tool; an MCP host has no interactive sink.
-                } else {
-                    return denyByProfile(request, session, toolName, arguments, gate.resource(),
-                            "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
-                }
-            }
-        }
-
         Instant startedAt = Instant.now();
-        PermissionDecision decision = resolvePermissionDecision(toolName, arguments);
+        PermissionDecision decision = resolvePermissionDecision();
 
         if (decision == PermissionDecision.DENY || decision == PermissionDecision.ASK) {
             writeMcpToolTrace(session, toolName, arguments, decision, ToolResult.failure(
@@ -277,21 +218,17 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Tool execution denied by permission policy: " + decision)); //$NON-NLS-1$
         }
 
-        EffectiveToolPolicy effectivePolicy = effectiveToolPolicy(resolution, arguments);
-        if (effectivePolicy.requiresConfirmation()
-                && !hasScopedValidationTokenConfirmation(resolution, arguments)) {
-            return denyConfirmationUnavailable(request, session, toolName, arguments);
-        }
-
         ToolResult toolResult;
         try {
             int timeoutSeconds = "qa_run".equals(toolName) ? 3600 : 120; //$NON-NLS-1$
             ToolCall call = new ToolCall(String.valueOf(request.getRawId()), toolName, null);
             var dispatched = registry.getExecutionService().executeIfCurrent(
-                    call, arguments, null, null, executionContext, resolution);
+                    call, arguments, null, null, MCP_CONTEXT, resolution);
             if (dispatched.isEmpty()) {
-                return denyConfirmationUnavailable(
-                        request, session, toolName, arguments);
+                ToolResult stale = ToolExecutionService.staleResolutionResult(toolName);
+                writeMcpToolTrace(session, toolName, arguments, PermissionDecision.DENY,
+                        stale, Duration.between(startedAt, Instant.now()), null);
+                return ok(request, toMcpToolResult(stale));
             }
             toolResult = dispatched.get()
                     .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
@@ -310,70 +247,13 @@ public class McpHostRequestRouter {
         return ok(request, toMcpToolResult(toolResult));
     }
 
-    private McpMessage denyByProfile(
-            McpMessage request, McpHostSession session, String toolName,
-            Map<String, Object> arguments, String resource, String reasonCode,
-            String layer, String ruleDescription) {
-        ToolResult denied = PermissionDenialPayload.denied(
-                toolName, configuredProfileId, resource, reasonCode, layer, ruleDescription);
-        writeMcpToolTrace(session, toolName, arguments, PermissionDecision.DENY,
-                denied, Duration.ZERO, null);
-        LOG.warn("mcp_permission_denied tool=%s profile=%s layer=%s resource=%s reason_code=%s", //$NON-NLS-1$
-                toolName, configuredProfileId, layer, resource, reasonCode);
-        return ok(request, toolError(denied.getErrorMessage()));
-    }
-
-    private McpMessage denyConfirmationUnavailable(
-            McpMessage request, McpHostSession session, String toolName,
-            Map<String, Object> arguments) {
-        String reasonCode = "confirmation_unavailable_tool_policy"; //$NON-NLS-1$
-        ToolResult denied = PermissionDenialPayload.denied(
-                toolName, configuredProfileId, null, reasonCode, "tool", null); //$NON-NLS-1$
-        writeMcpToolTrace(session, toolName, arguments, PermissionDecision.DENY,
-                denied, Duration.ZERO, null);
-        LOG.warn("mcp_permission_denied tool=%s profile=%s layer=tool resource=null reason_code=%s", //$NON-NLS-1$
-                toolName, configuredProfileId, reasonCode);
-        return ok(request, toMcpToolResult(denied));
-    }
-
-    /**
-     * A scoped validation token is a tool-contract confirmation substitute only
-     * for an exact built-in resolution. Dynamically registered implementations
-     * never enter this path: their annotation is untrusted runtime metadata and
-     * they are not guaranteed to verify or consume the token at all, so they stay
-     * fail-closed. When a session profile is explicitly configured, the profile
-     * gate above remains the authority that permits the tool before this helper
-     * can be consulted. With no configured profile the legacy MCP host path is
-     * intentionally profile-neutral: validation-token tools may use their own
-     * token contract as the non-interactive confirmation substitute. Token
-     * validity, exact payload binding, expiry, and one-time consumption remain
-     * enforced by the tool's validation service before it performs a mutation.
-     */
-    private boolean hasScopedValidationTokenConfirmation(
-            ToolResolution resolution, Map<String, Object> arguments) {
-        if (resolution == null || resolution.dynamic() || resolution.tool() == null
-                || arguments == null) {
-            return false;
-        }
-        return isValidationTokenTool(resolution.tool(), arguments);
-    }
-
-    private boolean isValidationTokenTool(ITool tool, Map<String, Object> arguments) {
-        ToolMeta metadata = tool.getClass().getAnnotation(ToolMeta.class);
-        Object token = arguments.get("validation_token"); //$NON-NLS-1$
-        return metadata != null && metadata.requiresValidationToken()
-                && token != null && !String.valueOf(token).isBlank();
-    }
-
-    private PermissionDecision resolvePermissionDecision(String toolName, Map<String, Object> arguments) {
+    private PermissionDecision resolvePermissionDecision() {
         return switch (defaultMutationPolicy) {
             case ALLOW -> PermissionDecision.ALLOW;
             case DENY -> PermissionDecision.DENY;
-            case ASK -> PermissionManager.getInstance()
-                .check(toolName, "mcp_host_call", arguments) //$NON-NLS-1$
-                .orTimeout(5, TimeUnit.SECONDS)
-                .exceptionally(e -> PermissionDecision.DENY)
-                .join();
+            // MCP has no interactive approval sink. An ASK host cannot grant
+            // approval through the in-app agent's global permission manager.
+            case ASK -> PermissionDecision.ASK;
         };
     }
 
@@ -419,19 +299,11 @@ public class McpHostRequestRouter {
         List<Map<String, Object>> out = new ArrayList<>();
         ToolRegistry registry = ToolRegistry.getInstance();
         ToolSurfaceContext surfaceContext = registry.createRuntimeSurfaceContext(
-                sessionProfile != null ? sessionProfile : ToolSurfaceContext.defaultProfile());
+                ToolSurfaceContext.defaultProfile());
         for (ToolResolution resolution : registry.getModelFacingToolResolutions()) {
             ITool tool = resolution.tool();
             if (!exposurePolicy.isExposed(tool.getName())) {
                 continue;
-            }
-            if (profileGateEnabled) {
-                if (sessionProfile == null) {
-                    continue;
-                }
-                if (!ProfileToolAccess.allows(sessionProfile, resolution)) {
-                    continue;
-                }
             }
             var effectiveTool = registry.getToolDefinition(tool, surfaceContext);
             Map<String, Object> item = new HashMap<>();
@@ -439,7 +311,7 @@ public class McpHostRequestRouter {
             item.put("description", effectiveTool.getDescription()); //$NON-NLS-1$
             item.put("inputSchema", parseSchema(effectiveTool.getParametersSchema())); //$NON-NLS-1$
             addToolContractMetadata(item, tool,
-                    effectiveToolPolicy(resolution, Map.of()));
+                    effectiveToolPolicy(resolution));
             out.add(item);
         }
         return out;
@@ -462,18 +334,12 @@ public class McpHostRequestRouter {
         if (!annotations.isEmpty()) {
             item.put("annotations", annotations); //$NON-NLS-1$
         }
-        if (effectivePolicy.requiresConfirmation()) {
-            item.put("_meta", Map.of( //$NON-NLS-1$
-                    "codepilot1c/requiresConfirmation", Boolean.TRUE)); //$NON-NLS-1$
-        }
     }
 
-    private EffectiveToolPolicy effectiveToolPolicy(
-            ToolResolution resolution, Map<String, Object> arguments) {
+    private EffectiveToolPolicy effectiveToolPolicy(ToolResolution resolution) {
         ITool tool = resolution.tool();
         DynamicToolCapability dynamicCapability = resolution.dynamicCapability();
         boolean destructive = dynamicCapability == DynamicToolCapability.MUTATING;
-        boolean requiresConfirmation = destructive;
         try {
             destructive |= tool.isDestructive();
         } catch (RuntimeException e) {
@@ -486,22 +352,7 @@ public class McpHostRequestRouter {
             destructive = true;
             LOG.warn("MCP exposure destructive classification failed closed: %s", tool.getName()); //$NON-NLS-1$
         }
-        requiresConfirmation |= destructive;
-        try {
-            requiresConfirmation |= tool.requiresConfirmation();
-        } catch (RuntimeException e) {
-            requiresConfirmation = true;
-            LOG.warn("MCP tool confirmation classification failed closed: %s", tool.getName()); //$NON-NLS-1$
-        }
-        try {
-            requiresConfirmation |= exposurePolicy.requiresConfirmation(
-                    tool.getName(), arguments != null ? arguments : Map.of());
-        } catch (RuntimeException e) {
-            requiresConfirmation = true;
-            LOG.warn("MCP exposure confirmation classification failed closed: %s", tool.getName()); //$NON-NLS-1$
-        }
-        return new EffectiveToolPolicy(
-                dynamicCapability, destructive, requiresConfirmation);
+        return new EffectiveToolPolicy(dynamicCapability, destructive);
     }
 
     private List<McpResource> listResources(McpHostSession session) {
@@ -665,7 +516,6 @@ public class McpHostRequestRouter {
 
     private record EffectiveToolPolicy(
             DynamicToolCapability dynamicCapability,
-            boolean destructive,
-            boolean requiresConfirmation) {
+            boolean destructive) {
     }
 }

@@ -111,6 +111,39 @@ public class McpHostLlmBrokerHttpTest {
     }
 
     @Test
+    public void rejectsRemoteBrowserOriginsForBothLlmEndpointsWithoutBlockingNativeClients() throws Exception {
+        FakeProvider provider = FakeProvider.completed();
+        try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {
+            HttpRequest remoteCapabilities = HttpRequest.newBuilder(
+                    fixture.uri("/llm/v1/capabilities")) //$NON-NLS-1$
+                    .header("Origin", "http://attacker.example:3000").GET().build(); //$NON-NLS-1$ //$NON-NLS-2$
+            assertError(fixture.client.send(remoteCapabilities, HttpResponse.BodyHandlers.ofString()),
+                    403, "invalid_origin"); //$NON-NLS-1$
+
+            HttpRequest remoteChat = HttpRequest.newBuilder(fixture.uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Origin", "http://attacker.example:3000") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(CHAT)).build();
+            assertError(fixture.client.send(remoteChat, HttpResponse.BodyHandlers.ofString()),
+                    403, "invalid_origin"); //$NON-NLS-1$
+            assertEquals(0, provider.invocations.get());
+
+            HttpRequest localCapabilities = HttpRequest.newBuilder(
+                    fixture.uri("/llm/v1/capabilities")) //$NON-NLS-1$
+                    .header("Origin", "http://localhost:3000").GET().build(); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(200, fixture.client.send(localCapabilities,
+                    HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(200, fixture.get("/llm/v1/capabilities", null).statusCode()); //$NON-NLS-1$
+            HttpRequest localChat = HttpRequest.newBuilder(fixture.uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Origin", "http://127.0.0.1:3000") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(CHAT)).build();
+            assertEquals(200, fixture.client.send(localChat,
+                    HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(200, fixture.post(CHAT, null).statusCode());
+            assertEquals(2, provider.invocations.get());
+        }
+    }
+
+    @Test
     public void mapsNormalizedRequestAndAllProviderChunkTypesToSse() throws Exception {
         FakeProvider provider = FakeProvider.mapping();
         try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {

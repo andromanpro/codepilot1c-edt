@@ -193,10 +193,9 @@ public class McpHostConfig {
     }
 
     /**
-     * Returns the MCP session profile. An empty value selects exact legacy mode
-     * with the profile gate disabled; a non-empty unknown value fails closed.
+     * Legacy persisted setting. Inbound MCP tool policy ignores agent profiles.
      *
-     * @return configured profile identifier, or an empty string for legacy mode
+     * @return the previously configured identifier, if any
      */
     public String getSessionProfileId() {
         return sessionProfileId;

@@ -93,6 +93,20 @@ public final class ChatTurnContext {
                 .orElse(false);
     }
 
+    /** Carries a still-available profile into a new chat in the same view. */
+    public static boolean carryAvailableProfile(Session previous, Session next) {
+        String profileId = previous != null ? previous.getAgentProfile() : null;
+        if (next == null || profileId == null || profileId.isBlank()) {
+            return false;
+        }
+        return AgentProfileRegistry.getInstance().getAvailableProfile(profileId)
+                .map(profile -> {
+                    next.setAgentProfile(profile.getId());
+                    return true;
+                })
+                .orElse(false);
+    }
+
     public AgentProfile profile() {
         return profile;
     }

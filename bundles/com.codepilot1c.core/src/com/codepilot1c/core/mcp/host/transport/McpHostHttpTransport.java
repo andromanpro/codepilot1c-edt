@@ -54,6 +54,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     private final Clock clock;
     private final Gson gson = new Gson();
     private final Map<String, McpHostSession> sessions = new ConcurrentHashMap<>();
+    private final McpHostOriginPolicy originPolicy;
     private final RemoteWebController remoteWebController;
     private final McpHostLlmBroker llmBroker;
 
@@ -96,6 +97,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
             McpHostRequestRouter router, com.codepilot1c.core.mcp.host.McpHostConfig.AuthMode authMode,
             Duration sessionIdleTimeout, Clock clock, McpHostLlmBroker llmBroker) {
         this.bindAddress = bindAddress;
+        this.originPolicy = new McpHostOriginPolicy(bindAddress);
         this.port = port;
         this.oauthService = oauthService;
         this.router = router;
@@ -224,6 +226,10 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                 writeJson(exchange, 405, Map.of("error", "method_not_allowed")); //$NON-NLS-1$ //$NON-NLS-2$
                 return;
             }
+            if (!originPolicy.allows(exchange.getRequestHeaders())) {
+                writeJson(exchange, 403, Map.of("error", "invalid_origin")); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
             if (!isAuthorized(exchange)) {
                 writeUnauthorized(exchange);
                 return;
@@ -240,6 +246,10 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
+                if (!originPolicy.allows(exchange.getRequestHeaders())) {
+                    writeJson(exchange, 403, Map.of("error", "invalid_origin")); //$NON-NLS-1$ //$NON-NLS-2$
+                    return;
+                }
                 String requestMethod = exchange.getRequestMethod();
                 if ("GET".equalsIgnoreCase(requestMethod) && acceptsSse(exchange)) { //$NON-NLS-1$
                     if (!hasSupportedProtocolVersion(exchange)) {

@@ -50,13 +50,11 @@ public class McpHostToolAnnotationsContractTest {
             Map<String, Object> destructive = listed.get(DESTRUCTIVE);
             assertEquals(Boolean.TRUE, annotations(destructive).get("destructiveHint")); //$NON-NLS-1$
             assertFalse(annotations(destructive).containsKey("readOnlyHint")); //$NON-NLS-1$
-            assertEquals(Boolean.TRUE, metadata(destructive).get(
-                    "codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+            assertFalse(destructive.containsKey("_meta")); //$NON-NLS-1$
 
             Map<String, Object> confirmation = listed.get(CONFIRMATION);
             assertFalse(confirmation.containsKey("annotations")); //$NON-NLS-1$
-            assertEquals(Boolean.TRUE, metadata(confirmation).get(
-                    "codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+            assertFalse(confirmation.containsKey("_meta")); //$NON-NLS-1$
 
             Map<String, Object> readOnly = listed.get(READ_ONLY);
             assertEquals(Boolean.TRUE, annotations(readOnly).get("readOnlyHint")); //$NON-NLS-1$
@@ -126,12 +124,6 @@ public class McpHostToolAnnotationsContractTest {
     private Map<String, Object> annotations(Map<String, Object> tool) {
         assertTrue(tool.containsKey("annotations")); //$NON-NLS-1$
         return (Map<String, Object>) tool.get("annotations"); //$NON-NLS-1$
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> metadata(Map<String, Object> tool) {
-        assertTrue(tool.containsKey("_meta")); //$NON-NLS-1$
-        return (Map<String, Object>) tool.get("_meta"); //$NON-NLS-1$
     }
 
     private static final class FakeTool implements ITool {

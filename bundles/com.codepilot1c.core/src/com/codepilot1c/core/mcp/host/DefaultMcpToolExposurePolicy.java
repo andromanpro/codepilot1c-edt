@@ -1,5 +1,7 @@
 package com.codepilot1c.core.mcp.host;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -18,6 +20,7 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
     private final McpHostConfig config;
     private final Predicate<String> sensitivePredicate;
     private final Predicate<String> localExecPredicate;
+    private final boolean localAllowWildcard;
     private final Set<String> explicitAllow;
     private final Set<String> explicitDeny;
 
@@ -35,6 +38,8 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
         this.config = config;
         this.sensitivePredicate = sensitivePredicate;
         this.localExecPredicate = localExecPredicate;
+        this.localAllowWildcard = config.getMutationPolicy() == McpHostConfig.MutationPolicy.ALLOW
+                && isLoopbackBind(config.getBindAddress());
         this.explicitAllow = new HashSet<>();
         this.explicitDeny = new HashSet<>();
         parse(config.getExposedToolsFilter());
@@ -70,9 +75,25 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
             return true;
         }
         if (explicitAllow.contains("*")) { //$NON-NLS-1$
-            return !sensitivePredicate.test(toolName) && !localExecPredicate.test(toolName);
+            // The owner opted into the complete MCP surface only when the host
+            // is bound to loopback and its default decision is explicitly ALLOW.
+            // A wildcard on a remotely bound or fail-closed host retains the
+            // narrower historical exposure of sensitive/local execution tools.
+            return localAllowWildcard
+                    || (!sensitivePredicate.test(toolName) && !localExecPredicate.test(toolName));
         }
         return false;
+    }
+
+    private static boolean isLoopbackBind(String bindAddress) {
+        if (bindAddress == null || bindAddress.isBlank()) {
+            return false;
+        }
+        try {
+            return InetAddress.getByName(bindAddress).isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
     }
 
     private static boolean isSensitiveTool(String toolName) {

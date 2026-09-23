@@ -51,8 +51,7 @@ public class McpHostServer implements IMcpHostServer {
             exposurePolicy,
             resourceProviders,
             new PromptTemplateProvider(),
-            config.getMutationPolicy(),
-            config.getSessionProfileId()
+            config.getMutationPolicy()
         );
 
         if (config.isHttpEnabled()) {
@@ -78,12 +77,8 @@ public class McpHostServer implements IMcpHostServer {
         }
 
         running = true;
-        String sessionProfileId = config.getSessionProfileId();
-        boolean profileGateEnabled = sessionProfileId != null && !sessionProfileId.isBlank();
-        LOG.info("MCP host server started (http=%s, auth=%s, sessionProfile=%s, profileGate=%s)", //$NON-NLS-1$
-            Boolean.valueOf(config.isHttpEnabled()), config.getAuthMode(),
-            profileGateEnabled ? sessionProfileId : "<legacy>", //$NON-NLS-1$
-            Boolean.valueOf(profileGateEnabled));
+        LOG.info("MCP host server started (http=%s, auth=%s, mutationPolicy=%s)", //$NON-NLS-1$
+            Boolean.valueOf(config.isHttpEnabled()), config.getAuthMode(), config.getMutationPolicy());
     }
 
     @Override

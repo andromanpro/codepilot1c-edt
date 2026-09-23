@@ -66,6 +66,8 @@ public class Messages extends NLS {
     public static String ChatView_ImageAttachmentsUnsupported;
     public static String ChatView_ModelButton;
     public static String ChatView_ModelButtonTooltip;
+    public static String ChatView_ProfileLabel;
+    public static String ChatView_ProfileTooltip;
     public static String ChatView_ModelFetching;
     public static String ChatView_ModelFetchError;
     public static String ChatView_ModelNoModels;
@@ -429,11 +431,9 @@ public class Messages extends NLS {
     public static String McpHostPreferencePage_MutationAsk;
     public static String McpHostPreferencePage_MutationDeny;
     public static String McpHostPreferencePage_MutationAllow;
-    public static String McpHostPreferencePage_SessionProfile;
-    public static String McpHostPreferencePage_SessionProfileUnset;
-    public static String McpHostPreferencePage_SessionProfileUnknown;
     public static String McpHostPreferencePage_ExposedTools;
     public static String McpHostPreferencePage_LocalOnlyInfo;
+    public static String McpHostPreferencePage_LocalAllowWarning;
     public static String McpHostPreferencePage_NonLocalWarning;
     public static String McpHostPreferencePage_InstallHints;
     public static String McpHostPreferencePage_InstallHintsTemplate;

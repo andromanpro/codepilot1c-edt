@@ -41,6 +41,33 @@ public class ChatTurnContextTest {
     }
 
     @Test
+    public void selectingBuildOnPlanChatEnablesNextTurnWithoutChangingCapturedTurn() {
+        Session session = new Session("chat-plan"); //$NON-NLS-1$
+        session.setAgentProfile("plan"); //$NON-NLS-1$
+        ChatTurnContext firstTurn = ChatTurnContext.resolve(session, "plan"); //$NON-NLS-1$
+
+        assertTrue(ChatTurnContext.selectForSession(session, "build")); //$NON-NLS-1$
+        ChatTurnContext nextTurn = ChatTurnContext.resolve(session, "plan"); //$NON-NLS-1$
+
+        assertEquals("plan", firstTurn.profileId()); //$NON-NLS-1$
+        assertEquals("build", session.getAgentProfile()); //$NON-NLS-1$
+        assertEquals("build", nextTurn.profileId()); //$NON-NLS-1$
+        assertFalse(nextTurn.profile().isReadOnly());
+    }
+
+    @Test
+    public void newChatInSameViewCarriesAvailableBuildProfile() {
+        Session previous = new Session("chat-before"); //$NON-NLS-1$
+        previous.setAgentProfile("build"); //$NON-NLS-1$
+        Session next = new Session("chat-after"); //$NON-NLS-1$
+
+        assertTrue(ChatTurnContext.carryAvailableProfile(previous, next));
+        assertEquals("build", next.getAgentProfile()); //$NON-NLS-1$
+        assertEquals("build", ChatTurnContext.resolve(next, "plan").profileId()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("build", previous.getAgentProfile()); //$NON-NLS-1$
+    }
+
+    @Test
     public void unknownSuggestedProfileDoesNotReplaceCurrentSelection() {
         Session session = new Session("chat-a"); //$NON-NLS-1$
         session.setAgentProfile("gsd-plan"); //$NON-NLS-1$

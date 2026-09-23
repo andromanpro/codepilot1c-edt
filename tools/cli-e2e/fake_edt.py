@@ -382,7 +382,6 @@ class Handler(BaseHTTPRequestHandler):
                                     "destructiveHint": False,
                                     "readOnlyHint": False,
                                 },
-                                "_meta": {"codepilot1c/requiresConfirmation": True},
                             }
                         ]
                     },

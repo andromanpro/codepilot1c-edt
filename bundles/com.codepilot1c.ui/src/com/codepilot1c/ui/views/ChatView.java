@@ -49,6 +49,7 @@ import org.eclipse.swt.graphics.Point;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
@@ -64,6 +65,8 @@ import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.part.ViewPart;
 
 import com.codepilot1c.core.diff.CodeDiffUtils;
+import com.codepilot1c.core.agent.profiles.AgentProfile;
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.gsd.GsdFeatureGate;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
@@ -178,6 +181,8 @@ public class ChatView extends ViewPart {
     private Button initCodeMdButton;
     private Button compactButton;
     private Button modelButton;
+    private Combo profileCombo;
+    private final List<String> profileIds = new ArrayList<>();
     private String overrideModelId;
     private TypingIndicatorWidget typingIndicator;
     private Label tokenUsageLabel;
@@ -446,6 +451,7 @@ public class ChatView extends ViewPart {
             hideGsdStatusPanel();
             ensureAvailableChatProfile(notifyProfileFallback);
         }
+        refreshProfileSelector();
     }
 
     private void showGsdStatusPanel() {
@@ -517,6 +523,7 @@ public class ChatView extends ViewPart {
             return;
         }
         SessionManager.getInstance().saveSession(target);
+        refreshProfileSelector();
         LOG.info("Selected chat profile %s for session %s", profileId, target.getId()); //$NON-NLS-1$
         // A running turn keeps its captured gate/context. startConversationLoop
         // resolves the newly selected session profile for the next turn.
@@ -628,6 +635,8 @@ public class ChatView extends ViewPart {
         inputAreaLayout.marginHeight = 10;
         inputAreaLayout.verticalSpacing = 8;
         inputArea.setLayout(inputAreaLayout);
+
+        createProfileSelector(inputArea);
 
         // Input field - full width
         inputField = new Text(inputArea, SWT.BORDER | SWT.MULTI | SWT.WRAP | SWT.V_SCROLL);
@@ -763,6 +772,64 @@ public class ChatView extends ViewPart {
         clearButton.addListener(SWT.Selection, e -> clearChat());
 
         refreshAttachmentPreview();
+    }
+
+    private void createProfileSelector(Composite parent) {
+        VibeTheme theme = ThemeManager.getInstance().getTheme();
+        Composite row = new Composite(parent, SWT.NONE);
+        row.setBackground(parent.getBackground());
+        row.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        GridLayout layout = new GridLayout(2, false);
+        layout.marginWidth = 0;
+        layout.marginHeight = 0;
+        row.setLayout(layout);
+
+        Label label = new Label(row, SWT.NONE);
+        label.setBackground(row.getBackground());
+        label.setForeground(theme.getText());
+        label.setText(Messages.ChatView_ProfileLabel);
+
+        profileCombo = new Combo(row, SWT.DROP_DOWN | SWT.READ_ONLY);
+        profileCombo.setFont(theme.getFont());
+        profileCombo.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        profileCombo.setToolTipText(Messages.ChatView_ProfileTooltip);
+        profileCombo.addListener(SWT.Selection, event -> {
+            int index = profileCombo.getSelectionIndex();
+            if (index >= 0 && index < profileIds.size()) {
+                selectChatProfile(profileIds.get(index));
+            }
+        });
+    }
+
+    private void refreshProfileSelector() {
+        if (profileCombo == null || profileCombo.isDisposed()) {
+            return;
+        }
+        String selected = ChatTurnContext.resolve(session, configuredChatProfileId()).profileId();
+        profileCombo.removeAll();
+        profileIds.clear();
+        for (AgentProfile profile : AgentProfileRegistry.getInstance().getAvailableProfiles()) {
+            profileIds.add(profile.getId());
+            profileCombo.add(profile.getId() + " — " + profile.getName() //$NON-NLS-1$
+                    + (profile.isReadOnly() ? " (read-only)" : "")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        int index = profileIds.indexOf(selected);
+        if (index >= 0) {
+            profileCombo.select(index);
+        }
+    }
+
+    private void selectChatProfile(String profileId) {
+        if (AgentProfileRegistry.getInstance().getAvailableProfile(profileId).isEmpty()
+                || !ChatTurnContext.selectForSession(viewSession(), profileId)) {
+            refreshProfileSelector();
+            return;
+        }
+        if (!SessionManager.getInstance().saveSession(session)) {
+            LOG.warn("Could not persist chat profile %s for session %s", //$NON-NLS-1$
+                    profileId, session.getId());
+        }
+        refreshProfileSelector();
     }
 
     private Button createChatActionButton(Composite parent, String text, String tooltip, int widthHint) {
@@ -3227,6 +3294,7 @@ public class ChatView extends ViewPart {
         // Sync UI conversation history into SessionManager and complete session.
         // This triggers memory extraction for facts like "Запомни что...".
         String retainedProjectPath = session != null ? session.getProjectPath() : null;
+        Session previousSession = session;
         try {
             if (!conversationHistory.isEmpty()) {
                 Session target = viewSession();
@@ -3242,6 +3310,9 @@ public class ChatView extends ViewPart {
             session = retainedProject != null
                     ? SessionManager.getInstance().createSessionForProject(retainedProject)
                     : SessionManager.getInstance().createSession();
+            if (ChatTurnContext.carryAvailableProfile(previousSession, session)) {
+                SessionManager.getInstance().saveSession(session);
+            }
         } catch (Exception e) {
             LOG.debug("clearChat: session management failed: " + e.getMessage()); //$NON-NLS-1$
             session = null;
@@ -3266,6 +3337,7 @@ public class ChatView extends ViewPart {
         refreshAttachmentPreview();
 
         appendSystemMessage(Messages.ChatView_WelcomeMessage);
+        refreshProfileSelector();
         requestGsdStatusRefresh();
     }
 
