@@ -15,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import org.eclipse.core.resources.IProject;
 
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
+import com._1c.g5.v8.dt.core.platform.IExternalObjectProject;
 import com.codepilot1c.core.edt.metadata.AddMetadataChildRequest;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
@@ -119,6 +120,8 @@ public class EdtMetadataSmokeTool extends AbstractTool {
                     return ToolResult.failure(renderReport(projectName, namePrefix, steps));
                 }
 
+                boolean externalProject = isExternalProject(project);
+
                 try {
                     readinessChecker.ensureReady(project);
                     steps.add(StepResult.ok("readiness_precheck", "Project is ready")); //$NON-NLS-1$ //$NON-NLS-2$
@@ -132,6 +135,13 @@ public class EdtMetadataSmokeTool extends AbstractTool {
                 if (!runMutations) {
                     String reason = dryRun ? "dry_run=true" : "run_mutations=false"; //$NON-NLS-1$ //$NON-NLS-2$
                     steps.add(StepResult.ok("mutations_skipped", reason)); //$NON-NLS-1$
+                    return ToolResult.success(renderReport(projectName, namePrefix, steps));
+                }
+                if (externalProject) {
+                    LOG.info("[%s] Skip metadata mutation smoke for external project=%s", opId, projectName); //$NON-NLS-1$
+                    steps.add(StepResult.skipped("mutations_skipped", "SKIPPED_EXTERNAL_PROJECT", //$NON-NLS-1$ //$NON-NLS-2$
+                            "Metadata mutation smoke is unsupported for external report/processor project: " //$NON-NLS-1$
+                                    + projectName + "; run it against the owning configuration project")); //$NON-NLS-1$
                     return ToolResult.success(renderReport(projectName, namePrefix, steps));
                 }
 
@@ -191,6 +201,15 @@ public class EdtMetadataSmokeTool extends AbstractTool {
             steps.add(StepResult.failed("bm_read_tx_probe", "ASSERTION_FAILED", "Read-only BM transaction returned unexpected value")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         } catch (RuntimeException e) {
             steps.add(StepResult.failed("bm_read_tx_probe", MetadataOperationCode.EDT_SERVICE_UNAVAILABLE.name(), e.getMessage())); //$NON-NLS-1$
+        }
+    }
+
+    private boolean isExternalProject(IProject project) {
+        try {
+            return gateway.getV8ProjectManager().getProject(project) instanceof IExternalObjectProject;
+        } catch (RuntimeException e) {
+            LOG.debug("Unable to classify EDT project kind for metadata smoke"); //$NON-NLS-1$
+            return false;
         }
     }
 
@@ -345,6 +364,10 @@ public class EdtMetadataSmokeTool extends AbstractTool {
 
         private static StepResult ok(String name, String message) {
             return new StepResult(true, name, "", message); //$NON-NLS-1$
+        }
+
+        private static StepResult skipped(String name, String code, String message) {
+            return new StepResult(true, name, code, message);
         }
 
         private static StepResult failed(String name, String code, String message) {
