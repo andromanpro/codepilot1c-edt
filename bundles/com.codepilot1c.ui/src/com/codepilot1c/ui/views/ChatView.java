@@ -810,8 +810,7 @@ public class ChatView extends ViewPart {
         profileIds.clear();
         for (AgentProfile profile : AgentProfileRegistry.getInstance().getAvailableProfiles()) {
             profileIds.add(profile.getId());
-            profileCombo.add(profile.getId() + " — " + profile.getName() //$NON-NLS-1$
-                    + (profile.isReadOnly() ? " (read-only)" : "")); //$NON-NLS-1$ //$NON-NLS-2$
+            profileCombo.add(ChatTurnContext.roleLabel(profile));
         }
         int index = profileIds.indexOf(selected);
         if (index >= 0) {

@@ -15,10 +15,11 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.BuildAgentProfile;
 import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
-import com.codepilot1c.core.agent.profiles.ProfileToolAccess;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.permissions.PermissionDenialPayload;
@@ -34,7 +35,8 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
 
 /**
- * Pure profile and permission policy for the ChatView tool loop.
+ * Permission policy for the ChatView tool loop. The selected profile supplies
+ * the chat role; it does not restrict the tool surface or calls.
  *
  * <p>The class deliberately has no workbench dependencies. The UI owns dialog
  * lifecycle and rendering, while this policy supplies one parsed argument map,
@@ -79,8 +81,9 @@ public final class ChatToolGate {
             String resource) {
     }
 
-    private static final String LAYER_PROFILE = "profile"; //$NON-NLS-1$
     private static final String LAYER_TOOL = "tool"; //$NON-NLS-1$
+    private static final List<PermissionRule> CHAT_DEFAULT_RULES =
+            List.copyOf(new BuildAgentProfile().getDefaultPermissions());
 
     private final AgentProfile profile;
     private final Supplier<List<PermissionRule>> globalRules;
@@ -106,7 +109,8 @@ public final class ChatToolGate {
             BooleanSupplier skipConfirmations) {
         this(profile, globalRules, argumentParser,
                 confirmationSinkAvailable, skipConfirmations,
-                ToolExecutionContext.of(profile, 0));
+                new ToolExecutionContext(profile.getId(),
+                        AgentCapability.MUTATING, 0));
     }
 
     /** Creates a gate bound to the immutable execution identity captured for the turn. */
@@ -124,8 +128,9 @@ public final class ChatToolGate {
                 confirmationSinkAvailable, "confirmationSinkAvailable"); //$NON-NLS-1$
         this.skipConfirmations = Objects.requireNonNull(skipConfirmations, "skipConfirmations"); //$NON-NLS-1$
         this.executionContext = Objects.requireNonNull(executionContext, "executionContext"); //$NON-NLS-1$
-        if (!profile.getId().equals(executionContext.parentProfileId())) {
-            throw new IllegalArgumentException("execution context profile must match gate profile"); //$NON-NLS-1$
+        if (!profile.getId().equals(executionContext.parentProfileId())
+                || executionContext.delegationCeiling() != AgentCapability.MUTATING) {
+            throw new IllegalArgumentException("chat execution context must match the role and allow delegation"); //$NON-NLS-1$
         }
     }
 
@@ -164,19 +169,20 @@ public final class ChatToolGate {
     }
 
     /**
-     * Builds the model-facing tool surface from the selected profile.
-     * Runtime tools require both a trusted capability classification and the
-     * selected profile's explicit runtime grant.
+     * Builds the complete model-facing chat tool surface. Availability is
+     * controlled by registry and tool feature gates, not the selected role.
      *
      * @param registry tool registry
      * @return visible tool definitions
      */
     public List<ToolDefinition> visibleToolDefinitions(ToolRegistry registry) {
         Objects.requireNonNull(registry, "registry"); //$NON-NLS-1$
-        ToolSurfaceContext context = registry.createRuntimeSurfaceContext(profile);
+        ToolSurfaceContext context = registry.createRuntimeSurfaceContext(
+                AgentProfileRegistry.getInstance().getProfile(BuildAgentProfile.ID)
+                        .orElseGet(BuildAgentProfile::new));
         List<ToolDefinition> result = new ArrayList<>();
         for (ToolResolution resolution : registry.getModelFacingToolResolutions()) {
-            if (!ProfileToolAccess.allows(profile, resolution)) {
+            if (unclassifiedDynamic(resolution)) {
                 continue;
             }
             ITool tool = resolution.tool();
@@ -214,15 +220,15 @@ public final class ChatToolGate {
             return execute(arguments, context, resolution, false, null, "none", null); //$NON-NLS-1$
         }
 
-        if (!ProfileToolAccess.allows(profile, resolution)) {
-            String reasonCode = "tool_not_in_profile"; //$NON-NLS-1$
+        if (unclassifiedDynamic(resolution)) {
+            String reasonCode = "unclassified_dynamic_tool"; //$NON-NLS-1$
             return deny(arguments, context, resolution, false, PermissionDenialPayload.denied(
-                    toolName, profile.getId(), null, reasonCode, LAYER_PROFILE, null),
-                    reasonCode, LAYER_PROFILE, null);
+                    toolName, profile.getId(), null, reasonCode, LAYER_TOOL, null),
+                    reasonCode, LAYER_TOOL, null);
         }
 
         ProfilePermissionGate.GateResult gate = ProfilePermissionGate.evaluate(
-                profile.getDefaultPermissions(), globalRulesSafe(), toolName, arguments);
+                CHAT_DEFAULT_RULES, globalRulesSafe(), toolName, arguments);
         String ruleDescription = gate.rule() != null ? gate.rule().getDescription() : null;
         if (gate.isDenied()) {
             String reasonCode = "denied_by_" + gate.layer() + "_rule"; //$NON-NLS-1$ //$NON-NLS-2$
@@ -309,13 +315,24 @@ public final class ChatToolGate {
         }
     }
 
+    private static boolean unclassifiedDynamic(ToolResolution resolution) {
+        return resolution.dynamic()
+                && resolution.dynamicCapability() == DynamicToolCapability.NONE;
+    }
+
     private List<PermissionRule> globalRulesSafe() {
         try {
             List<PermissionRule> rules = globalRules.get();
-            return rules != null ? rules : List.of();
+            return rules != null ? rules : unavailableGlobalRules();
         } catch (Throwable e) {
-            return List.of();
+            return unavailableGlobalRules();
         }
+    }
+
+    private static List<PermissionRule> unavailableGlobalRules() {
+        return List.of(PermissionRule.deny("*") //$NON-NLS-1$
+                .withDescription("Global permission rules unavailable") //$NON-NLS-1$
+                .forAllResources());
     }
 
     private Decision execute(

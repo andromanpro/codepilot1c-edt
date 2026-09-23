@@ -2,21 +2,10 @@
 <?pde version="3.8"?>
 <target name="1C Copilot Target Platform" sequenceNumber="10">
     <locations>
-        <location includeAllPlatforms="false" includeConfigurePhase="true" includeMode="planner" includeSource="true" type="InstallableUnit">
-            <repository location="https://download.eclipse.org/releases/2023-12"/>
-            <unit id="org.eclipse.sdk.feature.group" version="0.0.0"/>
-            <unit id="org.eclipse.tm.terminal.feature.feature.group" version="0.0.0"/>
-            <unit id="org.eclipse.cdt.native.feature.group" version="0.0.0"/>
-            <unit id="com.google.gson" version="0.0.0"/>
-        </location>
-        <!-- Xtext SDK for org.eclipse.xtext.ui and related bundles -->
-        <location includeAllPlatforms="false" includeConfigurePhase="true" includeMode="planner" includeSource="true" type="InstallableUnit">
-            <repository location="https://download.eclipse.org/modeling/tmf/xtext/updates/releases/2.33.0/"/>
-            <unit id="org.eclipse.xtext.sdk.feature.group" version="0.0.0"/>
-        </location>
         <!--
-            Local 1C EDT installation to resolve com._1c.g5.v8.* bundles.
-            Supply its Eclipse directory to the Maven reactor with -Dedt.home=/path/to/Eclipse.
+            The exact materialized EDT 2026.2.0.289 closure supplies Eclipse,
+            Xtext and com._1c.g5.v8.* bundles. Do not mix remote p2 versions.
+            Supply its Eclipse directory with -Dedt.home=/path/to/Eclipse.
         -->
         <location path="${system_property:edt.home}" type="Directory"/>
     </locations>
