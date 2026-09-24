@@ -41,6 +41,17 @@ public class ChatTurnContextTest {
     }
 
     @Test
+    public void exploreSelectionBeforeFirstMessageControlsTheFirstTurn() {
+        Session cleanSession = new Session("clean-chat"); //$NON-NLS-1$
+
+        assertTrue(ChatTurnContext.selectForSession(cleanSession, "explore")); //$NON-NLS-1$
+
+        ChatTurnContext firstTurn = ChatTurnContext.resolve(cleanSession, "build"); //$NON-NLS-1$
+        assertEquals("explore", firstTurn.profileId()); //$NON-NLS-1$
+        assertTrue(firstTurn.profile().isReadOnly());
+    }
+
+    @Test
     public void unknownSuggestedProfileDoesNotReplaceCurrentSelection() {
         Session session = new Session("chat-a"); //$NON-NLS-1$
         session.setAgentProfile("gsd-plan"); //$NON-NLS-1$

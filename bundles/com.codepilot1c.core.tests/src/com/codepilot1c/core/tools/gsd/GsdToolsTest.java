@@ -486,7 +486,12 @@ public class GsdToolsTest {
         GsdGetStateTool tool = new GsdGetStateTool();
         ToolResult result = execute(tool, Map.of("project_path", "/nonexistent/path/xyz")).get(); //$NON-NLS-1$
         assertFalse(result.isSuccess());
+        assertTrue(result.hasStructuredData());
+        assertEquals("error", result.getStructuredString("status")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("gsd_get_state", result.getStructuredString("operation")); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("identity", result.getStructuredString("error_code")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(0, result.getStructuredInt("revision", -1)); //$NON-NLS-1$
+        assertEquals("", result.getStructuredString("phase")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test

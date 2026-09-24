@@ -2896,7 +2896,7 @@ public class EdtMetadataService {
             if (id != null && item.getId() == id.intValue()) {
                 return item;
             }
-            if (name != null && item instanceof NamedElement namedElement
+            if (name != null && ((Object) item) instanceof NamedElement namedElement
                     && name.equalsIgnoreCase(namedElement.getName())) {
                 return item;
             }
@@ -4101,7 +4101,7 @@ public class EdtMetadataService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("kind", formModel.eClass().getName()); //$NON-NLS-1$
         result.put("itemsCount", Integer.valueOf(formModel.getItems().size())); //$NON-NLS-1$
-        if (includeTitles && formModel instanceof Titled titled) {
+        if (includeTitles && ((Object) formModel) instanceof Titled titled) {
             Map<String, String> title = copyTitleMap(titled);
             if (!title.isEmpty()) {
                 result.put("title", title); //$NON-NLS-1$
@@ -4178,7 +4178,7 @@ public class EdtMetadataService {
                 continue;
             }
 
-            String name = item instanceof NamedElement namedElement ? namedElement.getName() : null;
+            String name = ((Object) item) instanceof NamedElement namedElement ? namedElement.getName() : null;
             String safeName = safeForPath(name != null && !name.isBlank() ? name : item.eClass().getName());
             String path = parentPath + "/" + item.getId() + ":" + safeName; //$NON-NLS-1$ //$NON-NLS-2$
             Map<String, String> title = request.includeTitles() && item instanceof Titled titled

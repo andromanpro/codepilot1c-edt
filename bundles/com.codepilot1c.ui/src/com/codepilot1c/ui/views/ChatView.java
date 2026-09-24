@@ -34,6 +34,12 @@ import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
 import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.accessibility.ACC;
+import org.eclipse.swt.accessibility.Accessible;
+import org.eclipse.swt.accessibility.AccessibleAdapter;
+import org.eclipse.swt.accessibility.AccessibleControlAdapter;
+import org.eclipse.swt.accessibility.AccessibleControlEvent;
+import org.eclipse.swt.accessibility.AccessibleEvent;
 import org.eclipse.swt.custom.ScrolledComposite;
 import org.eclipse.swt.dnd.Clipboard;
 import org.eclipse.swt.dnd.FileTransfer;
@@ -42,6 +48,8 @@ import org.eclipse.swt.events.KeyAdapter;
 import org.eclipse.swt.events.KeyEvent;
 import org.eclipse.swt.events.MenuAdapter;
 import org.eclipse.swt.events.MenuEvent;
+import org.eclipse.swt.events.SelectionAdapter;
+import org.eclipse.swt.events.SelectionEvent;
 import org.eclipse.swt.events.SelectionListener;
 import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.graphics.ImageLoader;
@@ -49,6 +57,8 @@ import org.eclipse.swt.graphics.Point;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Canvas;
+import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
@@ -56,6 +66,7 @@ import org.eclipse.swt.widgets.FileDialog;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Menu;
 import org.eclipse.swt.widgets.MenuItem;
+import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.IMemento;
 import org.eclipse.ui.IViewSite;
@@ -63,10 +74,12 @@ import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.part.ViewPart;
 
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.diff.CodeDiffUtils;
 import com.codepilot1c.core.gsd.GsdFeatureGate;
+import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
-import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.skills.SkillMentionParser;
 import com.codepilot1c.core.model.LlmAttachment;
 import com.codepilot1c.core.memory.compaction.LlmCompactionService;
@@ -110,7 +123,6 @@ import com.codepilot1c.ui.diff.ProposedChangeSet;
 import com.codepilot1c.ui.editor.CodeApplicationService;
 import com.codepilot1c.ui.gsd.GsdStatusPanel;
 import com.codepilot1c.ui.gsd.GsdToolMutationRefreshPolicy;
-import com.codepilot1c.ui.gsd.GsdUiProfilePolicy;
 import com.codepilot1c.ui.internal.Messages;
 import com.codepilot1c.ui.internal.ToolDisplayNames;
 import com.codepilot1c.ui.internal.VibeUiPlugin;
@@ -178,6 +190,8 @@ public class ChatView extends ViewPart {
     private Button initCodeMdButton;
     private Button compactButton;
     private Button modelButton;
+    private Combo profileCombo;
+    private Canvas profileKeyboardTarget;
     private String overrideModelId;
     private TypingIndicatorWidget typingIndicator;
     private Label tokenUsageLabel;
@@ -446,6 +460,7 @@ public class ChatView extends ViewPart {
             hideGsdStatusPanel();
             ensureAvailableChatProfile(notifyProfileFallback);
         }
+        refreshProfileSelector();
     }
 
     private void showGsdStatusPanel() {
@@ -487,14 +502,16 @@ public class ChatView extends ViewPart {
         String configuredProfileId = configuredChatProfileId();
         String selectedProfileId = sessionProfileId != null && !sessionProfileId.isBlank()
                 ? sessionProfileId : configuredProfileId;
-        String safeProfileId = GsdUiProfilePolicy.safeProfileId(selectedProfileId);
-        if (java.util.Objects.equals(selectedProfileId, safeProfileId)) {
-            return false;
+        String safeProfileId = ChatProfileSelectorModel.synchronize(target, configuredProfileId);
+        String safeConfiguredProfileId = ChatToolGate.selectProfile(configuredProfileId).getId();
+        boolean sessionFellBack = !java.util.Objects.equals(selectedProfileId, safeProfileId);
+        boolean configuredProfileFellBack = GsdFeatureGate.isGsdProfile(configuredProfileId)
+                && !java.util.Objects.equals(configuredProfileId, safeConfiguredProfileId);
+        if (configuredProfileFellBack) {
+            persistConfiguredChatProfile(safeConfiguredProfileId, "gsd-fallback"); //$NON-NLS-1$
         }
-        target.setAgentProfile(safeProfileId);
-        if (GsdFeatureGate.isGsdProfile(configuredProfileId)) {
-            InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID)
-                    .put(PREF_CHAT_PROFILE_ID, safeProfileId);
+        if (!sessionFellBack && !configuredProfileFellBack) {
+            return false;
         }
         SessionManager.getInstance().saveSession(target);
         if (notify) {
@@ -512,11 +529,10 @@ public class ChatView extends ViewPart {
             return;
         }
         Session target = viewSession();
-        if (!ChatTurnContext.selectForSession(target, profileId)) {
+        if (!selectChatProfile(profileId)) {
             LOG.warn("Unknown suggested chat profile: %s", profileId); //$NON-NLS-1$
             return;
         }
-        SessionManager.getInstance().saveSession(target);
         LOG.info("Selected chat profile %s for session %s", profileId, target.getId()); //$NON-NLS-1$
         // A running turn keeps its captured gate/context. startConversationLoop
         // resolves the newly selected session profile for the next turn.
@@ -628,6 +644,8 @@ public class ChatView extends ViewPart {
         inputAreaLayout.marginHeight = 10;
         inputAreaLayout.verticalSpacing = 8;
         inputArea.setLayout(inputAreaLayout);
+
+        Composite profileSelectorRow = createProfileSelector(inputArea);
 
         // Input field - full width
         inputField = new Text(inputArea, SWT.BORDER | SWT.MULTI | SWT.WRAP | SWT.V_SCROLL);
@@ -762,7 +780,306 @@ public class ChatView extends ViewPart {
         clearData.exclude = true;
         clearButton.addListener(SWT.Selection, e -> clearChat());
 
+        configureComposerTraversal(inputArea, profileSelectorRow, buttonBar);
         refreshAttachmentPreview();
+    }
+
+    private Composite createProfileSelector(Composite parent) {
+        VibeTheme theme = ThemeManager.getInstance().getTheme();
+        Composite row = new Composite(parent, SWT.NONE);
+        row.setBackground(parent.getBackground());
+        row.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        GridLayout layout = new GridLayout(2, false);
+        layout.marginWidth = 2;
+        layout.marginHeight = 2;
+        layout.horizontalSpacing = CHAT_BUTTON_SPACING;
+        row.setLayout(layout);
+
+        Label label = new Label(row, SWT.NONE);
+        label.setBackground(row.getBackground());
+        label.setForeground(theme.getText());
+        label.setFont(theme.getFont());
+        label.setText(Messages.ChatView_ProfileLabel);
+
+        profileCombo = new Combo(row, SWT.READ_ONLY | SWT.DROP_DOWN);
+        profileCombo.setFont(theme.getFont());
+        profileCombo.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        profileCombo.setToolTipText(Messages.ChatView_ProfileTooltip);
+        profileKeyboardTarget = new Canvas(row, SWT.NO_BACKGROUND);
+        GridData keyboardTargetData = new GridData(0, 0);
+        keyboardTargetData.exclude = true;
+        profileKeyboardTarget.setLayoutData(keyboardTargetData);
+        profileKeyboardTarget.setToolTipText(Messages.ChatView_ProfileTooltip);
+        Accessible labelAccessible = label.getAccessible();
+        Accessible profileAccessible = profileCombo.getAccessible();
+        Accessible keyboardTargetAccessible = profileKeyboardTarget.getAccessible();
+        labelAccessible.addRelation(ACC.RELATION_LABEL_FOR, profileAccessible);
+        labelAccessible.addRelation(ACC.RELATION_LABEL_FOR, keyboardTargetAccessible);
+        profileAccessible.addRelation(ACC.RELATION_LABELLED_BY, labelAccessible);
+        profileAccessible.addAccessibleListener(new AccessibleAdapter() {
+            @Override
+            public void getName(AccessibleEvent event) {
+                event.result = ChatProfileSelectorAccessibility.accessibleName(
+                        Messages.ChatView_ProfileAccessibleName);
+            }
+
+            @Override
+            public void getHelp(AccessibleEvent event) {
+                event.result = Messages.ChatView_ProfileTooltip;
+            }
+        });
+        keyboardTargetAccessible.addRelation(ACC.RELATION_LABELLED_BY, labelAccessible);
+        keyboardTargetAccessible.addAccessibleListener(new AccessibleAdapter() {
+            @Override
+            public void getName(AccessibleEvent event) {
+                event.result = ChatProfileSelectorAccessibility.accessibleName(
+                        Messages.ChatView_ProfileAccessibleName);
+            }
+
+            @Override
+            public void getHelp(AccessibleEvent event) {
+                event.result = Messages.ChatView_ProfileTooltip;
+            }
+        });
+        keyboardTargetAccessible.addAccessibleControlListener(new AccessibleControlAdapter() {
+            @Override
+            public void getRole(AccessibleControlEvent event) {
+                event.detail = ACC.ROLE_COMBOBOX;
+            }
+
+            @Override
+            public void getState(AccessibleControlEvent event) {
+                event.detail = ACC.STATE_FOCUSABLE | ACC.STATE_READONLY;
+                if (profileKeyboardTarget.isFocusControl()) {
+                    event.detail |= ACC.STATE_FOCUSED;
+                }
+            }
+        });
+        profileKeyboardTarget.addListener(SWT.FocusIn, event -> row.redraw());
+        profileKeyboardTarget.addListener(SWT.FocusOut, event -> row.redraw());
+        row.addListener(SWT.Paint, event -> {
+            if (profileKeyboardTarget != null
+                    && !profileKeyboardTarget.isDisposed()
+                    && profileKeyboardTarget.isFocusControl()) {
+                org.eclipse.swt.graphics.Rectangle bounds = profileCombo.getBounds();
+                event.gc.drawFocus(bounds.x - 2, bounds.y - 2,
+                        bounds.width + 4, bounds.height + 4);
+            }
+        });
+        profileCombo.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent event) {
+                String profileId = selectedProfileId();
+                if (profileId != null && !selectChatProfile(profileId)) {
+                    refreshProfileSelector();
+                }
+            }
+        });
+        configureProfileSelectorKeyboard();
+        row.setTabList(new Control[] { profileKeyboardTarget });
+        refreshProfileSelector();
+        return row;
+    }
+
+    private void configureProfileSelectorKeyboard() {
+        Menu keyboardPopup = new Menu(profileCombo);
+        profileCombo.addListener(SWT.Dispose, event -> {
+            if (!keyboardPopup.isDisposed()) {
+                keyboardPopup.dispose();
+            }
+        });
+
+        // Native Cocoa menu tracking is synchronous. An SWT MouseDown listener
+        // runs before tracking and queued UI work runs only after it returns,
+        // including the Escape path.
+        profileCombo.addListener(SWT.MouseDown, event -> {
+            if (event.button != 1) {
+                return;
+            }
+            Display display = profileCombo.getDisplay();
+            Shell ownerShell = profileCombo.getShell();
+            Control displayFocus = display.getFocusControl();
+            Control focusBeforePopup = displayFocus != null
+                    && !displayFocus.isDisposed()
+                    && displayFocus.getShell() == ownerShell
+                            ? displayFocus
+                            : null;
+            display.asyncExec(() -> restoreProfileSelectorFocusAfterMousePopup(
+                    ownerShell, focusBeforePopup));
+        });
+
+        ChatProfileSelectorKeyboardBinding.installOpenKeyListeners(
+                profileKeyboardTarget,
+                profileCombo,
+                keyboardPopup,
+                () -> openProfileKeyboardPopup(keyboardPopup));
+    }
+
+    private void restoreProfileSelectorFocusAfterMousePopup(
+            Shell ownerShell,
+            Control focusBeforePopup) {
+        if (!isAvailableProfileSelector()) {
+            return;
+        }
+        Display display = profileCombo.getDisplay();
+        if (ownerShell == null || ownerShell.isDisposed()
+                || display.getActiveShell() != ownerShell
+                || profileCombo.getShell() != ownerShell) {
+            return;
+        }
+        Control currentFocus = display.getFocusControl();
+        if (currentFocus != null
+                && currentFocus != focusBeforePopup
+                && currentFocus != profileKeyboardTarget
+                && currentFocus != profileCombo) {
+            return;
+        }
+        if (ChatProfileSelectorAccessibility.shouldRestoreMousePopupFocus(
+                true,
+                profileCombo.isDisposed(),
+                ownerShell.isDisposed(),
+                ownerShell,
+                profileCombo.getShell(),
+                display.getActiveShell(),
+                focusBeforePopup,
+                currentFocus,
+                profileKeyboardTarget,
+                profileCombo)) {
+            profileKeyboardTarget.forceFocus();
+        }
+    }
+
+    private boolean openProfileKeyboardPopup(Menu keyboardPopup) {
+        if (!isAvailableProfileSelector() || keyboardPopup == null || keyboardPopup.isDisposed()) {
+            return false;
+        }
+        for (MenuItem item : keyboardPopup.getItems()) {
+            item.dispose();
+        }
+        int selectedIndex = profileCombo.getSelectionIndex();
+        for (int i = 0; i < profileCombo.getItemCount(); i++) {
+            String label = profileCombo.getItem(i);
+            String profileId = (String) profileCombo.getData(label);
+            MenuItem item = new MenuItem(keyboardPopup, SWT.RADIO);
+            item.setText(label);
+            item.setSelection(i == selectedIndex);
+            item.addListener(SWT.Selection, event -> {
+                if (item.getSelection() && !selectChatProfile(profileId)) {
+                    refreshProfileSelector();
+                }
+            });
+        }
+        if (keyboardPopup.getItemCount() == 0) {
+            return false;
+        }
+        Point location = profileCombo.toDisplay(0, profileCombo.getSize().y);
+        keyboardPopup.setLocation(location);
+        keyboardPopup.setVisible(true);
+        return keyboardPopup.getVisible();
+    }
+
+    private boolean isAvailableProfileSelector() {
+        return profileCombo != null
+                && !profileCombo.isDisposed()
+                && profileKeyboardTarget != null
+                && !profileKeyboardTarget.isDisposed()
+                && profileCombo.isEnabled()
+                && profileCombo.isVisible();
+    }
+
+    private void configureComposerTraversal(Composite inputArea, Composite profileSelectorRow, Composite buttonBar) {
+        Map<ChatProfileSelectorAccessibility.ComposerFocusGroup, Control> controls = Map.of(
+                ChatProfileSelectorAccessibility.ComposerFocusGroup.PROFILE_SELECTOR, profileSelectorRow,
+                ChatProfileSelectorAccessibility.ComposerFocusGroup.MESSAGE_INPUT, inputField,
+                ChatProfileSelectorAccessibility.ComposerFocusGroup.ATTACHMENT_PREVIEW, attachmentPreviewArea,
+                ChatProfileSelectorAccessibility.ComposerFocusGroup.ACTIONS, buttonBar);
+        Control[] tabList = ChatProfileSelectorAccessibility.composerTabOrder().stream()
+                .map(controls::get)
+                .toArray(Control[]::new);
+        inputArea.setTabList(tabList);
+
+        // SWT.MULTI Text consumes traversal keys on Cocoa. Make the selector reachable
+        // from ChatView's normal input focus without changing the view's initial focus.
+        ChatProfileSelectorKeyboardBinding.installTraversal(
+                inputField, profileKeyboardTarget, inputField);
+    }
+
+    private void refreshProfileSelector() {
+        if (profileCombo == null || profileCombo.isDisposed()) {
+            return;
+        }
+        String profileId = ChatProfileSelectorModel.synchronize(session, configuredChatProfileId());
+        profileCombo.removeAll();
+        for (ChatProfileSelectorModel.Option option : ChatProfileSelectorModel.availableOptions()) {
+            profileCombo.add(option.label());
+            profileCombo.setData(option.label(), option.id());
+        }
+        selectProfileInCombo(profileId);
+        updateProfileTooltip();
+    }
+
+    private String selectedProfileId() {
+        if (profileCombo == null || profileCombo.isDisposed()) {
+            return null;
+        }
+        int index = profileCombo.getSelectionIndex();
+        return index >= 0 ? (String) profileCombo.getData(profileCombo.getItem(index)) : null;
+    }
+
+    private boolean selectProfileInCombo(String profileId) {
+        if (profileId == null || profileCombo == null || profileCombo.isDisposed()) {
+            return false;
+        }
+        for (int i = 0; i < profileCombo.getItemCount(); i++) {
+            String item = profileCombo.getItem(i);
+            if (profileId.equals(profileCombo.getData(item))) {
+                profileCombo.select(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean selectChatProfile(String profileId) {
+        Session target = viewSession();
+        if (!ChatProfileSelectorModel.select(target, profileId)) {
+            return false;
+        }
+        persistConfiguredChatProfile(profileId, "user-selection"); //$NON-NLS-1$
+        SessionManager.getInstance().saveSession(target);
+        selectProfileInCombo(profileId);
+        updateProfileTooltip();
+        return true;
+    }
+
+    private void updateProfileTooltip() {
+        String profileId = selectedProfileId();
+        if (profileId == null) {
+            profileCombo.setToolTipText(Messages.ChatView_ProfileTooltip);
+            return;
+        }
+        AgentProfileRegistry.getInstance().getAvailableProfile(profileId).ifPresent(profile ->
+                profileCombo.setToolTipText(Messages.ChatView_ProfileTooltip + "\n\n" //$NON-NLS-1$
+                        + profile.getDescription()));
+    }
+
+    private boolean persistConfiguredChatProfile(String profileId, String source) {
+        String opId = LogSanitizer.newId("chat-profile-pref"); //$NON-NLS-1$
+        return ChatProfilePreferencePersistence.putAndFlush(
+                ChatProfilePreferencePersistence.eclipseStore(
+                        InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID)),
+                PREF_CHAT_PROFILE_ID,
+                profileId,
+                opId,
+                failure -> LOG.error(String.format(
+                        "event=chat_profile_default_persist_failed opId=%s source=%s " //$NON-NLS-1$
+                                + "preferenceKey=%s profileId=%s errorType=%s", //$NON-NLS-1$
+                        failure.opId(),
+                        source,
+                        failure.key(),
+                        failure.value(),
+                        failure.cause().getClass().getName()),
+                        failure.cause()));
     }
 
     private Button createChatActionButton(Composite parent, String text, String tooltip, int widthHint) {
@@ -2300,8 +2617,11 @@ public class ChatView extends ViewPart {
     }
 
     private String configuredChatProfileId() {
-        return InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID)
-                .get(PREF_CHAT_PROFILE_ID, ""); //$NON-NLS-1$
+        return ChatProfilePreferencePersistence.get(
+                ChatProfilePreferencePersistence.eclipseStore(
+                        InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID)),
+                PREF_CHAT_PROFILE_ID,
+                ""); //$NON-NLS-1$
     }
 
     private ChatToolGate createToolGate(ChatTurnContext context) {
@@ -3074,6 +3394,8 @@ public class ChatView extends ViewPart {
         if (session == null) {
             // Multi-view: each ChatView instance owns a distinct session (not the global current one).
             session = SessionManager.getInstance().createSessionForCurrentProject();
+            ChatProfileSelectorModel.synchronize(session, configuredChatProfileId());
+            refreshProfileSelector();
             requestGsdStatusRefresh();
         }
         return session;
@@ -3159,6 +3481,8 @@ public class ChatView extends ViewPart {
             // else: a window explicitly opened by the user (secondary id, no memento) → start fresh.
             if (restored != null) {
                 session = restored;
+                ChatProfileSelectorModel.synchronize(session, configuredChatProfileId());
+                refreshProfileSelector();
                 // Restore this window's per-view model choice.
                 overrideModelId = restored.getModelId();
                 if (restored.getMessages().isEmpty()) {
@@ -3174,6 +3498,7 @@ public class ChatView extends ViewPart {
             LOG.debug("restoreLastSession failed: %s", e.getMessage()); //$NON-NLS-1$
         }
         viewSession();
+        refreshProfileSelector();
         appendSystemMessage(Messages.ChatView_WelcomeMessage);
         requestGsdStatusRefresh();
     }
@@ -3225,7 +3550,8 @@ public class ChatView extends ViewPart {
         }
         // Sync UI conversation history into SessionManager and complete session.
         // This triggers memory extraction for facts like "Запомни что...".
-        String retainedProjectPath = session != null ? session.getProjectPath() : null;
+        Session previousSession = session;
+        String retainedProjectPath = previousSession != null ? previousSession.getProjectPath() : null;
         try {
             if (!conversationHistory.isEmpty()) {
                 Session target = viewSession();
@@ -3241,6 +3567,8 @@ public class ChatView extends ViewPart {
             session = retainedProject != null
                     ? SessionManager.getInstance().createSessionForProject(retainedProject)
                     : SessionManager.getInstance().createSession();
+            ChatProfileSelectorModel.carrySelection(
+                    previousSession, session, configuredChatProfileId());
         } catch (Exception e) {
             LOG.debug("clearChat: session management failed: " + e.getMessage()); //$NON-NLS-1$
             session = null;
@@ -3263,6 +3591,7 @@ public class ChatView extends ViewPart {
             applyCodeButton.setEnabled(false);
         }
         refreshAttachmentPreview();
+        refreshProfileSelector();
 
         appendSystemMessage(Messages.ChatView_WelcomeMessage);
         requestGsdStatusRefresh();

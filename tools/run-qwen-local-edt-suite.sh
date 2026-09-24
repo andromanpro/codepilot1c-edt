@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_QWEN_HOME="$HOME/.qwen"
-DEFAULT_EDT_APP="/Applications/1C/1CE/components/1c-edt-2025.1.5+34-x86_64/1cedt (2025.1.5+34).app"
+DEFAULT_EDT_APP=""
 
 PROJECT_DIR="${PROJECT_DIR:-}"
 PROJECT_FIXTURE_DIR="${PROJECT_FIXTURE_DIR:-}"
@@ -49,7 +49,7 @@ Optional env:
   PROJECT_COPY_NAME=clean-smoke
   SUITE_PATH=/abs/path/to/suite.json
   SCENARIO_ID=WH-001
-  EDT_SOURCE_APP=/Applications/.../1cedt.app
+  EDT_SOURCE_APP=/Applications/.../1cedt.app  # required; must be self-contained EDT 2026.2.0.289
   EDT_TEST_APP=$HOME/.codepilot1c/edt-test/1cedt-test.app
   EDT_WORKSPACE=/abs/path/to/isolated-workspace
   EDT_HEADLESS=true|false
@@ -196,15 +196,47 @@ prepare_project_copy_if_needed() {
     printf '%s\n' "$target_dir"
 }
 
+validate_edt_baseline() {
+    local app="$1"
+    python3 - "$app/Contents/Eclipse/configuration/config.ini" <<'PY' || fail \
+        "EDT app must have product.version=2026.2.0 and eclipse.buildId=2026.2.0.289: $app"
+from pathlib import Path
+import sys
+
+values = {}
+for raw in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if "=" in raw and not raw.lstrip().startswith(("#", "!")):
+        key, value = raw.split("=", 1)
+        values[key.strip()] = value.strip()
+if values.get("product.version") != "2026.2.0" or values.get("eclipse.buildId") != "2026.2.0.289":
+    raise SystemExit(1)
+PY
+}
+
+validate_self_contained_edt_app() {
+    local app="$1"
+    local mode="${2:-run}"
+    python3 "$ROOT_DIR/tools/edt_bundle_locations.py" "$app" "$mode" || fail \
+        "EDT app is not self-contained and safe for $mode mode: $app"
+}
+
 ensure_test_edt_copy() {
-    [[ -d "$EDT_SOURCE_APP" ]] || fail "EDT_SOURCE_APP not found: $EDT_SOURCE_APP"
     if [[ -d "$EDT_TEST_APP" ]]; then
+        validate_edt_baseline "$EDT_TEST_APP"
+        validate_self_contained_edt_app "$EDT_TEST_APP"
         log "Using existing test EDT copy: $EDT_TEST_APP"
         return 0
     fi
+    [[ -n "$EDT_SOURCE_APP" ]] || fail \
+        "EDT_SOURCE_APP is required. The running EDT 2026.2 shared-p2 app cannot be copied safely."
+    [[ -d "$EDT_SOURCE_APP" ]] || fail "EDT_SOURCE_APP not found: $EDT_SOURCE_APP"
+    validate_edt_baseline "$EDT_SOURCE_APP"
+    validate_self_contained_edt_app "$EDT_SOURCE_APP" copy
     log "Creating user-writable EDT test copy from $EDT_SOURCE_APP"
     mkdir -p "$(dirname "$EDT_TEST_APP")"
     ditto "$EDT_SOURCE_APP" "$EDT_TEST_APP"
+    validate_edt_baseline "$EDT_TEST_APP"
+    validate_self_contained_edt_app "$EDT_TEST_APP"
 }
 
 prepare_temp_qwen_home() {
@@ -324,4 +356,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

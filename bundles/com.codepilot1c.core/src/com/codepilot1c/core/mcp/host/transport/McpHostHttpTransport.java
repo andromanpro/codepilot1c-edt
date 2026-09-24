@@ -27,6 +27,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
+import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.IMcpHostTransport;
 import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
@@ -116,7 +117,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         }
         try {
             server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
-            server.createContext("/mcp", new McpHandler()); //$NON-NLS-1$
+            server.createContext("/mcp", createMcpHandler()); //$NON-NLS-1$
             server.createContext("/health", exchange -> writeText(exchange, 200, "ok")); //$NON-NLS-1$ //$NON-NLS-2$
             server.createContext("/health/ready", new ReadinessHandler()); //$NON-NLS-1$
             server.createContext("/llm/v1/capabilities", new LlmEndpointHandler(true)); //$NON-NLS-1$
@@ -187,6 +188,10 @@ public class McpHostHttpTransport implements IMcpHostTransport {
         return server != null ? server.getAddress().getPort() : -1;
     }
 
+    HttpHandler createMcpHandler() {
+        return new McpHandler();
+    }
+
     private final class ReadinessHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -239,8 +244,17 @@ public class McpHostHttpTransport implements IMcpHostTransport {
     private final class McpHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            String opId = LogSanitizer.newId("mcp-http"); //$NON-NLS-1$
+            String requestMethod = null;
+            String rpcMethod = null;
+            String requestId = null;
+            String sessionId = null;
+            String remoteAddress = null;
             try {
-                String requestMethod = exchange.getRequestMethod();
+                requestMethod = exchange.getRequestMethod();
+                remoteAddress = exchange.getRemoteAddress() != null
+                        ? String.valueOf(exchange.getRemoteAddress())
+                        : null;
                 if ("GET".equalsIgnoreCase(requestMethod) && acceptsSse(exchange)) { //$NON-NLS-1$
                     if (!hasSupportedProtocolVersion(exchange)) {
                         writeUnsupportedProtocolVersion(exchange);
@@ -270,7 +284,10 @@ public class McpHostHttpTransport implements IMcpHostTransport {
 
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 McpMessage request = gson.fromJson(body, McpMessage.class);
+                rpcMethod = request != null ? request.getMethod() : null;
+                requestId = request != null ? request.getId() : null;
                 String requestedSessionId = exchange.getRequestHeaders().getFirst("Mcp-Session-Id"); //$NON-NLS-1$
+                sessionId = requestedSessionId;
                 McpHostSession session;
                 String responseSessionId;
                 if (requestedSessionId != null && !requestedSessionId.isBlank()) {
@@ -288,6 +305,7 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                     session = createAndRegisterSession(exchange);
                     responseSessionId = session.getSessionId();
                 }
+                sessionId = responseSessionId;
                 synchronized (session) {
                     // A DELETE or TTL cleanup may have removed the session after get().
                     if (sessions.get(responseSessionId) != session) {
@@ -320,20 +338,58 @@ public class McpHostHttpTransport implements IMcpHostTransport {
                         exchange.getResponseHeaders().add("Content-Type", "application/json"); //$NON-NLS-1$ //$NON-NLS-2$
                         bytes = json.getBytes(StandardCharsets.UTF_8);
                     }
-                    exchange.sendResponseHeaders(200, bytes.length);
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(bytes);
-                    }
+                    deliverMcpResponse(exchange, bytes, opId, requestMethod, rpcMethod,
+                            requestId, sessionId, remoteAddress);
                 }
             } catch (JsonSyntaxException e) {
                 McpMessage error = new McpMessage();
                 error.setError(new McpError(-32700, "Parse error", null)); //$NON-NLS-1$
                 writeJson(exchange, 400, error);
             } catch (Exception e) {
-                LOG.error("Unhandled MCP HTTP handler error", e); //$NON-NLS-1$
+                LOG.error(String.format("[%s] Unhandled MCP HTTP handler error: " //$NON-NLS-1$
+                        + "httpMethod=%s rpcMethod=%s requestId=%s sessionId=%s remote=%s", //$NON-NLS-1$
+                        opId, logContext(requestMethod), logContext(rpcMethod), logContext(requestId),
+                        logContext(sessionId), logContext(remoteAddress)), e);
                 writeJson(exchange, 500, Map.of("error", "internal_error")); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
+    }
+
+    /** The only phase where an expected client disconnect may be downgraded. */
+    private void deliverMcpResponse(HttpExchange exchange, byte[] bytes, String opId,
+            String requestMethod, String rpcMethod, String requestId, String sessionId,
+            String remoteAddress) {
+        try {
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        } catch (Exception e) {
+            IOException disconnect = McpHttpClientDisconnects.findExpected(e);
+            if (disconnect != null) {
+                LOG.info("[%s] MCP HTTP client disconnected before response completed: " //$NON-NLS-1$
+                        + "httpMethod=%s rpcMethod=%s requestId=%s sessionId=%s remote=%s cause=%s", //$NON-NLS-1$
+                        opId, logContext(requestMethod), logContext(rpcMethod), logContext(requestId),
+                        logContext(sessionId), logContext(remoteAddress), disconnectSummary(disconnect));
+                return;
+            }
+            LOG.error(String.format("[%s] MCP HTTP response delivery error: " //$NON-NLS-1$
+                    + "httpMethod=%s rpcMethod=%s requestId=%s sessionId=%s remote=%s", //$NON-NLS-1$
+                    opId, logContext(requestMethod), logContext(rpcMethod), logContext(requestId),
+                    logContext(sessionId), logContext(remoteAddress)), e);
+        }
+    }
+
+    private static String logContext(Object value) {
+        String singleLine = (value != null ? String.valueOf(value) : "[null]") //$NON-NLS-1$
+                .replace('\r', ' ').replace('\n', ' ');
+        return LogSanitizer.redactSecrets(LogSanitizer.truncate(singleLine, LogSanitizer.PATH_MAX_LENGTH));
+    }
+
+    private static String disconnectSummary(IOException disconnect) {
+        String message = disconnect.getMessage();
+        return logContext(disconnect.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ": " + message)); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private final class AuthorizationMetadataHandler implements HttpHandler {

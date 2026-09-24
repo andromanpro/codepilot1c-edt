@@ -5,8 +5,6 @@
 package com.codepilot1c.core.tools.gsd;
 
 import java.io.IOException;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -80,21 +78,9 @@ final class GsdToolSupport {
                     "GSD execution requires scoped project_path and session identity"); //$NON-NLS-1$
         }
         try {
-            Path requestedPath = Path.of(requested);
-            Path capturedPath = Path.of(context.projectPath());
-            if (!requestedPath.isAbsolute() || !capturedPath.isAbsolute()) {
-                throw new GsdToolIdentityException(
-                        "GSD execution requires an absolute project_path identity"); //$NON-NLS-1$
-            }
-            requestedPath = requestedPath.normalize();
-            capturedPath = capturedPath.normalize();
-            if (!requestedPath.equals(capturedPath)) {
-                throw new GsdToolIdentityException(
-                        "project_path does not match the captured execution identity"); //$NON-NLS-1$
-            }
-            return requestedPath.toString();
-        } catch (InvalidPathException e) {
-            throw new GsdToolIdentityException("project_path is invalid"); //$NON-NLS-1$
+            return GsdProjectIdentityResolver.resolve(requested, context.projectPath());
+        } catch (GsdProjectIdentityResolver.IdentityResolutionException e) {
+            throw new GsdToolIdentityException(e.getMessage());
         }
     }
 

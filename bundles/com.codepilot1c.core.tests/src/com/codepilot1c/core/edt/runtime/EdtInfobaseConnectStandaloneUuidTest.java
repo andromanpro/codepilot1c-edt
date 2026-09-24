@@ -11,6 +11,7 @@ package com.codepilot1c.core.edt.runtime;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -43,7 +44,8 @@ import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com.codepilot1c.core.edt.runtime.EdtInfobaseConnectService.ConnectRequest;
 import com.codepilot1c.core.edt.runtime.EdtInfobaseConnectService.ConnectionKind;
-import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntime;
+import com.e1c.g5.v8.dt.platform.standaloneserver.core.config.Config;
+import com.e1c.g5.v8.dt.platform.standaloneserver.core.config.Infobase;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerBehaviourDelegate;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerDelegate;
@@ -68,6 +70,21 @@ import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfob
  * non-null.</p>
  */
 public class EdtInfobaseConnectStandaloneUuidTest {
+
+    @Test
+    public void extractsUuidFromEdt2026StandaloneConfiguration() {
+        UUID expected = UUID.fromString("91f64b6e-377f-4d1c-a1e7-fadab83b41f8"); //$NON-NLS-1$
+        StandaloneServerInfobase module = standaloneInfobaseWithId(expected.toString());
+
+        assertEquals(expected, EdtInfobaseConnectService.extractStandaloneInfobaseUuid(module));
+    }
+
+    @Test
+    public void invalidEdt2026StandaloneConfigurationIdFallsBackCleanly() {
+        StandaloneServerInfobase module = standaloneInfobaseWithId("not-a-uuid"); //$NON-NLS-1$
+
+        assertNull(EdtInfobaseConnectService.extractStandaloneInfobaseUuid(module));
+    }
 
     /**
      * Drives {@link EdtInfobaseConnectService#connectStandalone} end-to-end with stubbed
@@ -119,6 +136,17 @@ public class EdtInfobaseConnectStandaloneUuidTest {
     }
 
     // ---- support stubs -----------------------------------------------------------------------
+
+    private static StandaloneServerInfobase standaloneInfobaseWithId(String id) {
+        Infobase infobase = new Infobase();
+        infobase.setId(id);
+        infobase.setName("TestInfobase"); //$NON-NLS-1$
+        Config configuration = new Config();
+        configuration.setInfobase(infobase);
+        StandaloneServerInfobase module = new StandaloneServerInfobase();
+        module.setStandaloneServerConfiguration(configuration);
+        return module;
+    }
 
     /** Exposes the protected {@code connectStandalone} for direct invocation by the test. */
     private static final class TestableConnectService extends EdtInfobaseConnectService {
@@ -200,12 +228,12 @@ public class EdtInfobaseConnectStandaloneUuidTest {
         public List<IServer> getServers() { return Collections.emptyList(); }
 
         @Override
-        public IServer createServer(IRuntime r, IProgressMonitor monitor) {
+        public IServer createServer(String name, IRuntime r, IProgressMonitor monitor) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public Optional<IServer> getServer(StandaloneServerInfobase infobase) {
+        public Optional<IServer> findServer(StandaloneServerInfobase infobase) {
             return Optional.empty();
         }
 
@@ -219,7 +247,8 @@ public class EdtInfobaseConnectStandaloneUuidTest {
         public IStatus validateRuntimeInstallation(RuntimeInstallation installation) { return null; }
 
         @Override
-        public Optional<IStandaloneServerRuntime> getStandaloneServerRuntime(IRuntime r,
+        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate>
+                getStandaloneServerRuntimeDelegate(IRuntime r,
                 IProgressMonitor monitor) {
             return Optional.empty();
         }
@@ -259,6 +288,12 @@ public class EdtInfobaseConnectStandaloneUuidTest {
 
         @Override
         public boolean isStandaloneServer(IServer server) { return false; }
+
+        @Override
+        public RuntimeInstallation toPlatformInstallation(IRuntime runtime) { return null; }
+
+        @Override
+        public String calculatePlatformVersion(IRuntime runtime) { return ""; } //$NON-NLS-1$
 
     }
 

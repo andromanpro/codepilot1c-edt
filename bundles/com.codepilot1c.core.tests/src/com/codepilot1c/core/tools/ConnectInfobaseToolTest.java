@@ -632,44 +632,12 @@ public class ConnectInfobaseToolTest {
         }
 
         @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings getSettings(
+        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings createDefaultSettings(
                 InfobaseReference reference) { return null; }
 
         @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings getSettings(
-                InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.model.InfobaseAccess access) { return null; }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(org.eclipse.core.resources.IProject project,
-                        InfobaseReference reference) { return null; }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(InfobaseReference reference) { return null; }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation
-                getInstallation(InfobaseReference reference,
-                        com._1c.g5.v8.dt.platform.version.Version version) { return null; }
-
-        @Override
-        public void storeSettings(InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings settings) {
-        }
-
-        @Override
-        public void storeSettings(InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.model.InfobaseAccess access,
-                String user, String password, String additional) {
-        }
-
-        @Override
-        public void storeInstallation(org.eclipse.core.resources.IProject project,
-                InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation installation) {
-        }
+        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings resolveSettings(
+                InfobaseReference reference) { return null; }
 
         @Override
         public void updateSettings(InfobaseReference reference,
@@ -687,6 +655,18 @@ public class ConnectInfobaseToolTest {
         @Override
         public void removeInfobaseAccessSettingsChangeListener(
                 com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettingsChangeListener listener) {
+        }
+
+        @Override
+        public Optional<com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation>
+                loadSelectedInstallation(org.eclipse.core.resources.IProject project, InfobaseReference reference) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void updateSelectedInstallation(org.eclipse.core.resources.IProject project,
+                InfobaseReference reference,
+                com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation installation) {
         }
 
     }

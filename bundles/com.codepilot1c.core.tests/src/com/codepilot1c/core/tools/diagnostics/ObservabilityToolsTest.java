@@ -272,7 +272,7 @@ public class ObservabilityToolsTest {
         }
 
         @Override
-        public org.eclipse.wst.server.core.IServer createServer(
+        public org.eclipse.wst.server.core.IServer createServer(String name,
                 org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
             throw new UnsupportedOperationException();
         }
@@ -286,7 +286,7 @@ public class ObservabilityToolsTest {
         }
 
         @Override
-        public java.util.Optional<IServer> getServer(StandaloneServerInfobase infobase) {
+        public java.util.Optional<IServer> findServer(StandaloneServerInfobase infobase) {
             return java.util.Optional.empty();
         }
 
@@ -313,8 +313,8 @@ public class ObservabilityToolsTest {
         }
 
         @Override
-        public java.util.Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntime> //
-                getStandaloneServerRuntime(org.eclipse.wst.server.core.IRuntime runtime,
+        public java.util.Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate> //
+                getStandaloneServerRuntimeDelegate(org.eclipse.wst.server.core.IRuntime runtime,
                         IProgressMonitor monitor) {
             return java.util.Optional.empty();
         }
@@ -376,6 +376,17 @@ public class ObservabilityToolsTest {
         @Override
         public boolean isStandaloneServer(IServer server) {
             return true;
+        }
+
+        @Override
+        public com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation toPlatformInstallation(
+                org.eclipse.wst.server.core.IRuntime runtime) {
+            return null;
+        }
+
+        @Override
+        public String calculatePlatformVersion(org.eclipse.wst.server.core.IRuntime runtime) {
+            return ""; //$NON-NLS-1$
         }
     }
 }

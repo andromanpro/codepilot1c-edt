@@ -179,7 +179,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
 
     private static StandaloneServerInfobase newStandaloneModule(IProject project, String projectName,
             InfobaseReference adapter) {
-        StandaloneServerInfobase module = new StandaloneServerInfobase(java.util.UUID.randomUUID()) {
+        StandaloneServerInfobase module = new StandaloneServerInfobase() {
             @Override
             public IProject getProject() {
                 return project;
@@ -420,7 +420,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
 
         @Override
-        public org.eclipse.wst.server.core.IServer createServer(
+        public org.eclipse.wst.server.core.IServer createServer(String name,
                 org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
             throw new UnsupportedOperationException();
         }
@@ -433,7 +433,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
 
         @Override
-        public Optional<IServer> getServer(StandaloneServerInfobase infobase) {
+        public Optional<IServer> findServer(StandaloneServerInfobase infobase) {
             return Optional.empty();
         }
 
@@ -460,8 +460,8 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
 
         @Override
-        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntime> //
-                getStandaloneServerRuntime(org.eclipse.wst.server.core.IRuntime runtime,
+        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate> //
+                getStandaloneServerRuntimeDelegate(org.eclipse.wst.server.core.IRuntime runtime,
                         IProgressMonitor monitor) {
             return Optional.empty();
         }
@@ -523,6 +523,17 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         @Override
         public boolean isStandaloneServer(IServer server) {
             return true;
+        }
+
+        @Override
+        public com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation toPlatformInstallation(
+                org.eclipse.wst.server.core.IRuntime runtime) {
+            return null;
+        }
+
+        @Override
+        public String calculatePlatformVersion(org.eclipse.wst.server.core.IRuntime runtime) {
+            return ""; //$NON-NLS-1$
         }
     }
 

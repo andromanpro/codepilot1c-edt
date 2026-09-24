@@ -82,15 +82,7 @@ public final class ChatTurnContext {
      * @return {@code true} when the requested profile exists and was selected
      */
     public static boolean selectForSession(Session session, String profileId) {
-        if (session == null || profileId == null || profileId.isBlank()) {
-            return false;
-        }
-        return AgentProfileRegistry.getInstance().getProfile(profileId)
-                .map(profile -> {
-                    session.setAgentProfile(profile.getId());
-                    return true;
-                })
-                .orElse(false);
+        return ChatProfileSelectorModel.select(session, profileId);
     }
 
     public AgentProfile profile() {

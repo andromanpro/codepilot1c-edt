@@ -371,10 +371,11 @@ pgrep -f '1cedt' | while read -r pid; do lsof -p "$pid" 2>/dev/null | grep codep
   `OLD_IU`/`NEW_IU` значениями без версии;
 - запускать director при работающих EDT или `1cedtstart`.
 
-Сборка компилируется против target 1C:EDT `2025.2.3+30` (`targets/default/default.target`). Импорты
-`com._1c.g5.*` не имеют версионных диапазонов: OSGi resolver формально принимает более новую EDT, но
-это не гарантирует бинарную совместимость. Сборка проверена на `2025.2.3+30`; установка на `2026.2.0`
-выполнялась вручную.
+Сборка компилируется против pinned target 1C:EDT `2026.2.0.289`
+(`targets/default/default.target`) на базе Eclipse `2025-12` и Xtext `2.41.0`. Импорты
+`com._1c.g5.*` не имеют версионных диапазонов, поэтому формально разрешившийся OSGi graph ещё не
+доказывает бинарную совместимость. Target нельзя смешивать с EDT 2025.1.5/2025.2.x,
+Eclipse 2023-12 или Xtext 2.33.
 
 ## Интерактивный CLI shell
 
@@ -428,25 +429,50 @@ launcher/install layout — в [`packaging/README.md`](packaging/README.md#start
 
 ## Сборка
 
-Требования: JDK 17 и локальная инсталляция 1C:EDT. Передайте каталог `Eclipse`
-этой инсталляции как Maven system property — Tycho использует её для разрешения
-`com._1c.g5.v8.*` бандлов:
+Требования для Tycho reactor: JDK 25, Maven и EDT `2026.2.0.289`. Обычная macOS-инсталляция
+EDT 2026.2 использует shared-p2: её `Contents/Eclipse/plugins` содержит stub, а точные artifact
+locations записаны в `bundles.info`. Поэтому сначала материализуйте отдельный неизменяемый target:
 
 ```bash
-mvn -Dedt.home=/path/to/1cedt/Eclipse -DskipTests package
+EDT_APP="/Users/alex/Library/Application Support/1C/1cedtstart/installations/1C_EDT 2026.2/1cedt.app"
+EDT_TARGET_ROOT="$HOME/.cache/codepilot1c/edt-targets"
+mkdir -p "$EDT_TARGET_ROOT"
+python3 tools/materialize-edt-target.py \
+  "$EDT_APP" \
+  "$EDT_TARGET_ROOT/2026.2.0.289"
+
+# Полная deliverable-сборка всегда запускается из корня репозитория.
+mvn -DskipTests \
+  "-Dedt.home=$EDT_TARGET_ROOT/2026.2.0.289/Eclipse" \
+  package
 ```
 
-Это одинаково работает на macOS, Linux и Windows; для путей с пробелами
-заключите весь аргумент в кавычки, например:
+Materializer принимает исходный `.app` или его каталог `Contents/Eclipse`, разрешает локальные
+relative/`file:`-relative locations от каталога `Eclipse` и absolute `file:` locations shared-p2,
+проверяет baseline и каждый artifact, а затем печатает готовое значение `edt.home`. Повторный запуск
+для того же неизменившегося source идемпотентен; занятый или отличающийся output не
+перезаписывается. Raw `/Users/alex/.p2/pool` не является pinned target: в нём одновременно лежат
+bundle разных версий.
+
+URI нормализуются по правилам native host: на Windows поддерживаются абсолютные
+`file:///C:/...` и `file://server/share/...` (UNC), включая UTF-8 percent encoding; на POSIX
+Windows drive/UNC URI отклоняются fail-closed как неразрешимые локальные artifacts. Malformed URI,
+dot-segment traversal, encoded separators, отсутствующие artifacts, symlink sources и коллизии
+имён plugins также отклоняются до создания output.
+
+Для self-contained EDT на Linux/Windows можно материализовать тем же способом. Пути с пробелами
+заключайте в кавычки, например:
 
 ```powershell
-mvn "-Dedt.home=C:\Program Files\1C\EDT\Eclipse" -DskipTests package
+python tools/materialize-edt-target.py "C:\Program Files\1C\EDT" "C:\build-cache\edt-2026.2.0.289"
+mvn -DskipTests "-Dedt.home=C:\build-cache\edt-2026.2.0.289\Eclipse" package
 ```
 
-`edt.home` не имеет machine-specific default и должен указывать именно на
-каталог `Eclipse`, содержащий плагины EDT. Зафиксированная acceptance-версия —
-EDT `2025.1.5+34`; локальную и Docker-проверку следует выполнять против одной
-и той же инсталляции этой версии.
+`edt.home` не имеет machine-specific default и должен указывать именно на materialized
+`Eclipse`. Reactor использует Tycho 5.0.3; JDK 25 нужен Maven/Tycho для EDT bundles с
+`Require-Capability: JavaSE-25`, при этом standalone runtime/CLI modules продолжают выпускать
+Java 17 bytecode (`classfile 61`). `default.target` не подключает remote p2 repositories: Eclipse 2025-12,
+Xtext 2.41, terminal и CDT берутся только из точной EDT closure, без overlay от Eclipse 2023-12.
 
 На Java 17 GSD-инспекция (`gsd_get_state` и status UI) остаётся доступной на macOS
 и Linux, включая стандартный macOS provider без `SecureDirectoryStream`. Узкий

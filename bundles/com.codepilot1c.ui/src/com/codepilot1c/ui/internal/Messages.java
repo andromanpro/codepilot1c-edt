@@ -77,6 +77,9 @@ public class Messages extends NLS {
     public static String ChatView_ModelSwitchMessage;
     public static String ChatView_ModelSwitchNewChat;
     public static String ChatView_ModelSwitchContinue;
+    public static String ChatView_ProfileLabel;
+    public static String ChatView_ProfileTooltip;
+    public static String ChatView_ProfileAccessibleName;
 
     public static String CodeMdPreferencePage_Description;
     public static String CodeMdPreferencePage_ProjectLabel;

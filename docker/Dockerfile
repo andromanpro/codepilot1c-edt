@@ -26,8 +26,11 @@ COPY edt.tar /tmp/edt.tar
 RUN mkdir -p /tmp/edt-distr && \
     tar -xf /tmp/edt.tar -C /tmp/edt-distr && \
     rm /tmp/edt.tar && \
+    EDT_JAVA_HOME="$(find /tmp/edt-distr -type d -path '*/axiom-jdk-full-25*-linux-x86_64/data' -print)" && \
+    test -n "$EDT_JAVA_HOME" && \
+    test "$(printf '%s\n' "$EDT_JAVA_HOME" | wc -l)" -eq 1 && \
     /tmp/edt-distr/1ce-installer-cli \
-        --javahome /tmp/edt-distr/axiom-jdk-full-17.0.16+12-linux-x86_64/data \
+        --javahome "$EDT_JAVA_HOME" \
         --verbose info \
         install \
         --source /tmp/edt-distr \

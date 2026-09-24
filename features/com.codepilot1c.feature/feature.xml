@@ -11,10 +11,11 @@
 
    <license url="%licenseURL">%license</license>
 
-   <requires>
-      <import feature="org.eclipse.tm.terminal.feature" version="0.0.0" match="compatible"/>
-      <import feature="org.eclipse.cdt.native" version="0.0.0" match="compatible"/>
-   </requires>
+   <!--
+      EDT platform prerequisites (including its terminal/CDT bundles) are supplied by the
+      pinned EDT installation. Importing upstream Eclipse features here would overlay a
+      different p2 graph instead of preserving the EDT 2026.2.0.289 runtime closure.
+   -->
 
    <plugin
          id="com.codepilot1c.core"

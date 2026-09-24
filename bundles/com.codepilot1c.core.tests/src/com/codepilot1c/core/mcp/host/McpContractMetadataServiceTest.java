@@ -115,9 +115,9 @@ public class McpContractMetadataServiceTest {
     @Test
     public void edtVersionUsesInjectedEdtProductBuildSupplier() {
         DefaultMcpRuntimeInfoGateway gateway = new DefaultMcpRuntimeInfoGateway(
-                () -> Optional.of("2025.2.3+30")); //$NON-NLS-1$
+                () -> Optional.of("2026.2.0.289")); //$NON-NLS-1$
 
-        assertEquals(Optional.of("2025.2.3+30"), gateway.edtVersion()); //$NON-NLS-1$
+        assertEquals(Optional.of("2026.2.0.289"), gateway.edtVersion()); //$NON-NLS-1$
     }
 
     @Test

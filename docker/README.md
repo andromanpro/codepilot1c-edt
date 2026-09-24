@@ -15,8 +15,10 @@
 | `Dockerfile` | `docker/Dockerfile` в этом репозитории |
 | `docker-entrypoint.sh` | `docker/docker-entrypoint.sh` в этом репозитории |
 
-Дистрибутив EDT: файл вида `1c_edt_distr_offline_<version>_linux_x86_64.tar`.
-Проверенная версия: `2025.2.3+30`.
+Pinned-дистрибутив EDT: `2026.2.0`, build `289`:
+`/Users/alex/Downloads/1c_edt_distr_offline_2026.2.0_289_linux_x86_64.tar`.
+Сейчас этот tar отсутствует, поэтому Docker baseline ещё нельзя собирать или проверять; подменять
+его архивом EDT 2025.1.5/2025.2.x запрещено.
 
 Сборка образа выполняется локально. GitHub-hosted runner не поддерживается, поскольку target platform требует локальную установку 1C:EDT.
 
@@ -25,8 +27,8 @@
 ## Сборка плагина
 
 ```bash
-# В корне репозитория
-mvn -Dedt.home=/path/to/1cedt/Eclipse -Dmaven.test.skip=true package
+# В корне репозитория, после materialization точного target (см. корневой README)
+mvn -DskipTests -Dedt.home=/path/to/materialized/2026.2.0.289/Eclipse package
 
 # Артефакт будет здесь:
 ls repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip
@@ -48,11 +50,12 @@ docker/
 
 ```bash
 # Копируем дистрибутив и плагин
-cp /path/to/1c_edt_distr_offline_2025.2.3_30_linux_x86_64.tar docker/edt.tar
+cp /Users/alex/Downloads/1c_edt_distr_offline_2026.2.0_289_linux_x86_64.tar docker/edt.tar
 cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
 
 # Собираем образ (~10–15 минут первый раз, ~1 минута при повторной сборке с кешем)
-docker build -t codepilot1c-edt:latest docker/
+docker build --platform linux/amd64 -f docker/Dockerfile \
+  -t codepilot1c-edt:2026.2.0-289 docker
 ```
 
 ### Что происходит при сборке

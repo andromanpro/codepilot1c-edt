@@ -33,6 +33,8 @@ import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.core.StandaloneServerException;
+import com.e1c.g5.v8.dt.platform.standaloneserver.core.config.Config;
+import com.e1c.g5.v8.dt.platform.standaloneserver.core.config.Infobase;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
 
@@ -710,8 +712,9 @@ public class EdtInfobaseConnectService {
         }
         try {
             IInfobaseManager manager = gateway.getInfobaseManager();
-            if (standaloneInfobase.getInfobaseId() != null) {
-                return manager.findInfobaseByUuid(standaloneInfobase.getInfobaseId()).orElse(fallback);
+            UUID infobaseUuid = extractStandaloneInfobaseUuid(standaloneInfobase);
+            if (infobaseUuid != null) {
+                return manager.findInfobaseByUuid(infobaseUuid).orElse(fallback);
             }
             if (standaloneInfobase.getName() != null) {
                 return manager.findInfobaseByName(standaloneInfobase.getName()).orElse(fallback);
@@ -722,6 +725,25 @@ public class EdtInfobaseConnectService {
             LOG.warn("Failed to resolve bound standalone infobase reference: %s", detail); //$NON-NLS-1$
         }
         return fallback;
+    }
+
+    static UUID extractStandaloneInfobaseUuid(StandaloneServerInfobase standaloneInfobase) {
+        if (standaloneInfobase == null) {
+            return null;
+        }
+        Config configuration = standaloneInfobase.getStandaloneServerConfiguration();
+        if (configuration == null) {
+            return null;
+        }
+        Infobase infobase = configuration.getInfobase();
+        if (infobase == null || infobase.getId() == null || infobase.getId().isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(infobase.getId());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static String sanitizeLogin(String login) {

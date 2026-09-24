@@ -68,6 +68,16 @@ public class EventHandlerInspectTest {
     }
 
     @Test
+    public void formRootTitleRemainsVisibleWithEdt2026FormHierarchy() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        form.getTitle().put("en", "Demo form"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        Map<String, Object> formProperties = collectFormRootProperties(form, false, true);
+
+        assertEquals(Map.of("en", "Demo form"), formProperties.get("title")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    @Test
     public void adoptedDuplicateEventsExposeCallTypeForDisambiguation() throws Exception {
         Form form = FormFactory.eINSTANCE.createForm();
         attachExtensionHandler(form, EVENT_ON_OPEN_EN, "BeforeHandler", //$NON-NLS-1$
@@ -100,6 +110,8 @@ public class EventHandlerInspectTest {
 
         assertEquals(1, nodes.size());
         InspectFormLayoutResult.FormItemNode fieldNode = nodes.get(0);
+        assertEquals("MyField", fieldNode.name()); //$NON-NLS-1$
+        assertTrue(fieldNode.path().endsWith("/1:MyField")); //$NON-NLS-1$
         assertEquals(1, fieldNode.eventHandlers().size());
         assertEquals(new InspectFormLayoutResult.EventHandlerInfo(EVENT_ON_CHANGE_EN, "FieldOnChange"), //$NON-NLS-1$
                 fieldNode.eventHandlers().get(0));
@@ -185,6 +197,28 @@ public class EventHandlerInspectTest {
         assertEquals(1, nodes.size());
         assertEquals(1, nodes.get(0).eventHandlers().size());
         assertEquals("FieldOnChange", nodes.get(0).eventHandlers().get(0).handlerName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void formItemLookupByNameRemainsCaseInsensitiveWithEdt2026Hierarchy() throws Exception {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(1);
+        field.setName("MyField"); //$NON-NLS-1$
+        form.getItems().add(field);
+
+        Event onChangeEvent = createEvent(EVENT_ON_CHANGE_EN);
+        EventHandlerCatalog fakeCatalog = item -> List.of(onChangeEvent);
+        service = new EdtMetadataService(
+                new EdtMetadataGateway(), new EventHandlerTargetResolver(fakeCatalog));
+        Map<String, Object> operation =
+                opAddEventHandler(null, null, EVENT_ON_CHANGE_EN, "FieldOnChange"); //$NON-NLS-1$
+        operation.put("item_name", "myfield"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        applyFormModelOperations(form, List.of(operation));
+
+        assertEquals(1, field.getHandlers().size());
+        assertEquals("FieldOnChange", field.getHandlers().get(0).getName()); //$NON-NLS-1$
     }
 
     private static void attachHandler(com._1c.g5.v8.dt.form.model.EventHandlerContainer container, String eventName,

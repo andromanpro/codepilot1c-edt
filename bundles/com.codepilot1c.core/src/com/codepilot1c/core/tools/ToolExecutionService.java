@@ -7,6 +7,8 @@
  */
 package com.codepilot1c.core.tools;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -285,13 +287,16 @@ public class ToolExecutionService {
             return CompletableFuture.completedFuture(failResult);
         }
 
-        final String traceToolCallEventId =
-                writeToolCallTrace(traceSession, parentEventId, toolCall, parameters, tool);
+        Map<String, Object> routedParameters = routeCapturedGsdIdentity(
+                toolCall.getName(), parameters, context);
 
-        int callId = toolLogger.logToolCallStart(toolCall.getName(), parameters);
+        final String traceToolCallEventId =
+                writeToolCallTrace(traceSession, parentEventId, toolCall, routedParameters, tool);
+
+        int callId = toolLogger.logToolCallStart(toolCall.getName(), routedParameters);
         long startTime = System.currentTimeMillis();
 
-        return tool.execute(parameters, context)
+        return tool.execute(routedParameters, context)
                 .thenApply(result -> {
                     long duration = System.currentTimeMillis() - startTime;
                     toolLogger.logToolCallResult(callId, toolCall.getName(), result, duration, sensitive);
@@ -325,6 +330,47 @@ public class ToolExecutionService {
                     }
                     return ToolResult.failure("Exception: " + error.getMessage()); //$NON-NLS-1$
                 });
+    }
+
+    /**
+     * Routes a model-facing GSD project hint through the trusted identity captured by the
+     * owning turn. The model may omit the internal EDT path or use a natural one-segment
+     * project hint; neither value is treated as authorization. Explicit paths remain intact
+     * so the GSD guard can compare them with the captured identity and fail closed.
+     */
+    private static Map<String, Object> routeCapturedGsdIdentity(
+            String toolName, Map<String, Object> parameters, ToolExecutionContext context) {
+        if (!GsdFeatureGate.isGsdTool(toolName)
+                || context == null
+                || !context.isScoped()
+                || context.projectPath().isBlank()
+                || context.sessionId().isBlank()) {
+            return parameters;
+        }
+
+        boolean omitted = !parameters.containsKey("project_path"); //$NON-NLS-1$
+        Object requested = parameters.get("project_path"); //$NON-NLS-1$
+        if (!omitted && !isNaturalProjectHint(requested)) {
+            return parameters;
+        }
+
+        Map<String, Object> routed = new LinkedHashMap<>(parameters);
+        routed.put("project_path", context.projectPath()); //$NON-NLS-1$
+        return Collections.unmodifiableMap(routed);
+    }
+
+    private static boolean isNaturalProjectHint(Object requested) {
+        if (!(requested instanceof String text) || text.isBlank()
+                || text.indexOf('/') >= 0 || text.indexOf('\\') >= 0
+                || ".".equals(text) || "..".equals(text)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return false;
+        }
+        try {
+            Path path = Path.of(text);
+            return !path.isAbsolute() && path.getNameCount() == 1;
+        } catch (InvalidPathException e) {
+            return false;
+        }
     }
 
     /**
