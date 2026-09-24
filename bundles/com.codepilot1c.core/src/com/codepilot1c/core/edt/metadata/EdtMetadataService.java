@@ -8343,6 +8343,11 @@ public class EdtMetadataService {
                     "TypeDescription field '" + reference.getName() + "' requires at least one type", false); //$NON-NLS-1$ //$NON-NLS-2$
         }
         TypeDescription description = McoreFactory.eINSTANCE.createTypeDescription();
+        // Qualifiers follow the kind of each item, not the first item: in {types:["CatalogRef.X", "String(10)"]}
+        // the string length used to be dropped silently (issue #106), leaving an unlimited string.
+        TypeSpec stringSpec = null;
+        TypeSpec numberSpec = null;
+        TypeSpec dateSpec = null;
         for (TypeSpec spec : specs) {
             TypeItem item = lookupPreResolvedTypeItem(preResolvedTypes, spec.typeQuery());
             if (item == null && target instanceof BasicFeature feature) {
@@ -8363,26 +8368,49 @@ public class EdtMetadataService {
                         "Type not found for field '" + reference.getName() + "': " + spec.typeQuery(), false); //$NON-NLS-1$ //$NON-NLS-2$
             }
             description.getTypes().add(txItem);
+            String typeName = resolveTypeNameForQualifiers(txItem, spec);
+            if (isNumberType(typeName)) {
+                numberSpec = requireSingleQualifiedKind(numberSpec, spec, reference);
+            } else if (isStringType(typeName)) {
+                stringSpec = requireSingleQualifiedKind(stringSpec, spec, reference);
+            } else if (isDateType(typeName)) {
+                dateSpec = requireSingleQualifiedKind(dateSpec, spec, reference);
+            }
         }
-        TypeSpec first = specs.get(0);
-        String typeName = resolveTypeNameForQualifiers(description.getTypes().isEmpty() ? null : description.getTypes().get(0), first);
-        if (isNumberType(typeName)) {
+        if (numberSpec != null) {
             NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
-            nq.setPrecision(firstPositive(first.numberPrecision(), null, 15));
-            nq.setScale(firstNonNegative(first.numberScale(), null, 2));
-            nq.setNonNegative(first.numberNonNegative() != null && first.numberNonNegative().booleanValue());
+            nq.setPrecision(firstPositive(numberSpec.numberPrecision(), null, 15));
+            nq.setScale(firstNonNegative(numberSpec.numberScale(), null, 2));
+            nq.setNonNegative(numberSpec.numberNonNegative() != null && numberSpec.numberNonNegative().booleanValue());
             description.setNumberQualifiers(nq);
-        } else if (isStringType(typeName)) {
+        }
+        if (stringSpec != null) {
             StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
-            sq.setLength(resolveStringLength(first.stringLength(), null, 150));
-            sq.setFixed(first.stringFixed() != null && first.stringFixed().booleanValue());
+            sq.setLength(resolveStringLength(stringSpec.stringLength(), null, 150));
+            sq.setFixed(stringSpec.stringFixed() != null && stringSpec.stringFixed().booleanValue());
             description.setStringQualifiers(sq);
-        } else if (isDateType(typeName)) {
+        }
+        if (dateSpec != null) {
             DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
-            dq.setDateFractions(first.dateFractions() != null ? first.dateFractions() : DateFractions.DATE_TIME);
+            dq.setDateFractions(dateSpec.dateFractions() != null ? dateSpec.dateFractions() : DateFractions.DATE_TIME);
             description.setDateQualifiers(dq);
         }
         return description;
+    }
+
+    /**
+     * A TypeDescription holds one set of qualifiers per kind, so a second String, Number or Date in the same
+     * composite type would silently override (or lose) the first one's qualifiers — refuse it instead.
+     */
+    private TypeSpec requireSingleQualifiedKind(TypeSpec seen, TypeSpec spec, EReference reference) {
+        if (seen != null) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "TypeDescription field '" + reference.getName() + "' lists the same type twice: " //$NON-NLS-1$ //$NON-NLS-2$
+                            + seen.typeQuery() + " and " + spec.typeQuery() //$NON-NLS-1$
+                            + "; a composite type holds one String, Number and Date with one set of qualifiers each", //$NON-NLS-1$
+                    false);
+        }
+        return spec;
     }
 
     private TypeItem toTransactionTypeItem(IBmPlatformTransaction transaction, TypeItem item, TypeSpec spec) {
@@ -8416,10 +8444,36 @@ public class EdtMetadataService {
         if (value instanceof Map<?, ?> map) {
             Object types = getMapValueIgnoreCase(map, "types"); //$NON-NLS-1$
             if (types != null) {
-                return normalizeTypeSpecs(types);
+                List<TypeSpec> specs = normalizeTypeSpecs(types);
+                if (specs.size() > 1) {
+                    rejectQualifiersNextToCompositeTypes(map, types);
+                }
+                return specs;
             }
         }
         return List.of(normalizeTypeSpec(value));
+    }
+
+    private static final List<String> COMPOSITE_LEVEL_QUALIFIER_KEYS = List.of(
+            "stringQualifiers", "numberQualifiers", "dateQualifiers", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "length", "stringLength", "fixed", "fixedLength", "stringFixed", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            "precision", "digits", "scale", "fractionDigits", "nonNegative", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            "dateFractions", "fractions"); //$NON-NLS-1$ //$NON-NLS-2$
+
+    /**
+     * Qualifiers given next to {@code types} of a composite type were dropped silently: only the items were read
+     * (issue #106). Which item they belong to is not stated, so refuse, as add_metadata_child does for flat keys.
+     */
+    private void rejectQualifiersNextToCompositeTypes(Map<?, ?> map, Object types) {
+        for (String key : COMPOSITE_LEVEL_QUALIFIER_KEYS) {
+            if (getMapValueIgnoreCase(map, key) != null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type qualifier '" + key + "' next to 'types' cannot be applied to a composite type " + types //$NON-NLS-1$ //$NON-NLS-2$
+                                + "; qualify each item instead, e.g. [\"String(50)\", \"Number(10,2)\"]", //$NON-NLS-1$
+                        false);
+            }
+        }
     }
 
     /**
