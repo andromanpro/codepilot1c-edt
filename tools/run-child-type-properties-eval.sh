@@ -61,7 +61,7 @@ else
 fi
 # ECJ — тот же компилятор, которым собирает Tycho: только он принимает EdtMetadataService.java. EDT
 # поставляет его отдельным бандлом org.eclipse.jdt.core.compiler.batch.
-ECJ="${ECJ:-$(ls "$EDT_HOME"/plugins/org.eclipse.jdt.core.compiler.batch_*.jar 2>/dev/null | head -1)}"
+ECJ="${ECJ:-$(ls "$EDT_HOME"/plugins/org.eclipse.jdt.core.compiler.batch_*.jar 2>/dev/null | head -1 || true)}"
 
 # Каталог внутри репозитория, а не mktemp: в Git Bash mktemp отдаёт POSIX-путь, которого JVM не видит.
 WORK="$REPO_ROOT/target/child-type-properties-eval"
@@ -89,7 +89,7 @@ if [ "$MODE" = "run" ] || [ "$MODE" = "sabotage" ]; then
     # Прогон против устаревших классов зелёный ровно так же, как против свежих, поэтому свежесть
     # проверяется. Точка отсчёта — jar последней сборки: mtime каталога classes не меняется при
     # перезаписи файлов внутри.
-    BUILD_STAMP="$(ls -1t "$REPO_ROOT/bundles/com.codepilot1c.core/target"/com.codepilot1c.core-*.jar 2>/dev/null | head -1)"
+    BUILD_STAMP="$(ls -1t "$REPO_ROOT/bundles/com.codepilot1c.core/target"/com.codepilot1c.core-*.jar 2>/dev/null | head -1 || true)"
     [ -n "$BUILD_STAMP" ] || BUILD_STAMP="$CLASSES"
     NEWEST_SRC="$(find "$SRC" -name '*.java' -newer "$BUILD_STAMP" -print -quit 2>/dev/null)"
     if [ -n "$NEWEST_SRC" ]; then
@@ -103,7 +103,7 @@ fi
 # JUnit 4 и Hamcrest EDT поставляет в plugins/ (org.junit, org.hamcrest.core).
 CP="$EDT_HOME/plugins/*"
 # JNA лежит в EDT распакованным каталогом и под маску plugins/* не попадает.
-JNA_DIR="$(ls -d "$EDT_HOME"/plugins/com.sun.jna_* 2>/dev/null | head -1)"
+JNA_DIR="$(ls -d "$EDT_HOME"/plugins/com.sun.jna_* 2>/dev/null | head -1 || true)"
 [ -n "$JNA_DIR" ] && CP="$CP$CP_SEP$JNA_DIR"
 # Библиотеки плагина: у target/classes они в lib/ бандла, у распакованного jar — в его lib/.
 CP="$CP$CP_SEP$REPO_ROOT/bundles/com.codepilot1c.core/lib/*"
@@ -215,7 +215,9 @@ fi
 
 # Саботаж на красной базе беззубый: «пойман» там любой дефект. Поэтому сначала чистый прогон обязан быть зелёным.
 if ! run_suite > "$WORK/clean.txt" 2>&1; then
-    grep -a -E '^[0-9]+\) |^Tests run' "$WORK/clean.txt" | head -10
+    # Без строк теста (JVM не стартовала, класс не найден) grep вернёт 1, и под pipefail скрипт умер бы до
+    # сообщения ОТКАЗ — тогда показать хвост вывода, там настоящая причина.
+    grep -a -E '^[0-9]+\) |^Tests run' "$WORK/clean.txt" | head -10 || tail -5 "$WORK/clean.txt"
     echo "ОТКАЗ: набор красный и без саботажа — контроль ничего бы не доказал" >&2
     exit 1
 fi
