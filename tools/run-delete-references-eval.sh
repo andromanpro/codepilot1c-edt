@@ -8,11 +8,19 @@
 # свойства произведённых типов). В примеры шёл FQN верхнего объекта источника, и это выглядело как ссылка от
 # документа. С force:true реквизит удалялся.
 #
+# Производные данные формы (второй коммит): у документа с формой, когда EDT пересчитала производные данные формы
+# (например, после update_metadata по самому документу), отказ давал «…Form.ФормаДокумента.Form#source». Модель
+# формы — отдельный верхний объект BM, и её производные поля (Form.fields → DerivedField.source, formContext) не
+# считались данными владельца. Разрешение записанного пути данных (AbstractDataPath.objects) тоже transient, но
+# это привязка разработчика — она считается.
+#
 # Использование (EDT_HOME — каталог Eclipse установленной 1C:EDT, тот же, что -Dedt.home; JDK 17+ берётся из
 # JAVA_HOME, без него — javac/java из PATH; JUnit, Hamcrest и компилятор ECJ — из plugins/ самой EDT):
 #   EDT_HOME=... bash tools/run-delete-references-eval.sh                      # против target/classes, ожидается зелёный
 #   EDT_HOME=... bash tools/run-delete-references-eval.sh --baseline <каталог> # против распакованного jar сборки ДО фикса:
 #                                                                              # обязан покраснеть поимённо на симптоме
+#   EDT_HOME=... bash tools/run-delete-references-eval.sh --baseline-form <каталог> # против сборки с первым коммитом,
+#                                                                              # без второго: красная на производных данных формы
 #   EDT_HOME=... bash tools/run-delete-references-eval.sh --classes <каталог>  # против другой сборки, ожидается зелёный
 #   EDT_HOME=... bash tools/run-delete-references-eval.sh --sabotage           # каждый дефект обязан дать красный
 #
@@ -67,6 +75,7 @@ while [ $# -gt 0 ]; do
         --sabotage) MODE="sabotage"; shift ;;
         --classes) CLASSES="$(win_path "$2")"; MODE="classes"; shift 2 ;;
         --baseline) CLASSES="$(win_path "$2")"; MODE="baseline"; shift 2 ;;
+        --baseline-form) CLASSES="$(win_path "$2")"; MODE="baseline-form"; shift 2 ;;
         *) echo "неизвестный аргумент: $1" >&2; exit 2 ;;
     esac
 done
@@ -129,9 +138,18 @@ if [ "$MODE" = "baseline" ]; then
         derivedDataOfAnotherTopObjectStillCounts
         unreadableReferencesToDerivedObjectStillCount
         directReferenceFromAnotherObjectStillRefuses
+        # Тесты производных данных формы на сборке до фикса: там любая производная ссылка засчитывалась, точные
+        # счётчики не сходятся.
+        derivedFieldOfOwnerFormHasNoIncomingReferences
+        formContextOfOwnerFormHasNoIncomingReferences
+        writtenFormFieldBindingThroughDerivedFieldIsNamed
+        writtenFormFieldBindingToAttributeStillRefuses
+        derivedFieldOfAnotherDocumentFormStillCounts
+        derivedFieldOfFormWithoutMdFormStillCounts
     )
     EXPECTED_GREEN=(
         inputByStringThroughDerivedFieldStillRefuses
+        writtenFormFieldBindingThroughDerivedFieldStillRefuses
     )
     set +e
     run_suite > "$WORK/baseline.txt" 2>&1
@@ -162,6 +180,43 @@ if [ "$MODE" = "baseline" ]; then
         exit 1
     fi
     echo "BASELINE: сборка до фикса красная ровно на симптоме (${#EXPECTED_RED[@]} из $TOTAL), прежний отказ по настоящей ссылке не задет"
+    exit 0
+fi
+
+if [ "$MODE" = "baseline-form" ]; then
+    # Сборка с первым коммитом, но без второго: красная только на производных данных формы владельца.
+    # Симптом из живого замера — «…Form.ФормаДокумента.Form#source», одна ссылка на свежий реквизит.
+    FORM_RED=(
+        derivedFieldOfOwnerFormHasNoIncomingReferences
+        formContextOfOwnerFormHasNoIncomingReferences
+        writtenFormFieldBindingThroughDerivedFieldIsNamed
+    )
+    set +e
+    run_suite > "$WORK/baseline.txt" 2>&1
+    suite_rc=$?
+    set -e
+    awk '/^[0-9]+\) / { print; getline; print "     " substr($0, 1, 260) } /^Tests run|^OK \(/ { print }' "$WORK/baseline.txt"
+    PROBLEMS=0
+    [ "$suite_rc" -ne 0 ] || { echo "🚨 сборка без фикса форм ЗЕЛЁНАЯ — eval не воспроизводит дефект"; PROBLEMS=1; }
+    if grep -a -q -E 'ExceptionInInitializerError|NoClassDefFoundError|NoSuchMethodException|обвязка:' "$WORK/baseline.txt"; then
+        echo "🚨 красный из-за обвязки (инициализация/classpath/сигнатура/URI), а не из-за симптома"; PROBLEMS=1
+    fi
+    for red_test in "${FORM_RED[@]}"; do
+        grep -a -q -E "^[0-9]+\) $red_test\(" "$WORK/baseline.txt" || { echo "🚨 не покраснел: $red_test"; PROBLEMS=1; }
+    done
+    red_count="$(grep -a -c -E '^[0-9]+\) ' "$WORK/baseline.txt" || true)"
+    if [ "$red_count" -gt "${#FORM_RED[@]}" ]; then
+        echo "🚨 красных $red_count, а не ${#FORM_RED[@]}: задето то, что чинил первый коммит"; PROBLEMS=1
+    elif [ "$red_count" -lt "${#FORM_RED[@]}" ]; then
+        echo "🚨 красных $red_count, а не ${#FORM_RED[@]}: это не сборка без фикса форм (или eval не воспроизводит дефект)"; PROBLEMS=1
+    fi
+    grep -a -q -E 'ссылки на свежий реквизит: \[DerivedField#source\] expected:<0> but was:<1>' "$WORK/baseline.txt" \
+        || { echo "🚨 нет симптома «производное поле формы — одна ссылка» в причинах"; PROBLEMS=1; }
+    if [ "$PROBLEMS" -ne 0 ]; then
+        echo "BASELINE-FORM: ПРОВАЛ"
+        exit 1
+    fi
+    echo "BASELINE-FORM: сборка без фикса форм красная ровно на производных данных формы (${#FORM_RED[@]}), остальное зелёное"
     exit 0
 fi
 
@@ -250,6 +305,14 @@ sabotage "производные данные чужого объекта не �
 # Нечитаемые ссылки на производный объект молча считаются пустыми.
 sabotage "нечитаемые ссылки на производный объект — пустой список" \
     's/return engine != null \? engine\.getBackReferences\(target\) : null;/return engine != null ? engine.getBackReferences(target) : List.of();/'
+
+# Модель формы снова обрывает подъём к владельцу — производные данные формы опять считаются.
+sabotage "форма владельца не ведёт к владельцу через mdForm (дефект форм)" \
+    's/container = formModel\.getMdForm\(\);/container = null;/'
+
+# Разрешение записанного пути данных принимается за производные данные — привязка поля теряется.
+sabotage "разрешение записанного пути данных считается производным" \
+    's/if \(current instanceof AbstractDataPath\) \{\n\s*return false;/if (false) {\n                return false;/'
 
 echo
 if [ "$FAILED_TO_CATCH" -ne 0 ]; then

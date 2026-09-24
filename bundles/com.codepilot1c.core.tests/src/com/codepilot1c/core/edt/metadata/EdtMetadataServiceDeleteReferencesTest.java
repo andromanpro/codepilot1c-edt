@@ -31,6 +31,11 @@ import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.bm.core.IBmTransaction;
 import com._1c.g5.v8.bm.integration.IBmSingleNamespaceTask;
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
+import com._1c.g5.v8.dt.form.model.DataPath;
+import com._1c.g5.v8.dt.form.model.DataPathReferredObject;
+import com._1c.g5.v8.dt.form.model.Form;
+import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.mcore.ContextDef;
 import com._1c.g5.v8.dt.mcore.DerivedField;
 import com._1c.g5.v8.dt.mcore.DerivedProperty;
@@ -45,6 +50,7 @@ import com._1c.g5.v8.dt.metadata.dbview.DocumentDbViewDefs;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.DocumentAttribute;
+import com._1c.g5.v8.dt.metadata.mdclass.DocumentForm;
 import com._1c.g5.v8.dt.metadata.mdclass.FunctionalOption;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObjectReferenceTypeDescription;
@@ -155,6 +161,90 @@ public class EdtMetadataServiceDeleteReferencesTest {
         assertEquals("ссылки: " + result.samples, 1, result.total); //$NON-NLS-1$
     }
 
+    // --- производные данные формы владельца ---------------------------------
+
+    @Test
+    public void derivedFieldOfOwnerFormHasNoIncomingReferences() throws Exception {
+        // Живой симптом: после update_metadata по документу EDT пересчитывает производные данные формы, и её
+        // производное поле давало «…Form.ФормаДокумента.Form#source» — отказ удалить свежий реквизит.
+        Fixture fixture = new Fixture();
+        Form form = fixture.addFormOfOwner(fixture.document);
+        fixture.addFormDerivedField(form);
+        Result result = fixture.collect();
+        assertEquals("ссылки на свежий реквизит: " + result.samples, 0, result.total); //$NON-NLS-1$
+    }
+
+    @Test
+    public void formContextOfOwnerFormHasNoIncomingReferences() throws Exception {
+        // AbstractForm.formContext (transient) → ContextDef.properties → DerivedProperty.source — тоже вывод EDT.
+        Fixture fixture = new Fixture();
+        Form form = fixture.addFormOfOwner(fixture.document);
+        ContextDef formContext = McoreFactory.eINSTANCE.createContextDef();
+        DerivedProperty property = McoreFactory.eINSTANCE.createDerivedProperty();
+        property.setSource(fixture.target);
+        formContext.getProperties().add(property);
+        form.setFormContext(formContext);
+        Result result = fixture.collect();
+        assertEquals("ссылки на свежий реквизит: " + result.samples, 0, result.total); //$NON-NLS-1$
+    }
+
+    @Test
+    public void writtenFormFieldBindingThroughDerivedFieldStillRefuses() throws Exception {
+        // Поле формы с путём данных «Объект.Зонд»: записаны сегменты, а разрешение пути (transient objects)
+        // указывает на производное поле формы. Это настоящая привязка — удаление обязано остановиться.
+        Fixture fixture = new Fixture();
+        Form form = fixture.addFormOfOwner(fixture.document);
+        DerivedField formField = fixture.addFormDerivedField(form);
+        fixture.addBoundFormField(form, formField);
+        Result result = fixture.collect();
+        assertTrue("привязка поля формы не остановила удаление: " + result.samples, result.total >= 1); //$NON-NLS-1$
+    }
+
+    @Test
+    public void writtenFormFieldBindingThroughDerivedFieldIsNamed() throws Exception {
+        // Отказ обязан назвать саму привязку, а не производное поле формы.
+        Fixture fixture = new Fixture();
+        Form form = fixture.addFormOfOwner(fixture.document);
+        DerivedField formField = fixture.addFormDerivedField(form);
+        fixture.addBoundFormField(form, formField);
+        Result result = fixture.collect();
+        assertEquals("ссылки: " + result.samples, 1, result.total); //$NON-NLS-1$
+        assertSampleMentions(result, "#object"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void writtenFormFieldBindingToAttributeStillRefuses() throws Exception {
+        Fixture fixture = new Fixture();
+        Form form = fixture.addFormOfOwner(fixture.document);
+        fixture.addBoundFormField(form, fixture.target);
+        Result result = fixture.collect();
+        assertEquals("ссылки: " + result.samples, 1, result.total); //$NON-NLS-1$
+        assertSampleMentions(result, "#object"); //$NON-NLS-1$
+    }
+
+    @Test
+    public void derivedFieldOfAnotherDocumentFormStillCounts() throws Exception {
+        Fixture fixture = new Fixture();
+        Document other = MdClassFactory.eINSTANCE.createDocument();
+        other.setName("Другой"); //$NON-NLS-1$
+        fixture.addRoot(other);
+        Form form = fixture.addFormOfOwner(other);
+        fixture.addFormDerivedField(form);
+        Result result = fixture.collect();
+        assertEquals("ссылки: " + result.samples, 1, result.total); //$NON-NLS-1$
+    }
+
+    @Test
+    public void derivedFieldOfFormWithoutMdFormStillCounts() throws Exception {
+        // Чья это форма — не известно: не угадываем, считаем, как до фикса.
+        Fixture fixture = new Fixture();
+        Form form = FormFactory.eINSTANCE.createForm();
+        fixture.addRoot(form);
+        fixture.addFormDerivedField(form);
+        Result result = fixture.collect();
+        assertEquals("ссылки: " + result.samples, 1, result.total); //$NON-NLS-1$
+    }
+
     // --- обвязка -------------------------------------------------------------
 
     private static void assertSampleMentions(Result result, String fragment) {
@@ -224,6 +314,41 @@ public class EdtMetadataServiceDeleteReferencesTest {
             field.setSource(target);
             owner.getFields().add(field);
             return field;
+        }
+
+        /** Форма документа: модель формы — отдельный верхний объект BM, связанный с формой метаданных через mdForm. */
+        Form addFormOfOwner(Document owner) {
+            DocumentForm mdForm = MdClassFactory.eINSTANCE.createDocumentForm();
+            mdForm.setName("ФормаДокумента"); //$NON-NLS-1$
+            owner.getForms().add(mdForm);
+            Form form = FormFactory.eINSTANCE.createForm();
+            form.setMdForm(mdForm);
+            mdForm.setForm(form);
+            addRoot(form);
+            return form;
+        }
+
+        /** Form.fields (transient, inferred) → DerivedField.source. */
+        DerivedField addFormDerivedField(Form form) {
+            DerivedField field = McoreFactory.eINSTANCE.createDerivedField();
+            field.setSource(target);
+            form.getFields().add(field);
+            return field;
+        }
+
+        /** Поле формы с записанным путём «Объект.Зонд»; разрешение пути (transient objects) указывает на resolved. */
+        void addBoundFormField(Form form, EObject resolved) {
+            DataPath dataPath = FormFactory.eINSTANCE.createDataPath();
+            dataPath.getSegments().add("Объект"); //$NON-NLS-1$
+            dataPath.getSegments().add("Зонд"); //$NON-NLS-1$
+            DataPathReferredObject referred = FormFactory.eINSTANCE.createDataPathReferredObject();
+            referred.setObject(resolved);
+            referred.setSegmentIdx(1);
+            dataPath.getObjects().add(referred);
+            FormField field = FormFactory.eINSTANCE.createFormField();
+            field.setName("Зонд"); //$NON-NLS-1$
+            field.setDataPath(dataPath);
+            form.getItems().add(field);
         }
 
         void addRoot(EObject root) {

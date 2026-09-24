@@ -115,6 +115,7 @@ import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.McoreUtil;
 import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
+import com._1c.g5.v8.dt.metadata.mdclass.AbstractForm;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
@@ -10628,6 +10629,14 @@ public class EdtMetadataService {
      * {@code ChoiceParameterLink.field}, {@code TypeLink.field} refer to {@code mcore.Field}), so whoever
      * refers to the derived object is what is counted. Derived data of another top object is not ours to
      * judge and still counts, as before.</p>
+     *
+     * <p>The owner's forms count as the owner: a form model is a separate BM top object, linked to its
+     * metadata form by {@code AbstractForm.mdForm}, and its inferred data ({@code Form.fields} →
+     * {@code DerivedField.source}, {@code formContext}) points to the owner's attributes the same way. Once EDT
+     * re-derives the form (after update_metadata on the owner, for one) that gave
+     * {@code …Form.<Форма>.Form#source} and refused to delete a fresh attribute. The resolved objects of a
+     * written data path ({@code AbstractDataPath.objects}) are transient too, but they resolve what the
+     * developer wrote — a form field bound to {@code Объект.<Реквизит>} — so they are never derived data.</p>
      */
     private static boolean isDerivedDataOf(EObject source, EObject owner) {
         boolean belowTransientContainment = false;
@@ -10636,11 +10645,18 @@ public class EdtMetadataService {
             if (current == owner) {
                 return belowTransientContainment;
             }
+            if (current instanceof AbstractDataPath) {
+                return false;
+            }
             EStructuralFeature containment = current.eContainmentFeature();
             if (containment != null && containment.isTransient()) {
                 belowTransientContainment = true;
             }
-            current = current.eContainer();
+            EObject container = current.eContainer();
+            if (container == null && current instanceof AbstractForm formModel) {
+                container = formModel.getMdForm();
+            }
+            current = container;
         }
         return false;
     }
