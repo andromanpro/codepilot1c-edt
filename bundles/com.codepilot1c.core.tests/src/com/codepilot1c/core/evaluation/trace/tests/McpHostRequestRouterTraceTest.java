@@ -36,11 +36,9 @@ public class McpHostRequestRouterTraceTest extends AbstractTraceTest {
     @Test
     public void routeWritesRequestResponseAndToolTrace() throws Exception {
         ToolRegistry registry = ToolRegistryTestSupport.createIsolatedRegistry();
-        ToolRegistry previousRegistry = ToolRegistryTestSupport.installSingleton(registry);
         String toolName = "mcp_trace_test_tool";
-        registry.registerDynamicTool(new StaticTool(toolName, ToolResult.success("tool-ok")));
-
-        try {
+        try (ToolRegistry.ScopedTestLease ignored = ToolRegistryTestSupport.installScoped(registry)) {
+            registry.registerDynamicTool(new StaticTool(toolName, ToolResult.success("tool-ok")));
             McpHostRequestRouter router = new McpHostRequestRouter(
                     new AllowAllExposurePolicy(),
                     List.of(new StaticResourceProvider()),
@@ -99,7 +97,6 @@ public class McpHostRequestRouterTraceTest extends AbstractTraceTest {
             assertTrue(foundPromptTrace);
         } finally {
             registry.unregisterDynamicTool(toolName);
-            ToolRegistryTestSupport.installSingleton(previousRegistry);
         }
     }
 

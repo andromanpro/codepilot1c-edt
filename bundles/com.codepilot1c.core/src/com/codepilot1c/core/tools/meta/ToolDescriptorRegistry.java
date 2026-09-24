@@ -10,6 +10,7 @@ import java.util.function.Consumer;
 
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.RegistryPairLifecycle;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolRegistry.SlotIdentity;
 
@@ -20,13 +21,20 @@ public final class ToolDescriptorRegistry {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(ToolDescriptorRegistry.class);
 
-    private static final Object INSTANCE_LOCK = new Object();
     private static volatile ToolDescriptorRegistry instance;
 
     private static final Object UNVERSIONED = new Object();
 
     private final ConcurrentMap<String, DescriptorEntry> descriptors =
             new ConcurrentHashMap<>();
+    /*
+     * Descriptor slot identities are meaningful only within one ToolRegistry
+     * instance.  Keep that ownership explicit: a replacement process-wide
+     * registry starts with a fresh descriptor surface rather than attempting
+     * to compare identities produced by a retired registry.
+     */
+    private final Object ownershipLock = new Object();
+    private Object owningToolRegistry;
     private final BootstrapControl bootstrap;
     private final Consumer<ToolDescriptorRegistry> bootstrapAction;
 
@@ -45,7 +53,7 @@ public final class ToolDescriptorRegistry {
     public static ToolDescriptorRegistry getInstance() {
         ToolDescriptorRegistry current = instance;
         if (current == null) {
-            synchronized (INSTANCE_LOCK) {
+            synchronized (RegistryPairLifecycle.LOCK) {
                 current = instance;
                 if (current == null) {
                     current = new ToolDescriptorRegistry();
@@ -63,6 +71,45 @@ public final class ToolDescriptorRegistry {
     public static ToolDescriptorRegistry createDetached() {
         return new ToolDescriptorRegistry(BootstrapState.READY, ignored -> {
         });
+    }
+
+    /** Swaps one half of a scoped test composition while its shared lock is held. */
+    public static ToolDescriptorRegistry replaceForScopedTestLease(
+            ToolDescriptorRegistry replacement) {
+        synchronized (RegistryPairLifecycle.LOCK) {
+            ToolDescriptorRegistry previous = instance;
+            instance = replacement;
+            return previous;
+        }
+    }
+
+    /**
+     * Makes {@code toolRegistry} the sole publisher of versioned slots.
+     *
+     * <p>This is intentionally an all-or-nothing hand-off.  Retaining even
+     * one slot from a retired registry would make a new registry's opaque
+     * identity look like a concurrent replacement and either leak stale
+     * metadata or reject a valid publication.</p>
+     *
+     * @return {@code true} when ownership changed and callers must republish
+     *         their current registry snapshot
+     */
+    public boolean claimToolRegistryOwnership(Object toolRegistry) {
+        if (toolRegistry == null) {
+            throw new IllegalArgumentException("Tool registry owner is required"); //$NON-NLS-1$
+        }
+        synchronized (ownershipLock) {
+            if (owningToolRegistry == toolRegistry) {
+                return false;
+            }
+            // Explicit registrations are not owned by a ToolRegistry slot;
+            // keep them through the hand-off so a first descriptor lookup can
+            // bootstrap the registry without discarding its caller's input.
+            descriptors.entrySet().removeIf(entry ->
+                    entry.getValue().slotIdentity() != UNVERSIONED);
+            owningToolRegistry = toolRegistry;
+            return true;
+        }
     }
 
     static ToolDescriptorRegistry createForBootstrapTests(

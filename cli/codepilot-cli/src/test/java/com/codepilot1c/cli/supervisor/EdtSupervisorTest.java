@@ -227,7 +227,8 @@ public class EdtSupervisorTest {
 
         Fixture() {
             host.directories.add("/edt");
-            host.files.add("/edt/1cedtcli");
+            // The Equinox RCP launcher: only it accepts -application, so only it can be started.
+            host.files.add("/edt/1cedt");
             host.directories.add("/workspace");
         }
 
@@ -274,6 +275,7 @@ public class EdtSupervisorTest {
         @Override public boolean destroy() { destroyCalled = true; if (destroyStops) alive = false; return true; }
         @Override public boolean destroyForcibly() { forceCalled = true; alive = false; return true; }
         @Override public Optional<String> commandLine() { return Optional.ofNullable(commandLine); }
+        @Override public Optional<Instant> startInstant() { return Optional.of(Instant.EPOCH); }
     }
 
     private static final class MutableClock extends Clock {

@@ -19,7 +19,7 @@ import java.util.Map;
 
 import org.junit.Test;
 
-import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.session.Session;
@@ -52,6 +52,33 @@ public class ChatTurnContextTest {
     }
 
     @Test
+    public void selectingBuildOnPlanChatEnablesNextTurnWithoutChangingCapturedTurn() {
+        Session session = new Session("chat-plan"); //$NON-NLS-1$
+        session.setAgentProfile("plan"); //$NON-NLS-1$
+        ChatTurnContext firstTurn = ChatTurnContext.resolve(session, "plan"); //$NON-NLS-1$
+
+        assertTrue(ChatTurnContext.selectForSession(session, "build")); //$NON-NLS-1$
+        ChatTurnContext nextTurn = ChatTurnContext.resolve(session, "plan"); //$NON-NLS-1$
+
+        assertEquals("plan", firstTurn.profileId()); //$NON-NLS-1$
+        assertEquals("build", session.getAgentProfile()); //$NON-NLS-1$
+        assertEquals("build", nextTurn.profileId()); //$NON-NLS-1$
+        assertFalse(nextTurn.profile().isReadOnly());
+    }
+
+    @Test
+    public void newChatInSameViewCarriesAvailableBuildProfile() {
+        Session previous = new Session("chat-before"); //$NON-NLS-1$
+        previous.setAgentProfile("build"); //$NON-NLS-1$
+        Session next = new Session("chat-after"); //$NON-NLS-1$
+
+        assertTrue(ChatTurnContext.carryAvailableProfile(previous, next));
+        assertEquals("build", next.getAgentProfile()); //$NON-NLS-1$
+        assertEquals("build", ChatTurnContext.resolve(next, "plan").profileId()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("build", previous.getAgentProfile()); //$NON-NLS-1$
+    }
+
+    @Test
     public void unknownSuggestedProfileDoesNotReplaceCurrentSelection() {
         Session session = new Session("chat-a"); //$NON-NLS-1$
         session.setAgentProfile("gsd-plan"); //$NON-NLS-1$
@@ -62,7 +89,7 @@ public class ChatTurnContextTest {
     }
 
     @Test
-    public void promptAndToolSurfaceUseSameEffectiveProfileInstanceAndId() {
+    public void promptAndToolContextKeepSelectedRoleWithMutatingDelegation() {
         Session session = new Session("chat-a"); //$NON-NLS-1$
         session.setAgentProfile("gsd-execute"); //$NON-NLS-1$
         session.setProjectPath("/workspace/project-a"); //$NON-NLS-1$
@@ -77,14 +104,35 @@ public class ChatTurnContextTest {
         assertSame(context.profile(), gate.profile());
         assertEquals(gate.profile().getId(), context.profileId());
         assertEquals(gate.profile().getId(), input.profileName());
-        assertEquals(AgentProfileRegistry.getInstance().createConfig(context.profile())
-                .getSystemPromptAddition(), input.promptAddition());
+        assertTrue(input.promptAddition().contains(context.profile().getName()));
+        assertTrue(input.promptAddition().contains("edt_validate_request")); //$NON-NLS-1$
+        assertEquals(context.profileId(), context.toolExecutionContext().parentProfileId());
+        assertEquals(AgentCapability.MUTATING,
+                context.toolExecutionContext().delegationCeiling());
         assertEquals(session.getProjectPath(), input.projectPath());
         assertEquals(session.getId(), input.sessionId());
         assertEquals(session.getProjectPath(),
                 gate.decide(new ToolCall("c1", "dynamic", "{}"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         unknownResolution("dynamic")) //$NON-NLS-1$
                         .context().projectPath());
+    }
+
+    @Test
+    public void persistedPlanChatHasWritablePromptAndDelegationContext() {
+        Session session = new Session("chat-plan"); //$NON-NLS-1$
+        session.setAgentProfile("plan"); //$NON-NLS-1$
+        ChatTurnContext context = ChatTurnContext.resolve(session, "build"); //$NON-NLS-1$
+
+        assertEquals("plan", context.profileId()); //$NON-NLS-1$
+        assertTrue(context.promptInput("base", List.of()).promptAddition() //$NON-NLS-1$
+                .contains("Планирование")); //$NON-NLS-1$
+        assertFalse(context.promptInput("base", List.of()).promptAddition() //$NON-NLS-1$
+                .contains("read-only")); //$NON-NLS-1$
+        assertEquals("plan", context.toolExecutionContext().parentProfileId()); //$NON-NLS-1$
+        assertEquals(AgentCapability.MUTATING,
+                context.toolExecutionContext().delegationCeiling());
+        assertEquals("plan — Планирование", //$NON-NLS-1$
+                ChatTurnContext.roleLabel(context.profile()));
     }
 
     @Test

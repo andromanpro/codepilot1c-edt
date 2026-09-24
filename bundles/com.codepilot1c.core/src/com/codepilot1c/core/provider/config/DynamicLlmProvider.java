@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -32,6 +33,8 @@ import java.util.function.IntSupplier;
 
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
+import org.osgi.framework.Bundle;
+import org.osgi.framework.FrameworkUtil;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.LogSanitizer;
@@ -67,6 +70,8 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(DynamicLlmProvider.class);
     private static final String HEADER_CODEPILOT_PROMPT_CACHE = "X-CodePilot-Prompt-Cache"; //$NON-NLS-1$
+    private static final String HEADER_OPENCODE_SESSION = "x-opencode-session"; //$NON-NLS-1$
+    private static final String HEADER_USER_AGENT = "User-Agent"; //$NON-NLS-1$
     private static final int OUTBOUND_TOOL_RESULT_CHAR_LIMIT = 50_000;
     private static final int OUTBOUND_TOOL_RESULT_HEAD_CHARS = 30_000;
     private static final int OUTBOUND_TOOL_RESULT_TAIL_CHARS = 15_000;
@@ -245,7 +250,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
 
         String requestBody = buildRequestBody(request, executionPlan);
-        HttpRequest httpRequest = buildHttpRequest(requestBody);
+        HttpRequest httpRequest = buildHttpRequest(requestBody, request);
 
         AtomicReference<java.util.stream.Stream<String>> responseBody = new AtomicReference<>();
         try {
@@ -445,7 +450,8 @@ public class DynamicLlmProvider implements ILlmProvider {
                 .maxTokens(request.getMaxTokens())
                 .temperature(request.getTemperature())
                 .stream(false)
-                .toolChoice(request.getToolChoice());
+                .toolChoice(request.getToolChoice())
+                .providerSessionId(request.getProviderSessionId());
         if (request.hasTools()) {
             builder.tools(request.getTools());
         }
@@ -514,11 +520,16 @@ public class DynamicLlmProvider implements ILlmProvider {
      * Builds the HTTP request with appropriate headers.
      */
     private HttpRequest buildHttpRequest(String body) {
+        return buildHttpRequest(body, null);
+    }
+
+    private HttpRequest buildHttpRequest(String body, LlmRequest request) {
         String url = config.getChatEndpointUrl();
         int timeoutSeconds = resolveRequestTimeoutSeconds(body);
+        URI uri = URI.create(url);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(uri)
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json"); //$NON-NLS-1$ //$NON-NLS-2$
 
@@ -544,6 +555,8 @@ public class DynamicLlmProvider implements ILlmProvider {
             builder.header(HEADER_CODEPILOT_PROMPT_CACHE, "prefer"); //$NON-NLS-1$
         }
 
+        addOpenCodeGoAffinityHeaders(builder, uri, request);
+
         // Add custom headers
         config.getCustomHeaders().forEach((key, value) -> {
             builder.header(key, value);
@@ -554,6 +567,36 @@ public class DynamicLlmProvider implements ILlmProvider {
                 body != null ? body.length() : 0, timeoutSeconds, authenticated,
                 config.getCustomHeaders().size());
         return builder.build();
+    }
+
+    private void addOpenCodeGoAffinityHeaders(HttpRequest.Builder builder, URI uri, LlmRequest request) {
+        if (!isOpenCodeHost(uri)) {
+            return;
+        }
+        String sessionId = request != null ? request.getProviderSessionId() : null;
+        if (sessionId != null && !sessionId.isBlank()
+                && !config.getCustomHeaders().containsKey(HEADER_OPENCODE_SESSION)) {
+            builder.header(HEADER_OPENCODE_SESSION, sessionId.trim());
+        }
+        if (!config.getCustomHeaders().containsKey(HEADER_USER_AGENT)) {
+            builder.header(HEADER_USER_AGENT, codePilotUserAgent());
+        }
+    }
+
+    private static boolean isOpenCodeHost(URI uri) {
+        if (uri == null || uri.getHost() == null) {
+            return false;
+        }
+        String host = uri.getHost().toLowerCase(Locale.ROOT);
+        return "opencode.ai".equals(host) || host.endsWith(".opencode.ai"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static String codePilotUserAgent() {
+        Bundle bundle = FrameworkUtil.getBundle(DynamicLlmProvider.class);
+        String version = bundle != null && bundle.getVersion() != null
+                ? bundle.getVersion().toString()
+                : "dev"; //$NON-NLS-1$
+        return "CodePilot1C-EDT/" + version; //$NON-NLS-1$
     }
 
     private int getRequestTimeoutSeconds() {
@@ -590,7 +633,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         String requestBody = buildRequestBody(request, executionPlan);
         LOG.debug("[%s] Request body size: chars=%d", correlationId, requestBody.length()); //$NON-NLS-1$
 
-        HttpRequest httpRequest = buildHttpRequest(requestBody);
+        HttpRequest httpRequest = buildHttpRequest(requestBody, request);
 
         CompletableFuture<HttpResponse<String>> exchange = httpTransport.sendStringAsync(httpRequest);
         cancellation.onCancel(() -> exchange.cancel(true));

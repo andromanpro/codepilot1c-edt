@@ -37,7 +37,7 @@ public class McpHostSessionProfileChoicesTest {
                 "bundles/com.codepilot1c.ui/src/com/codepilot1c/ui/preferences/McpHostPreferencePage.java"), //$NON-NLS-1$
                 StandardCharsets.UTF_8);
         assertFalse(pageSource.contains("selectedProfile >= 0 ? selectedProfile : 0")); //$NON-NLS-1$
-        assertTrue(pageSource.contains("McpHostSessionProfileChoices")); //$NON-NLS-1$
+        assertFalse(pageSource.contains("McpHostSessionProfileChoices")); //$NON-NLS-1$
     }
 
     @Test

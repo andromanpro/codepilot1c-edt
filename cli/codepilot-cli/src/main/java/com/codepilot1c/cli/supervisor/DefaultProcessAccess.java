@@ -3,6 +3,7 @@ package com.codepilot1c.cli.supervisor;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,5 +26,6 @@ public final class DefaultProcessAccess implements ProcessLauncher, ProcessHandl
         @Override public boolean destroy() { return delegate.destroy(); }
         @Override public boolean destroyForcibly() { return delegate.destroyForcibly(); }
         @Override public Optional<String> commandLine() { return delegate.info().commandLine(); }
+        @Override public Optional<Instant> startInstant() { return delegate.info().startInstant(); }
     }
 }

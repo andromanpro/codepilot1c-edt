@@ -15,6 +15,21 @@
     <packaging>jar</packaging>
     <name>1C Copilot - Core Tests</name>
 
+    <!--
+      These tests exercise real 1C:EDT BM and EMF APIs, so they need the target platform on the
+      Surefire classpath. This is a plain jar module: it receives that platform only because Tycho
+      injects the resolved platform of the eclipse-plugin module below, which happens only when
+      com.codepilot1c.core is built in the same reactor invocation. The supported command is
+      therefore:
+
+        mvn -Dedt.home="<1C:EDT Eclipse dir>" -pl bundles/com.codepilot1c.core.tests -am package
+
+      Dropping -am makes the module fail to compile; an environment that keeps the platform at
+      compile time but loses it at test runtime is caught up front by
+      com.codepilot1c.core.harness.OsgiTestPlatformAvailabilityTest instead of surfacing as
+      NoClassDefFoundError across the suite.
+    -->
+
     <dependencies>
         <dependency>
             <groupId>com.codepilot1c</groupId>
@@ -69,14 +84,21 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.15.0</version>
                 <configuration>
-                    <release>17</release>
-                    <testRelease>17</testRelease>
+                    <release>25</release>
+                    <testRelease>25</testRelease>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-junit47</artifactId>
+                        <version>3.2.5</version>
+                    </dependency>
+                </dependencies>
                 <configuration>
                     <includes>
                         <include>**/*Test.java</include>
@@ -84,6 +106,12 @@
                     <systemPropertyVariables>
                         <core.bundle.path>${project.basedir}/../com.codepilot1c.core/target/com.codepilot1c.core-${project.version}.jar</core.bundle.path>
                     </systemPropertyVariables>
+                    <properties>
+                        <property>
+                            <name>listener</name>
+                            <value>com.codepilot1c.core.harness.EquinoxTestRuntimeListener</value>
+                        </property>
+                    </properties>
                 </configuration>
             </plugin>
         </plugins>

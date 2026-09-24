@@ -122,6 +122,8 @@ import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessor;
 import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
+import com._1c.g5.v8.dt.metadata.mdclass.HTTPMethod;
+import com._1c.g5.v8.dt.metadata.mdclass.URLTemplate;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicCommand;
@@ -5998,13 +6000,25 @@ public class EdtMetadataService {
             return;
         }
         String parentClass = normalizeToken(parent.eClass().getName());
-        if ("httpservice".equals(parentClass)) { //$NON-NLS-1$
+        if ("httpservice".equals(parentClass) && kind != MetadataChildKind.HTTP_URL_TEMPLATE) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
-                    "HTTPService children (URL templates and their methods) are not supported via " //$NON-NLS-1$
-                            + "add_metadata_child yet, so child_kind=" + kind + " cannot be created on an HTTP service. " //$NON-NLS-1$ //$NON-NLS-2$
-                            + "Create the HTTP service itself with create_metadata; URL templates must be added through a " //$NON-NLS-1$
-                            + "dedicated tool once available.", false); //$NON-NLS-1$
+                    "An HTTP service only contains URL templates, so child_kind=" + kind //$NON-NLS-1$
+                            + " cannot be created on it. Use child_kind=URLTemplate here, then " //$NON-NLS-1$
+                            + "child_kind=HTTPMethod with parent_fqn=<service>.URLTemplate.<name>.", false); //$NON-NLS-1$
+        }
+        if ("urltemplate".equals(parentClass) && kind != MetadataChildKind.HTTP_METHOD) { //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "A URL template only contains HTTP methods, so child_kind=" + kind //$NON-NLS-1$
+                            + " cannot be created on it. Use child_kind=HTTPMethod.", false); //$NON-NLS-1$
+        }
+        if (HttpServiceChildProperties.applies(kind)
+                && !"httpservice".equals(parentClass) && !"urltemplate".equals(parentClass)) { //$NON-NLS-1$ //$NON-NLS-2$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "child_kind=" + kind + " is only valid under an HTTPService or URLTemplate parent, not " //$NON-NLS-1$ //$NON-NLS-2$
+                            + parent.eClass().getName() + ".", false); //$NON-NLS-1$
         }
         if ("webservice".equals(parentClass)) { //$NON-NLS-1$
             throw new MetadataOperationException(
@@ -6062,6 +6076,14 @@ public class EdtMetadataService {
             MetadataChildKind effectiveKind
     ) {
         List<String> createdFqns = new ArrayList<>();
+        // Defence in depth: the validation service already refuses a batch for these kinds, but the
+        // mutation must never fall through to addChildrenBatch and create fieldless HTTP children.
+        HttpServiceChildProperties.rejectBatch(effectiveKind, request.properties());
+        if (HttpServiceChildProperties.applies(effectiveKind) && !request.hasSingleName()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_NAME,
+                    "child_kind=" + effectiveKind.getDisplayName() + " requires an explicit name", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
         if (request.hasSingleName()) {
             validateReservedChildName(parent, effectiveKind, request.name());
             MdObject child = effectiveKind == MetadataChildKind.FORM
@@ -6071,6 +6093,7 @@ public class EdtMetadataService {
             setCommonProperties(child, request.name(), request.synonym(), request.comment(), configuration);
             initializeFormIfNeeded(child);
             initializeTemplateIfNeeded(child, request.properties());
+            initializeHttpServiceChildIfNeeded(child, effectiveKind, request.properties());
             ensureUuidsRecursively(child, "child", request.parentFqn()); //$NON-NLS-1$
             addChildToParent(parent, child, effectiveKind);
             applyDefaultTypeIfNeeded(
@@ -6142,6 +6165,41 @@ public class EdtMetadataService {
             basicForm.getUsePurposes().add(ApplicationUsePurpose.PERSONAL_COMPUTER);
             basicForm.getUsePurposes().add(ApplicationUsePurpose.MOBILE_DEVICE);
         }
+    }
+
+    /**
+     * Applies the exact URL template path, or the HTTP verb and handler, onto a freshly created
+     * child. The payload has already been canonicalized by {@link HttpServiceChildProperties} when
+     * the validation token was minted, so this cannot silently accept a different shape.
+     */
+    private void initializeHttpServiceChildIfNeeded(
+            MdObject child,
+            MetadataChildKind kind,
+            Map<String, Object> properties
+    ) {
+        if (!HttpServiceChildProperties.applies(kind)) {
+            return;
+        }
+        if (child instanceof URLTemplate urlTemplate) {
+            String template = HttpServiceChildProperties.resolveTemplate(properties);
+            urlTemplate.setTemplate(template);
+            LOG.debug("initializeHttpServiceChildIfNeeded: URLTemplate %s template=%s", //$NON-NLS-1$
+                    child.getName(), template);
+            return;
+        }
+        if (child instanceof com._1c.g5.v8.dt.metadata.mdclass.Method method) {
+            HTTPMethod verb = HttpServiceChildProperties.resolveVerb(properties);
+            String handler = HttpServiceChildProperties.resolveHandler(properties);
+            method.setHttpMethod(verb);
+            method.setHandler(handler);
+            LOG.debug("initializeHttpServiceChildIfNeeded: Method %s verb=%s handler=%s", //$NON-NLS-1$
+                    child.getName(), verb.getLiteral(), handler);
+            return;
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_METADATA_KIND,
+                "Expected an EDT URLTemplate or Method for child_kind=" + kind + " but the factory produced " //$NON-NLS-1$ //$NON-NLS-2$
+                        + child.eClass().getName(), false);
     }
 
     private void initializeTemplateIfNeeded(MdObject child, Map<String, Object> properties) {

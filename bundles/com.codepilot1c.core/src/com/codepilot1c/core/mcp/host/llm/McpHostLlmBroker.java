@@ -8,8 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import com.codepilot1c.core.logging.VibeLogger;
@@ -47,7 +47,7 @@ public final class McpHostLlmBroker {
     private final Supplier<ILlmProvider> providerSupplier;
     private final LlmProviderMetadataResolver metadataResolver;
     private final Duration keepaliveInterval;
-    private final AtomicReference<Flight> activeFlight = new AtomicReference<>();
+    private final ConcurrentHashMap<String, Flight> activeFlights = new ConcurrentHashMap<>();
     private final Gson gson = new Gson();
 
     public McpHostLlmBroker(boolean enabled) {
@@ -157,57 +157,82 @@ public final class McpHostLlmBroker {
             return;
         }
 
-        Flight flight = new Flight(provider);
-        if (!activeFlight.compareAndSet(null, flight)) {
-            writeError(exchange, 409, "busy", "Another LLM request is already in flight"); //$NON-NLS-1$ //$NON-NLS-2$
-            return;
-        }
-
-        stream(exchange, request, flight);
+        // The normalized wire form is an idempotency key: identical requests share
+        // exactly one provider invocation, while unrelated calls remain independent.
+        String key = gson.toJson(payload);
+        stream(exchange, request, key, provider);
     }
 
     /** Cancels the currently owned provider request, if any. */
     public void cancelActive() {
-        Flight flight = activeFlight.get();
-        if (flight != null) {
-            cancelOwned(flight);
-        }
+        activeFlights.values().forEach(this::cancelOwned);
     }
 
-    private void stream(HttpExchange exchange, LlmRequest request, Flight flight) throws IOException {
+    private void stream(HttpExchange exchange, LlmRequest request, String key, ILlmProvider provider)
+            throws IOException {
         exchange.getResponseHeaders().set("Content-Type", SSE_CONTENT_TYPE); //$NON-NLS-1$
         exchange.getResponseHeaders().set("Cache-Control", "no-cache, no-store"); //$NON-NLS-1$ //$NON-NLS-2$
         exchange.getResponseHeaders().set("Connection", "keep-alive"); //$NON-NLS-1$ //$NON-NLS-2$
         exchange.getResponseHeaders().set("X-Accel-Buffering", "no"); //$NON-NLS-1$ //$NON-NLS-2$
-        exchange.sendResponseHeaders(200, 0);
-
+        Subscriber subscriber = null;
+        Flight flight = null;
+        boolean owner = false;
         try (OutputStream output = exchange.getResponseBody()) {
-            flight.output = output;
-            startKeepalive(flight);
+            subscriber = new Subscriber(output);
+            while (true) {
+                Flight created = new Flight(key, provider);
+                Flight mapped = activeFlights.putIfAbsent(key, created);
+                flight = mapped != null ? mapped : created;
+                owner = mapped == null;
+                if (flight.addSubscriber(subscriber)) {
+                    break;
+                }
+                // A terminal flight can remain mapped until its owning handler
+                // releases it. Remove only the exact stale instance, then retry;
+                // compare-and-remove can never evict a newer owner flight.
+                activeFlights.remove(key, flight);
+            }
+            // Admission happens before the response commits so a stale terminal
+            // flight can be retried without leaving a connected-only SSE stream.
+            exchange.sendResponseHeaders(200, 0);
+            final Flight admittedFlight = flight;
+            // HttpServer does not commit a chunked response until at least one
+            // byte is written.  A standards-compliant SSE comment establishes
+            // the response without inventing an application event or waiting
+            // for a synchronous provider to yield its first chunk.
+            writeComment(subscriber, ": connected\n\n"); //$NON-NLS-1$
             try {
-                flight.provider.streamComplete(request, chunk -> emitChunk(flight, chunk));
-                if (!flight.terminal.get() && !flight.disconnected.get()) {
-                    emit(flight, "done", object("finishReason", "stop")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                    flight.terminal.set(true);
+                if (owner) {
+                    startKeepalive(admittedFlight);
+                    admittedFlight.provider.streamComplete(request, chunk -> emitChunk(admittedFlight, chunk));
+                    if (!admittedFlight.terminal.get() && !admittedFlight.disconnected.get()) {
+                        emit(admittedFlight, "done", object("finishReason", "stop")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        admittedFlight.terminal.set(true);
+                    }
+                } else {
+                    admittedFlight.awaitTerminal();
                 }
             } catch (ClientDisconnectedException e) {
-                // The cancellation path already owns provider cancellation.
+                // Removing this subscriber below cancels only when nobody remains.
             } catch (Exception e) {
-                if (!flight.disconnected.get() && flight.terminal.compareAndSet(false, true)) {
+                if (!admittedFlight.disconnected.get() && admittedFlight.terminal.compareAndSet(false, true)) {
                     LOG.warn("LLM broker provider request failed: %s", e.getClass().getSimpleName()); //$NON-NLS-1$
                     BrokerFailure failure = brokerFailure(e);
                     try {
-                        emit(flight, "error", errorPayload(failure.code(), failure.message(), //$NON-NLS-1$
+                        emit(admittedFlight, "error", errorPayload(failure.code(), failure.message(), //$NON-NLS-1$
                                 failure.status()));
                     } catch (ClientDisconnectedException ignored) {
                         // Client left while the terminal error was being written.
                     }
                 }
             }
-        } catch (IOException e) {
-            markDisconnected(flight);
         } finally {
-            release(flight);
+            if (subscriber != null && flight != null) flight.removeSubscriber(subscriber);
+            // The handler that owns the provider releases only after the terminal
+            // state has been broadcast. Joining handlers only detach themselves.
+            if (owner && flight != null) {
+                release(flight);
+            }
             exchange.close();
         }
     }
@@ -248,13 +273,22 @@ public final class McpHostLlmBroker {
         String frame = "event: " + event + "\n" //$NON-NLS-1$ //$NON-NLS-2$
                 + "data: " + gson.toJson(data) + "\n\n"; //$NON-NLS-1$ //$NON-NLS-2$
         try {
-            synchronized (flight.writeLock) {
-                flight.output.write(frame.getBytes(StandardCharsets.UTF_8));
-                flight.output.flush();
+            for (Subscriber subscriber : flight.subscribers()) {
+                try {
+                    synchronized (subscriber.writeLock) {
+                        subscriber.output.write(frame.getBytes(StandardCharsets.UTF_8));
+                        subscriber.output.flush();
+                    }
+                } catch (IOException e) {
+                    flight.removeSubscriber(subscriber);
+                }
             }
-        } catch (IOException e) {
-            markDisconnected(flight);
-            throw new ClientDisconnectedException();
+            if (!flight.hasSubscribers()) {
+                markDisconnected(flight);
+                throw new ClientDisconnectedException();
+            }
+        } catch (ClientDisconnectedException e) {
+            throw e;
         }
     }
 
@@ -272,14 +306,8 @@ public final class McpHostLlmBroker {
                         }
                     }
                     try {
-                        synchronized (flight.writeLock) {
-                            flight.output.write(": keepalive\n\n".getBytes(StandardCharsets.UTF_8)); //$NON-NLS-1$
-                            flight.output.flush();
-                        }
-                    } catch (IOException e) {
-                        markDisconnected(flight);
-                        return;
-                    }
+                        emitKeepalive(flight);
+                    } catch (ClientDisconnectedException e) { return; }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -290,28 +318,46 @@ public final class McpHostLlmBroker {
     }
 
     private void markDisconnected(Flight flight) {
-        flight.disconnected.set(true);
-        cancelOwned(flight);
+        if (flight.disconnected.compareAndSet(false, true)) cancelOwned(flight);
+    }
+
+    private void emitKeepalive(Flight flight) {
+        byte[] frame = ": keepalive\n\n".getBytes(StandardCharsets.UTF_8); //$NON-NLS-1$
+        for (Subscriber subscriber : flight.subscribers()) {
+            try {
+                write(subscriber, frame);
+            } catch (IOException e) {
+                flight.removeSubscriber(subscriber);
+            }
+        }
+        if (!flight.hasSubscribers()) markDisconnected(flight);
+    }
+
+    private void writeComment(Subscriber subscriber, String comment) throws IOException {
+        write(subscriber, comment.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void write(Subscriber subscriber, byte[] frame) throws IOException {
+        synchronized (subscriber.writeLock) {
+            subscriber.output.write(frame);
+            subscriber.output.flush();
+        }
     }
 
     private void cancelOwned(Flight flight) {
-        synchronized (flight.lifecycleLock) {
-            if (activeFlight.get() != flight || !flight.cancellationIssued.compareAndSet(false, true)) {
-                return;
-            }
-            try {
-                flight.provider.cancel();
-            } catch (Exception e) {
-                LOG.warn("Failed to cancel disconnected LLM provider request: %s", //$NON-NLS-1$
-                        e.getClass().getSimpleName());
-            }
+        if (!flight.cancellationIssued.compareAndSet(false, true)) return;
+        try {
+            flight.provider.cancel();
+        } catch (Exception e) {
+            LOG.warn("Failed to cancel disconnected LLM provider request: %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName());
         }
     }
 
     private void release(Flight flight) {
         synchronized (flight.lifecycleLock) {
             flight.finished.set(true);
-            activeFlight.compareAndSet(flight, null);
+            activeFlights.remove(flight.key, flight);
             flight.lifecycleLock.notifyAll();
         }
     }
@@ -620,18 +666,42 @@ public final class McpHostLlmBroker {
     }
 
     private static final class Flight {
+        private final String key;
         private final ILlmProvider provider;
-        private final Object writeLock = new Object();
         private final Object lifecycleLock = new Object();
+        private final java.util.Set<Subscriber> subscribers = ConcurrentHashMap.newKeySet();
         private final AtomicBoolean terminal = new AtomicBoolean();
         private final AtomicBoolean disconnected = new AtomicBoolean();
         private final AtomicBoolean cancellationIssued = new AtomicBoolean();
         private final AtomicBoolean finished = new AtomicBoolean();
-        private volatile OutputStream output;
 
-        Flight(ILlmProvider provider) {
+        Flight(String key, ILlmProvider provider) {
+            this.key = key;
             this.provider = provider;
         }
+
+        boolean addSubscriber(Subscriber subscriber) {
+            synchronized (lifecycleLock) {
+                if (terminal.get() || finished.get()) return false;
+                subscribers.add(subscriber);
+                return true;
+            }
+        }
+
+        void removeSubscriber(Subscriber subscriber) { subscribers.remove(subscriber); }
+        boolean hasSubscribers() { return !subscribers.isEmpty(); }
+        List<Subscriber> subscribers() { return List.copyOf(subscribers); }
+        void awaitTerminal() throws InterruptedException {
+            synchronized (lifecycleLock) {
+                while (!finished.get()) lifecycleLock.wait();
+            }
+        }
+    }
+
+    private static final class Subscriber {
+        private final OutputStream output;
+        private final Object writeLock = new Object();
+        Subscriber(OutputStream output) { this.output = output; }
     }
 
     private record BrokerFailure(String code, String message, int status) { }

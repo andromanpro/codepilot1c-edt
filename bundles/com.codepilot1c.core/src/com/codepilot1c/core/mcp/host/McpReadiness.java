@@ -28,21 +28,33 @@ public record McpReadiness(
     }
 
     public static McpReadiness available() {
+        return available(List.of());
+    }
+
+    public static McpReadiness available(List<ProjectReadiness> projects) {
         return new McpReadiness(true, "", //$NON-NLS-1$
                 "ready", //$NON-NLS-1$
-                List.of());
+                projects);
     }
 
     public static McpReadiness notReady(String reason) {
+        return notReady(reason, List.of());
+    }
+
+    public static McpReadiness notReady(String reason, List<ProjectReadiness> projects) {
         return new McpReadiness(false, reason,
                 "degraded", //$NON-NLS-1$
-                List.of());
+                projects);
     }
 
     public static McpReadiness starting(String reason) {
+        return starting(reason, List.of());
+    }
+
+    public static McpReadiness starting(String reason, List<ProjectReadiness> projects) {
         return new McpReadiness(false, reason,
                 "starting", //$NON-NLS-1$
-                List.of());
+                projects);
     }
 
     /**
@@ -70,6 +82,10 @@ public record McpReadiness(
         if (!ready) {
             payload.put("reason", reason); //$NON-NLS-1$
         }
+        // Staged detail: a CLI must be able to tell "host not up" apart from "host up,
+        // project still building" without ever treating liveness as success.
+        payload.put("services", services); //$NON-NLS-1$
+        payload.put("projects", projects.stream().map(ProjectReadiness::asMap).collect(Collectors.toList())); //$NON-NLS-1$
         return payload;
     }
 

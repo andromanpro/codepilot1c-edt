@@ -170,6 +170,23 @@ public class ToolRegistryBootstrapStateTest {
     }
 
     @Test
+    public void restoredSingletonReclaimsDescriptorsFromReplacementRegistry()
+            throws Exception {
+        ToolRegistry original = ToolRegistry.getInstance();
+        assertEquals("files", ToolDescriptorRegistry.getInstance()
+                .getOrDefault("read_file").getCategory().name().toLowerCase()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        instanceField.set(null, null);
+        ToolRegistry replacement = ToolRegistry.getInstance();
+        assertTrue(replacement != original);
+
+        instanceField.set(null, original);
+        assertSame(original, ToolRegistry.getInstance());
+        assertEquals("files", ToolDescriptorRegistry.getInstance()
+                .getOrDefault("read_file").getCategory().name().toLowerCase()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void initializationFailureWakesWaitersWithoutRetry()
             throws Exception {
         IllegalStateException sentinel =

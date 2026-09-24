@@ -387,7 +387,7 @@ public class ConnectInfobaseToolTest {
     @Test
     public void storeAccessSettingsSurfacesClassNameWhenMessageNull() {
         StubInfobaseManager manager = new StubInfobaseManager(true);
-        ThrowingAccessManager accessManager = new ThrowingAccessManager(
+        IInfobaseAccessManager accessManager = newThrowingAccessManager(
                 new NullPointerException((String) null));
         StubGateway gateway = new StubGateway(manager, accessManager);
         TestableConnectService service = new TestableConnectService(gateway);
@@ -623,52 +623,37 @@ public class ConnectInfobaseToolTest {
         public void reload(org.eclipse.core.runtime.IProgressMonitor monitor) { }
     }
 
-    /** Access manager whose {@code updateSettings} always throws the supplied exception. */
-    private static final class ThrowingAccessManager implements IInfobaseAccessManager {
-        private final RuntimeException toThrow;
-
-        ThrowingAccessManager(RuntimeException toThrow) {
-            this.toThrow = toThrow;
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings createDefaultSettings(
-                InfobaseReference reference) { return null; }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings resolveSettings(
-                InfobaseReference reference) { return null; }
-
-        @Override
-        public void updateSettings(InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings settings) {
-            // EDT 2025.2 routes access-settings persistence through updateSettings (formerly
-            // storeSettings); this is the throw path exercised by the GH#31 regression.
-            throw toThrow;
-        }
-
-        @Override
-        public void addInfobaseAccessSettingsChangeListener(
-                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettingsChangeListener listener) {
-        }
-
-        @Override
-        public void removeInfobaseAccessSettingsChangeListener(
-                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettingsChangeListener listener) {
-        }
-
-        @Override
-        public Optional<com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation>
-                loadSelectedInstallation(org.eclipse.core.resources.IProject project, InfobaseReference reference) {
-            return Optional.empty();
-        }
-
-        @Override
-        public void updateSelectedInstallation(org.eclipse.core.resources.IProject project,
-                InfobaseReference reference,
-                com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallation installation) {
-        }
-
+    /**
+     * Builds a dynamic {@link IInfobaseAccessManager} whose {@code updateSettings} always throws
+     * the supplied exception.
+     *
+     * <p>A {@link java.lang.reflect.Proxy} rather than a hand-written implementation: the EDT
+     * interface gains and renames methods between releases, and this regression only depends on
+     * the {@code updateSettings} throw path.</p>
+     *
+     * @param toThrow exception the persistence call must raise, never {@code null}
+     * @return the throwing access manager, never {@code null}
+     */
+    private static IInfobaseAccessManager newThrowingAccessManager(RuntimeException toThrow) {
+        return (IInfobaseAccessManager) java.lang.reflect.Proxy.newProxyInstance(
+                IInfobaseAccessManager.class.getClassLoader(),
+                new Class<?>[] { IInfobaseAccessManager.class },
+                (proxy, method, args) -> {
+                    if ("updateSettings".equals(method.getName())) { //$NON-NLS-1$
+                        throw toThrow;
+                    }
+                    Class<?> ret = method.getReturnType();
+                    if (ret == boolean.class) {
+                        return Boolean.FALSE;
+                    }
+                    if (ret == java.util.Optional.class) {
+                        return java.util.Optional.empty();
+                    }
+                    if (ret.isPrimitive()) {
+                        return Integer.valueOf(0);
+                    }
+                    return null;
+                });
     }
 
     /** Stub service that records the incoming request and returns a configurable result. */

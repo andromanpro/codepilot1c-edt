@@ -48,7 +48,6 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import sun.misc.Unsafe;
 
 /** Wire contract for structured MCP host tool results. */
 public class McpHostStructuredResultWireTest {
@@ -58,17 +57,17 @@ public class McpHostStructuredResultWireTest {
             "[EDT_TRANSACTION_FAILED] Stub tail failed"; //$NON-NLS-1$
 
     private ToolRegistry registry;
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
 
     @Before
     public void setUp() throws Exception {
         registry = isolatedRegistry();
-        previousRegistry = installRegistry(registry);
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
     public void tearDown() throws Exception {
-        installRegistry(previousRegistry);
+        registryLease.close();
     }
 
     @Test
@@ -503,32 +502,8 @@ public class McpHostStructuredResultWireTest {
                 + Path.of("").toAbsolutePath()); //$NON-NLS-1$
     }
 
-    private static ToolRegistry isolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        setField(registry, "tools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicTools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "gson", new Gson()); //$NON-NLS-1$
-        return registry;
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
-    }
-
-    private static void setField(Object target, String name, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
-    }
-
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
+    private static ToolRegistry isolatedRegistry() {
+        return ToolRegistry.createDetached();
     }
 
     private static final class NamedExposurePolicy implements McpToolExposurePolicy {

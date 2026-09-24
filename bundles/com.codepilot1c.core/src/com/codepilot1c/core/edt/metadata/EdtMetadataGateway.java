@@ -206,6 +206,58 @@ public class EdtMetadataGateway {
         getGlobalEditingContext();
     }
 
+    public void ensureWorkspaceRuntimeAvailable() {
+        IWorkspace workspace = ResourcesPlugin.getWorkspace();
+        if (workspace == null || workspace.getRoot() == null) {
+            throw serviceUnavailable("ResourcesPlugin workspace"); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Verifies that every named global 1C:EDT service the semantic surface depends on is
+     * published.
+     *
+     * <p>These are the services 1C:EDT registers once its managed initialization has activated
+     * the {@code com._1c.g5.wiring.serviceProvider} bundles, independently of any project. The
+     * project-bound mutation runtime is deliberately excluded - see
+     * {@link #ensureMutationRuntimeAvailable()}.</p>
+     *
+     * @throws MetadataOperationException naming the first missing service
+     */
+    public void ensureEdtServicesAvailable() {
+        getConfigurationProvider();
+        getDtProjectManager();
+        getDerivedDataManagerProvider();
+        getBmModelManager();
+        getV8ProjectManager();
+    }
+
+    /**
+     * Exercises a real, no-write 1C:EDT metadata capability.
+     *
+     * <p>A non-null service reference only proves the OSGi registration happened; this call also
+     * proves the service answers. Enumeration is the smallest read that touches the project and
+     * configuration model without opening a transaction or writing anything, and it is correct on
+     * an empty workspace, where both collections are simply empty.</p>
+     *
+     * @throws MetadataOperationException when the capability is unavailable
+     */
+    public void ensureMetadataReadCapability() {
+        try {
+            getDtProjectManager().getDtProjects();
+            getV8ProjectManager().getProjects(IV8Project.class);
+        } catch (MetadataOperationException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            String detail = e.getMessage() != null && !e.getMessage().isBlank()
+                    ? e.getMessage()
+                    : e.getClass().getSimpleName();
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "EDT metadata read capability is unavailable: " + detail, true, e); //$NON-NLS-1$
+        }
+    }
+
     public void ensureExtensionRuntimeAvailable() {
         ensureValidationRuntimeAvailable();
         getV8ProjectManager();

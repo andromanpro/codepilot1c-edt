@@ -14,6 +14,7 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Map;
 import java.util.Optional;
 
@@ -50,7 +51,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         InfobaseReference expected = newInfobaseReferenceProxy();
         StandaloneServerInfobase module = newStandaloneModule(project, "StandaloneDemo", expected); //$NON-NLS-1$
         IServer server = newServerWithModules(module);
-        IStandaloneServerService service = new StubStandaloneServerService(List.of(server));
+        IStandaloneServerService service = newStubStandaloneServerService(List.of(server), new AtomicBoolean());
 
         EdtRuntimeService runtimeService = new EdtRuntimeService(
                 new StubGateway(project, /* associationEmpty */ true, service));
@@ -68,7 +69,8 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         InfobaseReference standaloneBound = newInfobaseReferenceProxy();
         StandaloneServerInfobase module = newStandaloneModule(project, "FileDemo", standaloneBound); //$NON-NLS-1$
         IServer server = newServerWithModules(module);
-        StubStandaloneServerService service = new StubStandaloneServerService(List.of(server));
+        AtomicBoolean getServersCalled = new AtomicBoolean();
+        IStandaloneServerService service = newStubStandaloneServerService(List.of(server), getServersCalled);
 
         EdtRuntimeService runtimeService = new EdtRuntimeService(
                 new StubGateway(project, fileBound, service));
@@ -78,7 +80,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         assertSame("File-bound projects must use the IInfobaseAssociationManager result", //$NON-NLS-1$
                 fileBound, actual);
         assertFalse("Standalone fallback must not be consulted when file binding succeeds", //$NON-NLS-1$
-                service.getServersCalled);
+                getServersCalled.get());
     }
 
     @Test
@@ -87,7 +89,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         InfobaseReference expected = newInfobaseReferenceProxy();
         StandaloneServerInfobase module = newStandaloneModule(project, "PrimaryThrows", expected); //$NON-NLS-1$
         IServer server = newServerWithModules(module);
-        IStandaloneServerService service = new StubStandaloneServerService(List.of(server));
+        IStandaloneServerService service = newStubStandaloneServerService(List.of(server), new AtomicBoolean());
 
         EdtRuntimeService runtimeService = new EdtRuntimeService(
                 new ThrowingPrimaryGateway(project, service,
@@ -104,7 +106,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         IProject project = newProjectProxy("BothFail"); //$NON-NLS-1$
         RuntimeException primaryFailure = new RuntimeException("simulated primary-path failure"); //$NON-NLS-1$
         EdtRuntimeService runtimeService = new EdtRuntimeService(
-                new ThrowingPrimaryGateway(project, new StubStandaloneServerService(List.of()),
+                new ThrowingPrimaryGateway(project, newStubStandaloneServerService(List.of(), new AtomicBoolean()),
                         primaryFailure));
 
         try {
@@ -123,7 +125,7 @@ public class EdtUpdateInfobaseToolStandaloneTest {
     public void resolveDefaultInfobaseThrowsWhenNeitherBindingProvidesInfobase() {
         IProject project = newProjectProxy("Orphan"); //$NON-NLS-1$
         EdtRuntimeService runtimeService = new EdtRuntimeService(
-                new StubGateway(project, /* associationEmpty */ true, new StubStandaloneServerService(List.of())));
+                new StubGateway(project, /* associationEmpty */ true, newStubStandaloneServerService(List.of(), new AtomicBoolean())));
 
         try {
             runtimeService.resolveDefaultInfobase("Orphan"); //$NON-NLS-1$
@@ -400,141 +402,47 @@ public class EdtUpdateInfobaseToolStandaloneTest {
         }
     }
 
-    private static final class StubStandaloneServerService implements IStandaloneServerService {
-        private final List<IServer> servers;
-        boolean getServersCalled;
-
-        StubStandaloneServerService(List<IServer> servers) {
-            this.servers = servers;
-        }
-
-        @Override
-        public List<IServer> getServers() {
-            getServersCalled = true;
-            return servers;
-        }
-
-        @Override
-        public List<org.eclipse.wst.server.core.IRuntime> getRuntimes() {
-            return List.of();
-        }
-
-        @Override
-        public org.eclipse.wst.server.core.IServer createServer(String name,
-                org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.common.Pair<IServer, StandaloneServerInfobase> createServerWithInfobase(
-                String platformVersion, String projectName, InfobaseReference infobase, int clusterPort,
-                String clusterRegistryDirectory, String publicationPath, IProgressMonitor monitor) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<IServer> findServer(StandaloneServerInfobase infobase) {
-            return Optional.empty();
-        }
-
-        @Override
-        public java.net.URI getDesignerUrl(StandaloneServerInfobase infobase) {
-            return null;
-        }
-
-        @Override
-        public java.net.URI getInfobaseUrl(StandaloneServerInfobase infobase) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus validateRuntimeInstallation(
-                com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation installation) {
-            return null;
-        }
-
-        @Override
-        public Optional<org.eclipse.wst.server.core.IRuntime> findRuntime(String platformVersion,
-                IProgressMonitor monitor) {
-            return Optional.empty();
-        }
-
-        @Override
-        public Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate> //
-                getStandaloneServerRuntimeDelegate(org.eclipse.wst.server.core.IRuntime runtime,
-                        IProgressMonitor monitor) {
-            return Optional.empty();
-        }
-
-        @Override
-        public java.nio.file.Path getServerLocation(IServer server) {
-            return null;
-        }
-
-        @Override
-        public java.nio.file.Path getServerDataLocation(IServer server) {
-            return null;
-        }
-
-        @Override
-        public String getServerVersion(IServer server) {
-            return ""; //$NON-NLS-1$
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus validateServerLocation(java.nio.file.Path path) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus deleteServer(IServer server, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus startServer(IServer server, String mode, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus stopServer(IServer server, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public void execServerOperation(IServer server,
-                java.util.function.Consumer<IServer.IOperationListener> consumer,
-                IProgressMonitor monitor) {
-            // no-op
-        }
-
-        @Override
-        public com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerBehaviourDelegate //
-                findBehaviourDelegate(IServer server) {
-            return null;
-        }
-
-        @Override
-        public com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerDelegate findServerDelegate(
-                IServer server) {
-            return null;
-        }
-
-        @Override
-        public boolean isStandaloneServer(IServer server) {
-            return true;
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation toPlatformInstallation(
-                org.eclipse.wst.server.core.IRuntime runtime) {
-            return null;
-        }
-
-        @Override
-        public String calculatePlatformVersion(org.eclipse.wst.server.core.IRuntime runtime) {
-            return ""; //$NON-NLS-1$
-        }
+    /**
+     * Builds a dynamic {@link IStandaloneServerService} reporting the supplied servers.
+     *
+     * <p>A {@link java.lang.reflect.Proxy} rather than a hand-written implementation: the EDT
+     * interface gains and renames methods between releases, and these tests only depend on
+     * {@code getServers} and {@code isStandaloneServer}.</p>
+     *
+     * @param servers servers to report, never {@code null}
+     * @param getServersCalled flag flipped when {@code getServers()} is invoked, never {@code null}
+     * @return the stub service, never {@code null}
+     */
+    private static IStandaloneServerService newStubStandaloneServerService(
+            List<IServer> servers, AtomicBoolean getServersCalled) {
+        return (IStandaloneServerService) java.lang.reflect.Proxy.newProxyInstance(
+                IStandaloneServerService.class.getClassLoader(),
+                new Class<?>[] { IStandaloneServerService.class },
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getServers": //$NON-NLS-1$
+                            getServersCalled.set(true);
+                            return servers;
+                        case "getRuntimes": //$NON-NLS-1$
+                            return List.of();
+                        case "isStandaloneServer": //$NON-NLS-1$
+                            return Boolean.TRUE;
+                        case "toString": //$NON-NLS-1$
+                            return "StubStandaloneServerService"; //$NON-NLS-1$
+                        default:
+                            Class<?> ret = method.getReturnType();
+                            if (ret == boolean.class) {
+                                return Boolean.FALSE;
+                            }
+                            if (ret == java.util.Optional.class) {
+                                return java.util.Optional.empty();
+                            }
+                            if (ret.isPrimitive()) {
+                                return Integer.valueOf(0);
+                            }
+                            return null;
+                    }
+                });
     }
 
     private static final class StandaloneTestTool extends EdtUpdateInfobaseTool {

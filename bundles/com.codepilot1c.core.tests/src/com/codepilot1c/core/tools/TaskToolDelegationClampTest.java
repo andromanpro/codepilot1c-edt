@@ -12,6 +12,7 @@ import java.util.Map;
 import org.junit.Test;
 
 import com.codepilot1c.core.agent.AgentResult;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.DelegationClamp;
 import com.codepilot1c.core.agent.profiles.ExploreAgentProfile;
 import com.codepilot1c.core.agent.profiles.ProfileRouter;
@@ -121,6 +122,22 @@ public class TaskToolDelegationClampTest extends DelegationToolTestSupport {
 
         assertTrue(result.isSuccess());
         assertEquals("metadata", executor.config.getProfileName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void chatPlanRoleWithMutatingCeilingCanDelegateMetadataWork() throws Exception {
+        CapturingExecutor executor = new CapturingExecutor();
+        ToolExecutionContext chatContext = new ToolExecutionContext(
+                "plan", AgentCapability.MUTATING, 0); //$NON-NLS-1$
+
+        ToolResult result = taskTool(executor).execute(
+                Map.of("prompt", "Создай справочник", "profile", "metadata"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                chatContext).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals("metadata", executor.config.getProfileName()); //$NON-NLS-1$
+        assertEquals(1, executor.config.getDelegationDepth());
+        assertNull(result.getStructuredString("clamped_from")); //$NON-NLS-1$
     }
 
     @Test

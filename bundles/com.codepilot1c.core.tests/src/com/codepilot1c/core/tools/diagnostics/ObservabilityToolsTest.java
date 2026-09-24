@@ -99,7 +99,10 @@ public class ObservabilityToolsTest {
     @Test
     public void standaloneStatusUsesNonBlockingGatewayAndNeutralDefaults() {
         IServer server = newServer("demo-standalone", IServer.STATE_STARTED); //$NON-NLS-1$
-        StubStandaloneServerService standaloneService = new StubStandaloneServerService(List.of(server));
+        java.util.concurrent.atomic.AtomicBoolean getServersCalled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        IStandaloneServerService standaloneService =
+                newStubStandaloneServerService(List.of(server), getServersCalled);
         GetStandaloneServerStatusTool tool = new GetStandaloneServerStatusTool(
                 new EdtRuntimeGatewayStub(standaloneService),
                 new OneCProcessInspectionService(new EmptyObservabilityGateway(), new RecordingRunner()),
@@ -108,7 +111,7 @@ public class ObservabilityToolsTest {
         ToolResult result = tool.execute(Map.of()).join();
 
         assertTrue(result.isSuccess());
-        assertTrue(standaloneService.getServersCalled);
+        assertTrue(getServersCalled.get());
         JsonObject json = json(result);
         assertOkEnvelope(json, "get_standalone_server_status"); //$NON-NLS-1$
         JsonObject status = json.getAsJsonObject("data").getAsJsonArray("servers").get(0).getAsJsonObject(); //$NON-NLS-1$ //$NON-NLS-2$
@@ -252,141 +255,47 @@ public class ObservabilityToolsTest {
         }
     }
 
-    private static final class StubStandaloneServerService implements IStandaloneServerService {
-        private final List<IServer> servers;
-        boolean getServersCalled;
-
-        StubStandaloneServerService(List<IServer> servers) {
-            this.servers = servers;
-        }
-
-        @Override
-        public List<IServer> getServers() {
-            getServersCalled = true;
-            return servers;
-        }
-
-        @Override
-        public List<org.eclipse.wst.server.core.IRuntime> getRuntimes() {
-            return List.of();
-        }
-
-        @Override
-        public org.eclipse.wst.server.core.IServer createServer(String name,
-                org.eclipse.wst.server.core.IRuntime runtime, IProgressMonitor monitor) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.common.Pair<IServer, StandaloneServerInfobase> createServerWithInfobase(
-                String platformVersion, String projectName,
-                com._1c.g5.v8.dt.platform.services.model.InfobaseReference infobase, int clusterPort,
-                String clusterRegistryDirectory, String publicationPath, IProgressMonitor monitor) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public java.util.Optional<IServer> findServer(StandaloneServerInfobase infobase) {
-            return java.util.Optional.empty();
-        }
-
-        @Override
-        public java.net.URI getDesignerUrl(StandaloneServerInfobase infobase) {
-            return null;
-        }
-
-        @Override
-        public java.net.URI getInfobaseUrl(StandaloneServerInfobase infobase) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus validateRuntimeInstallation(
-                com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation installation) {
-            return null;
-        }
-
-        @Override
-        public java.util.Optional<org.eclipse.wst.server.core.IRuntime> findRuntime(String platformVersion,
-                IProgressMonitor monitor) {
-            return java.util.Optional.empty();
-        }
-
-        @Override
-        public java.util.Optional<com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerRuntimeDelegate> //
-                getStandaloneServerRuntimeDelegate(org.eclipse.wst.server.core.IRuntime runtime,
-                        IProgressMonitor monitor) {
-            return java.util.Optional.empty();
-        }
-
-        @Override
-        public java.nio.file.Path getServerLocation(IServer server) {
-            return null;
-        }
-
-        @Override
-        public java.nio.file.Path getServerDataLocation(IServer server) {
-            return null;
-        }
-
-        @Override
-        public String getServerVersion(IServer server) {
-            return ""; //$NON-NLS-1$
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus validateServerLocation(java.nio.file.Path path) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus deleteServer(IServer server, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus startServer(IServer server, String mode, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public org.eclipse.core.runtime.IStatus stopServer(IServer server, IProgressMonitor monitor) {
-            return null;
-        }
-
-        @Override
-        public void execServerOperation(IServer server,
-                java.util.function.Consumer<IServer.IOperationListener> consumer,
-                IProgressMonitor monitor) {
-            // no-op
-        }
-
-        @Override
-        public com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerBehaviourDelegate //
-                findBehaviourDelegate(IServer server) {
-            return null;
-        }
-
-        @Override
-        public com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerDelegate findServerDelegate(
-                IServer server) {
-            return null;
-        }
-
-        @Override
-        public boolean isStandaloneServer(IServer server) {
-            return true;
-        }
-
-        @Override
-        public com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation toPlatformInstallation(
-                org.eclipse.wst.server.core.IRuntime runtime) {
-            return null;
-        }
-
-        @Override
-        public String calculatePlatformVersion(org.eclipse.wst.server.core.IRuntime runtime) {
-            return ""; //$NON-NLS-1$
-        }
+    /**
+     * Builds a dynamic {@link IStandaloneServerService} that answers {@code getServers()} with the
+     * supplied servers and records that the call happened.
+     *
+     * <p>A {@link java.lang.reflect.Proxy} rather than a hand-written implementation: the EDT
+     * interface gains and renames methods between releases, and this test only depends on
+     * {@code getServers} and {@code isStandaloneServer}.</p>
+     *
+     * @param servers servers to report, never {@code null}
+     * @param getServersCalled flag flipped when {@code getServers()} is invoked, never {@code null}
+     * @return the stub service, never {@code null}
+     */
+    private static IStandaloneServerService newStubStandaloneServerService(
+            List<IServer> servers, java.util.concurrent.atomic.AtomicBoolean getServersCalled) {
+        return (IStandaloneServerService) java.lang.reflect.Proxy.newProxyInstance(
+                IStandaloneServerService.class.getClassLoader(),
+                new Class<?>[] { IStandaloneServerService.class },
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getServers": //$NON-NLS-1$
+                            getServersCalled.set(true);
+                            return servers;
+                        case "getRuntimes": //$NON-NLS-1$
+                            return List.of();
+                        case "isStandaloneServer": //$NON-NLS-1$
+                            return Boolean.TRUE;
+                        case "toString": //$NON-NLS-1$
+                            return "StubStandaloneServerService"; //$NON-NLS-1$
+                        default:
+                            Class<?> ret = method.getReturnType();
+                            if (ret == boolean.class) {
+                                return Boolean.FALSE;
+                            }
+                            if (ret == java.util.Optional.class) {
+                                return java.util.Optional.empty();
+                            }
+                            if (ret.isPrimitive()) {
+                                return Integer.valueOf(0);
+                            }
+                            return null;
+                    }
+                });
     }
 }

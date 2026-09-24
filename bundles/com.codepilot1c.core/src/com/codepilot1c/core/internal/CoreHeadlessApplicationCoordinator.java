@@ -18,24 +18,32 @@ import com.codepilot1c.core.mcp.host.McpHostManager;
 public final class CoreHeadlessApplicationCoordinator implements HeadlessApplicationCoordinator {
 
     private final CountDownLatch stopLatch;
+    private final Runnable edtBootstrap;
     private final Supplier<McpHostManager.ApplicationHostLease> hostStarter;
     private McpHostManager.ApplicationHostLease applicationHost;
 
     /** Creates the production coordinator backed by the core plug-in lifecycle. */
     public CoreHeadlessApplicationCoordinator() {
-        this(new CountDownLatch(1), VibeCorePlugin::startHeadlessMcpHost);
+        this(new CountDownLatch(1), new EdtRuntimeBootstrap()::activate, VibeCorePlugin::startHeadlessMcpHost);
     }
 
     CoreHeadlessApplicationCoordinator(
             CountDownLatch stopLatch,
+            Runnable edtBootstrap,
             Supplier<McpHostManager.ApplicationHostLease> hostStarter) {
         this.stopLatch = stopLatch;
+        this.edtBootstrap = edtBootstrap;
         this.hostStarter = hostStarter;
     }
 
     @Override
     public synchronized void start() {
         if (applicationHost == null) {
+            try {
+                edtBootstrap.run();
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("Failed to bootstrap EDT runtime services", e); //$NON-NLS-1$
+            }
             try {
                 applicationHost = hostStarter.get();
             } catch (RuntimeException e) {

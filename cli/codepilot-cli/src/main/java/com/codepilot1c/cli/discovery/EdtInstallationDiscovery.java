@@ -110,17 +110,51 @@ public final class EdtInstallationDiscovery {
         detectHome(join(os, app, "Contents", "Eclipse"), source, os, found);
     }
 
+    /**
+     * Resolves one Eclipse home to its best launcher.
+     *
+     * <p>The Equinox RCP launcher wins over {@code 1cedtcli}: only the former accepts
+     * {@code -application}, which the CLI needs to start the CodePilot headless host. On macOS the
+     * two live in sibling directories of the same bundle — {@code Contents/Eclipse/1cedtcli} next to
+     * {@code Contents/MacOS/1cedt} — so probing the Eclipse directory alone finds only the wrapper.
+     * An installation that genuinely ships nothing but the wrapper is still reported, tagged
+     * {@link LauncherKind#CLI_WRAPPER} so callers can fail closed with an actionable reason instead
+     * of launching arguments it will reject.</p>
+     */
     private void detectHome(String home, String source, OperatingSystem os, Map<String, EdtInstallation> found) {
         if (home == null || home.isBlank() || !host.isDirectory(home)) return;
-        List<String> launcherNames = os == OperatingSystem.WINDOWS
-                ? List.of("1cedtcli.exe", "1cedt.exe") : List.of("1cedtcli", "1cedt");
-        for (String launcherName : launcherNames) {
-            String launcher = join(os, home, launcherName);
-            if (host.isRegularFile(launcher)) {
-                found.putIfAbsent(normalizedKey(home, os), new EdtInstallation(home, launcher, source));
-                return;
-            }
+        String key = normalizedKey(home, os);
+        if (found.containsKey(key)) return;
+
+        String eclipseName = os == OperatingSystem.WINDOWS ? "1cedt.exe" : "1cedt";
+        String eclipseLauncher = firstRegularFile(join(os, home, eclipseName), bundleEclipseLauncher(home, os));
+        if (eclipseLauncher != null) {
+            found.put(key, new EdtInstallation(home, eclipseLauncher, source, LauncherKind.ECLIPSE));
+            return;
         }
+
+        String wrapperName = os == OperatingSystem.WINDOWS ? "1cedtcli.exe" : "1cedtcli";
+        String wrapper = join(os, home, wrapperName);
+        if (host.isRegularFile(wrapper)) {
+            found.put(key, new EdtInstallation(home, wrapper, source, LauncherKind.CLI_WRAPPER));
+        }
+    }
+
+    /** {@code <bundle>/Contents/MacOS/1cedt} for a home that is {@code <bundle>/Contents/Eclipse}. */
+    private String bundleEclipseLauncher(String home, OperatingSystem os) {
+        if (os != OperatingSystem.MACOS) return null;
+        String normalized = normalizedKey(home, os);
+        String suffix = "/Contents/Eclipse";
+        if (!normalized.endsWith(suffix)) return null;
+        String bundleRoot = normalized.substring(0, normalized.length() - suffix.length());
+        return join(os, bundleRoot, "Contents", "MacOS", "1cedt");
+    }
+
+    private String firstRegularFile(String... candidates) {
+        for (String candidate : candidates) {
+            if (candidate != null && host.isRegularFile(candidate)) return candidate;
+        }
+        return null;
     }
 
     private static boolean looksLikeEdt(String path) {

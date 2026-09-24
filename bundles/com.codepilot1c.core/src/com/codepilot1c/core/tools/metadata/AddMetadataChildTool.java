@@ -42,8 +42,8 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "child_kind": {
                   "type": "string",
-                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue"],
-                  "description": "Kind of new child object. Do not use for top-level objects. Use EnumValue to add a child value to an existing Enum parent (create_metadata cannot create enum values)."
+                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue", "URLTemplate", "HTTPMethod"],
+                  "description": "Kind of new child object. Do not use for top-level objects. Use EnumValue to add a child value to an existing Enum parent (create_metadata cannot create enum values). Use URLTemplate under an HTTPService parent and HTTPMethod under a URLTemplate parent (parent_fqn = HTTPService.<Name>.URLTemplate.<TemplateName>)."
                 },
                 "name": {
                   "type": "string",
@@ -73,6 +73,19 @@ public class AddMetadataChildTool extends AbstractTool {
                 "wait_ms": {
                   "type": "integer",
                   "description": "Таймаут ожидания материализации формы в файлы"
+                },
+                "template": {
+                  "type": "string",
+                  "description": "Точный путь URL-шаблона (child_kind=URLTemplate), например \\"/state\\" или \\"/items/{id}\\". Без пробелов, query и fragment."
+                },
+                "http_method": {
+                  "type": "string",
+                  "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "MERGE", "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "PROPPATCH", "MOVE", "COPY", "LOCK", "UNLOCK", "MKCOL", "ANY"],
+                  "description": "HTTP-метод (child_kind=HTTPMethod). Соответствует перечислению EDT HTTPMethod."
+                },
+                "handler": {
+                  "type": "string",
+                  "description": "Имя процедуры-обработчика в модуле HTTP-сервиса (child_kind=HTTPMethod)."
                 },
                 "template_type": {
                   "type": "string",
@@ -107,7 +120,8 @@ public class AddMetadataChildTool extends AbstractTool {
     @Override
     public String getDescription() {
         return "Создаёт дочерний объект метаданных под существующим владельцем через EDT BM API. " //$NON-NLS-1$
-                + "Поддерживает Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue."; //$NON-NLS-1$
+                + "Поддерживает Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue, " //$NON-NLS-1$
+                + "URLTemplate (под HTTPService) и HTTPMethod (под URLTemplate)."; //$NON-NLS-1$
     }
 
     @Override
@@ -237,6 +251,20 @@ public class AddMetadataChildTool extends AbstractTool {
             String childKindValue
     ) {
         String normalizedKind = childKindValue == null ? "" : childKindValue.toLowerCase(java.util.Locale.ROOT); //$NON-NLS-1$
+        MetadataChildKind httpKind = tryParseHttpKind(childKindValue);
+        if (httpKind != null) {
+            Map<String, Object> merged = new LinkedHashMap<>();
+            if (baseProperties != null && !baseProperties.isEmpty()) {
+                merged.putAll(baseProperties);
+            }
+            if (httpKind == MetadataChildKind.HTTP_URL_TEMPLATE) {
+                putIfPresent(merged, "template", parameters.get("template")); //$NON-NLS-1$ //$NON-NLS-2$
+            } else {
+                putIfPresent(merged, "http_method", parameters.get("http_method")); //$NON-NLS-1$ //$NON-NLS-2$
+                putIfPresent(merged, "handler", parameters.get("handler")); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            return merged;
+        }
         if ("template".equals(normalizedKind) || "макет".equals(normalizedKind)) { //$NON-NLS-1$ //$NON-NLS-2$
             Map<String, Object> merged = new LinkedHashMap<>();
             if (baseProperties != null && !baseProperties.isEmpty()) {
@@ -257,6 +285,19 @@ public class AddMetadataChildTool extends AbstractTool {
         putIfPresent(merged, "set_as_default", parameters.get("set_as_default")); //$NON-NLS-1$ //$NON-NLS-2$
         putIfPresent(merged, "wait_ms", parameters.get("wait_ms")); //$NON-NLS-1$ //$NON-NLS-2$
         return merged;
+    }
+
+    /**
+     * Returns the HTTP service child kind for this request, or {@code null} for every other kind
+     * (including an unparseable one, which the validation service rejects with the canonical error).
+     */
+    private MetadataChildKind tryParseHttpKind(String childKindValue) {
+        try {
+            MetadataChildKind kind = MetadataChildKind.fromString(childKindValue);
+            return com.codepilot1c.core.edt.metadata.HttpServiceChildProperties.applies(kind) ? kind : null;
+        } catch (MetadataOperationException e) {
+            return null;
+        }
     }
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {

@@ -34,6 +34,7 @@ final class EdtInstallationsCommand implements Callable<Integer> {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("home", installation.home());
         value.put("launcher", installation.launcher());
+        value.put("launcherKind", installation.kind().token());
         value.put("source", installation.source());
         return value;
     }

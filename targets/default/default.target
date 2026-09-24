@@ -3,9 +3,8 @@
 <target name="1C Copilot Target Platform" sequenceNumber="11">
     <locations>
         <!--
-            Exact EDT 2026.2.0.289 materialized installation. Do not point this at the
-            mixed ~/.p2/pool. It already contains Eclipse 2025-12, Xtext 2.41 and the
-            terminal/CDT bundles used by EDT, so remote p2 sites must not overlay it.
+            The exact materialized EDT 2026.2.0.289 closure supplies Eclipse,
+            Xtext and com._1c.g5.v8.* bundles. Do not mix remote p2 versions.
             Supply its Eclipse directory with -Dedt.home=/path/to/Eclipse.
         -->
         <location path="${system_property:edt.home}" type="Directory"/>

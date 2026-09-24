@@ -13,10 +13,13 @@ import java.util.Objects;
 
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.AgentCapability;
+import com.codepilot1c.core.agent.profiles.BuildAgentProfile;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.session.Session;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.ui.ChatToolGate;
+import com.codepilot1c.core.ui.ChatProfilePrompt;
 
 /**
  * Immutable profile and session context captured for one ChatView turn.
@@ -54,8 +57,10 @@ public final class ChatTurnContext {
         String requestedProfileId = sessionProfileId != null && !sessionProfileId.isBlank()
                 ? sessionProfileId : configuredProfileId;
         AgentProfile profile = ChatToolGate.selectProfile(requestedProfileId);
-        String addition = AgentProfileRegistry.getInstance()
-                .createConfig(profile).getSystemPromptAddition();
+        AgentProfile build = AgentProfileRegistry.getInstance()
+                .getProfile(BuildAgentProfile.ID).orElseGet(BuildAgentProfile::new);
+        String addition = ChatProfilePrompt.forRole(profile,
+                AgentProfileRegistry.getInstance().createConfig(build).getSystemPromptAddition());
         return new ChatTurnContext(
                 profile,
                 addition,
@@ -85,6 +90,20 @@ public final class ChatTurnContext {
         return ChatProfileSelectorModel.select(session, profileId);
     }
 
+    /** Carries a still-available profile into a new chat in the same view. */
+    public static boolean carryAvailableProfile(Session previous, Session next) {
+        String profileId = previous != null ? previous.getAgentProfile() : null;
+        if (next == null || profileId == null || profileId.isBlank()) {
+            return false;
+        }
+        return AgentProfileRegistry.getInstance().getAvailableProfile(profileId)
+                .map(profile -> {
+                    next.setAgentProfile(profile.getId());
+                    return true;
+                })
+                .orElse(false);
+    }
+
     public AgentProfile profile() {
         return profile;
     }
@@ -93,9 +112,16 @@ public final class ChatTurnContext {
         return profile.getId();
     }
 
+    /** Label for the chat role selector; profile capability labels are not chat permissions. */
+    public static String roleLabel(AgentProfile profile) {
+        Objects.requireNonNull(profile, "profile"); //$NON-NLS-1$
+        return profile.getId() + " — " + profile.getName(); //$NON-NLS-1$
+    }
+
     /** Creates the tool identity from the same immutable turn capture as the prompt. */
     public ToolExecutionContext toolExecutionContext() {
-        return ToolExecutionContext.of(profile, 0, projectPath, sessionId);
+        return new ToolExecutionContext(profile.getId(),
+                AgentCapability.MUTATING, 0, projectPath, sessionId);
     }
 
     /**

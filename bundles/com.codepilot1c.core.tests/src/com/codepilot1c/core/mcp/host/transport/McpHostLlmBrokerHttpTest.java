@@ -111,6 +111,39 @@ public class McpHostLlmBrokerHttpTest {
     }
 
     @Test
+    public void rejectsRemoteBrowserOriginsForBothLlmEndpointsWithoutBlockingNativeClients() throws Exception {
+        FakeProvider provider = FakeProvider.completed();
+        try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {
+            HttpRequest remoteCapabilities = HttpRequest.newBuilder(
+                    fixture.uri("/llm/v1/capabilities")) //$NON-NLS-1$
+                    .header("Origin", "http://attacker.example:3000").GET().build(); //$NON-NLS-1$ //$NON-NLS-2$
+            assertError(fixture.client.send(remoteCapabilities, HttpResponse.BodyHandlers.ofString()),
+                    403, "invalid_origin"); //$NON-NLS-1$
+
+            HttpRequest remoteChat = HttpRequest.newBuilder(fixture.uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Origin", "http://attacker.example:3000") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(CHAT)).build();
+            assertError(fixture.client.send(remoteChat, HttpResponse.BodyHandlers.ofString()),
+                    403, "invalid_origin"); //$NON-NLS-1$
+            assertEquals(0, provider.invocations.get());
+
+            HttpRequest localCapabilities = HttpRequest.newBuilder(
+                    fixture.uri("/llm/v1/capabilities")) //$NON-NLS-1$
+                    .header("Origin", "http://localhost:3000").GET().build(); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(200, fixture.client.send(localCapabilities,
+                    HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(200, fixture.get("/llm/v1/capabilities", null).statusCode()); //$NON-NLS-1$
+            HttpRequest localChat = HttpRequest.newBuilder(fixture.uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Origin", "http://127.0.0.1:3000") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(CHAT)).build();
+            assertEquals(200, fixture.client.send(localChat,
+                    HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(200, fixture.post(CHAT, null).statusCode());
+            assertEquals(2, provider.invocations.get());
+        }
+    }
+
+    @Test
     public void mapsNormalizedRequestAndAllProviderChunkTypesToSse() throws Exception {
         FakeProvider provider = FakeProvider.mapping();
         try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {
@@ -198,9 +231,34 @@ public class McpHostLlmBrokerHttpTest {
             assertTrue(provider.started.await(2, TimeUnit.SECONDS));
             assertNotNull(first.get(2, TimeUnit.SECONDS));
 
-            assertError(fixture.post(CHAT, null), 409, "busy"); //$NON-NLS-1$
+            CompletableFuture<HttpResponse<InputStream>> waiter = fixture.postAsync(CHAT);
+            assertEquals(200, waiter.get(2, TimeUnit.SECONDS).statusCode());
             fixture.broker.cancelActive();
             assertTrue(provider.returned.await(2, TimeUnit.SECONDS));
+            assertEquals(1, provider.invocations.get());
+        }
+    }
+
+    @Test
+    public void terminalFlightStillMappedAtRetirementIsReplacedBeforeLateSubscriberStreams() throws Exception {
+        CompletionEdgeProvider provider = new CompletionEdgeProvider();
+        try (Fixture fixture = fixture(McpHostConfig.AuthMode.NONE, provider)) {
+            CompletableFuture<HttpResponse<InputStream>> first = fixture.postStreaming(CHAT);
+            assertTrue(provider.firstTerminalEmitted.await(2, TimeUnit.SECONDS));
+            assertNotNull(first.get(2, TimeUnit.SECONDS));
+
+            CompletableFuture<HttpResponse<String>> late = fixture.postTextAsync(CHAT);
+
+            assertTrue("a terminal-but-still-mapped flight must not strand the late request", //$NON-NLS-1$
+                    provider.secondStarted.await(2, TimeUnit.SECONDS));
+            HttpResponse<String> lateResponse = late.get(2, TimeUnit.SECONDS);
+            assertEquals(200, lateResponse.statusCode());
+            assertTrue("late request must receive a terminal SSE event, never only : connected", //$NON-NLS-1$
+                    lateResponse.body().contains("event: done")); //$NON-NLS-1$
+            assertEquals(2, provider.invocations.get());
+
+            provider.allowFirstReturn.countDown();
+            assertTrue(provider.firstReturned.await(2, TimeUnit.SECONDS));
         }
     }
 
@@ -270,11 +328,24 @@ public class McpHostLlmBrokerHttpTest {
         }
 
         HttpResponse<String> post(String body, String token) throws Exception {
+            return post(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), body, token);
+        }
+
+        CompletableFuture<HttpResponse<InputStream>> postAsync(String body) {
+            HttpRequest request = HttpRequest.newBuilder(uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+        }
+
+        private HttpResponse<String> post(HttpClient requestClient, String body, String token)
+                throws Exception {
             HttpRequest.Builder builder = HttpRequest.newBuilder(uri("/llm/v1/chat")) //$NON-NLS-1$
                     .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             authorize(builder, token);
-            return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            return requestClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         }
 
         CompletableFuture<HttpResponse<InputStream>> postStreaming(String body) {
@@ -282,6 +353,13 @@ public class McpHostLlmBrokerHttpTest {
                     .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
                     .POST(HttpRequest.BodyPublishers.ofString(body)).build();
             return client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+        }
+
+        CompletableFuture<HttpResponse<String>> postTextAsync(String body) {
+            HttpRequest request = HttpRequest.newBuilder(uri("/llm/v1/chat")) //$NON-NLS-1$
+                    .header("Content-Type", "application/json") //$NON-NLS-1$ //$NON-NLS-2$
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            return client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
         }
 
         Socket openRawChat(String body) throws Exception {
@@ -419,6 +497,36 @@ public class McpHostLlmBrokerHttpTest {
             cancelled.set(false);
             started = new CountDownLatch(1);
             returned = new CountDownLatch(1);
+        }
+    }
+
+    private static final class CompletionEdgeProvider extends FakeProvider {
+        private final CountDownLatch firstTerminalEmitted = new CountDownLatch(1);
+        private final CountDownLatch allowFirstReturn = new CountDownLatch(1);
+        private final CountDownLatch firstReturned = new CountDownLatch(1);
+        private final CountDownLatch secondStarted = new CountDownLatch(1);
+
+        CompletionEdgeProvider() {
+            super(false);
+        }
+
+        @Override
+        public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
+            int invocation = invocations.incrementAndGet();
+            if (invocation == 1) {
+                consumer.accept(LlmStreamChunk.complete("stop")); //$NON-NLS-1$
+                firstTerminalEmitted.countDown();
+                try {
+                    allowFirstReturn.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    firstReturned.countDown();
+                }
+                return;
+            }
+            secondStarted.countDown();
+            consumer.accept(LlmStreamChunk.complete("stop")); //$NON-NLS-1$
         }
     }
 

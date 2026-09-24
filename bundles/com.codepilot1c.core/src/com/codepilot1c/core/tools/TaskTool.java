@@ -425,7 +425,13 @@ public class TaskTool extends AbstractTool {
     private ILog safeLog() {
         try {
             return Platform.getLog(TaskTool.class);
-        } catch (IllegalArgumentException e) {
+        } catch (RuntimeException e) {
+            // This tool can execute from an executor owned by the embedding
+            // runtime.  In particular, test and standalone callers can load
+            // this class outside an OSGi bundle, for which Platform#getLog
+            // currently throws a NullPointerException rather than the
+            // documented IllegalArgumentException.  Logging must never turn
+            // a completed delegation into a failed tool operation.
             return null;
         }
     }

@@ -19,6 +19,7 @@ import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
 import com.codepilot1c.core.mcp.host.McpReadiness;
 import com.codepilot1c.core.mcp.host.McpToolExposurePolicy;
+import com.codepilot1c.core.mcp.host.ProjectReadiness;
 import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
 import com.codepilot1c.core.mcp.model.McpPrompt;
@@ -55,16 +56,26 @@ public class McpHostHttpTransportHealthContractTest {
             assertEquals(Map.of(
                     "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
                     "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "services", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(), //$NON-NLS-1$
                     "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
                     "capabilities", List.of("llm.v1")), json(ready.body())); //$NON-NLS-1$ //$NON-NLS-2$
 
-            readiness.set(McpReadiness.notReady("EDT runtime services are not ready")); //$NON-NLS-1$
+            // Semantic readiness drops while the host stays live, and the staged detail travels
+            // with it so a CLI never has to fall back to /health as a success signal.
+            readiness.set(McpReadiness.starting(
+                    "edtServices: IBmModelManager is unavailable in EDT runtime", //$NON-NLS-1$
+                    List.of(new ProjectReadiness("Neutral", "building")))); //$NON-NLS-1$ //$NON-NLS-2$
             HttpResponse<String> notReady = client.send(get(port, "/health/ready"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
             assertEquals(503, notReady.statusCode());
+            assertEquals("liveness must stay 200 while semantic readiness is 503", //$NON-NLS-1$
+                    200, client.send(get(port, "/health"), HttpResponse.BodyHandlers.ofString()).statusCode()); //$NON-NLS-1$
             assertEquals(Map.of(
                     "status", "not_ready", //$NON-NLS-1$
                     "ready", Boolean.FALSE, //$NON-NLS-1$
-                    "reason", "EDT runtime services are not ready", //$NON-NLS-1$
+                    "reason", "edtServices: IBmModelManager is unavailable in EDT runtime", //$NON-NLS-1$
+                    "services", "starting", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(Map.of("name", "Neutral", "state", "building")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                     "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
                     "capabilities", List.of("llm.v1")), json(notReady.body())); //$NON-NLS-1$ //$NON-NLS-2$
 
@@ -99,6 +110,8 @@ public class McpHostHttpTransportHealthContractTest {
             assertEquals(Map.of(
                     "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
                     "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "services", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(), //$NON-NLS-1$
                     "llmBrokerStatus", "disabled"), json(response.body())); //$NON-NLS-1$ //$NON-NLS-2$
         } finally {
             transport.stop();

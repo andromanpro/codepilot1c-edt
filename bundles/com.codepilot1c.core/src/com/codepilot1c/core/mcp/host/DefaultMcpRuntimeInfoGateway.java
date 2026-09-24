@@ -8,17 +8,18 @@ import org.eclipse.core.runtime.Platform;
 import org.osgi.framework.Bundle;
 
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
  * EDT-backed runtime boundary for MCP readiness and discovery metadata.
  */
 public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway {
 
-    private static final String NOT_READY_REASON = "EDT runtime services are not ready"; //$NON-NLS-1$
     private static final String DEGRADED_REASON = "EDT runtime services failed readiness probe"; //$NON-NLS-1$
 
     private final EdtMetadataGateway edtGateway;
     private final McpEdtVersionSupplier edtVersionSupplier;
+    private McpSemanticReadinessProbe readinessProbe;
 
     public DefaultMcpRuntimeInfoGateway() {
         this(new EdtMetadataGateway(), DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
@@ -26,6 +27,11 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
 
     public DefaultMcpRuntimeInfoGateway(EdtMetadataGateway edtGateway) {
         this(edtGateway, DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
+    }
+
+    public DefaultMcpRuntimeInfoGateway(McpSemanticReadinessProbe readinessProbe) {
+        this(new EdtMetadataGateway(), DefaultMcpRuntimeInfoGateway::resolveEdtProductVersion);
+        this.readinessProbe = readinessProbe;
     }
 
     public DefaultMcpRuntimeInfoGateway(McpEdtVersionSupplier edtVersionSupplier) {
@@ -100,14 +106,15 @@ public final class DefaultMcpRuntimeInfoGateway implements McpRuntimeInfoGateway
                 || "com.codepilot1c.core.headless".equals(System.getProperty("eclipse.application")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    private McpSemanticReadinessProbe probe() {
+        if (readinessProbe == null) {
+            readinessProbe = new McpSemanticReadinessProbe(edtGateway);
+        }
+        return readinessProbe;
+    }
+
     @Override
     public McpReadiness readiness() {
-        try {
-            return edtGateway.isEdtAvailable()
-                ? McpReadiness.available()
-                : McpReadiness.starting(NOT_READY_REASON);
-        } catch (RuntimeException e) {
-            return McpReadiness.notReady(DEGRADED_REASON);
-        }
+        return probe().evaluate();
     }
 }

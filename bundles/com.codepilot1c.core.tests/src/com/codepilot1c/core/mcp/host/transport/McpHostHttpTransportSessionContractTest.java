@@ -53,6 +53,34 @@ public class McpHostHttpTransportSessionContractTest {
     }
 
     @Test
+    public void loopbackOriginCanInitializeWithoutAuthentication() throws Exception {
+        try (TransportFixture fixture = new TransportFixture(Duration.ofMinutes(1), Clock.systemUTC())) {
+            HttpResponse<String> response = fixture.post(INITIALIZE,
+                    Map.of("Origin", "http://localhost:3000")); //$NON-NLS-1$ //$NON-NLS-2$
+
+            assertEquals(200, response.statusCode());
+            assertEquals(1, fixture.transport.getSessionsSnapshot().size());
+        }
+    }
+
+    @Test
+    public void remoteBrowserOriginIsRejectedBeforeSessionHandling() throws Exception {
+        try (TransportFixture fixture = new TransportFixture(Duration.ofMinutes(1), Clock.systemUTC())) {
+            HttpResponse<String> rejected = fixture.post(INITIALIZE,
+                    Map.of("Origin", "http://attacker.example:3000")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(403, rejected.statusCode());
+            assertEquals(Map.of("error", "invalid_origin"), json(rejected.body())); //$NON-NLS-1$ //$NON-NLS-2$
+            assertTrue(fixture.transport.getSessionsSnapshot().isEmpty());
+
+            HttpResponse<String> initialized = fixture.post(INITIALIZE, Map.of());
+            String sessionId = initialized.headers().firstValue("Mcp-Session-Id").orElseThrow(); //$NON-NLS-1$
+            assertEquals(403, fixture.delete(Map.of("Mcp-Session-Id", sessionId, //$NON-NLS-1$
+                    "Origin", "http://attacker.example")).statusCode()); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals(1, fixture.transport.getSessionsSnapshot().size());
+        }
+    }
+
+    @Test
     public void unknownClientSessionIdReturns404WithoutCreatingSession() throws Exception {
         try (TransportFixture fixture = new TransportFixture(Duration.ofMinutes(1), Clock.systemUTC())) {
             HttpResponse<String> initialized = fixture.post(INITIALIZE, Map.of());

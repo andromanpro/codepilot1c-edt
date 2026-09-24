@@ -77,6 +77,8 @@ import org.eclipse.ui.part.ViewPart;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.diff.CodeDiffUtils;
+import com.codepilot1c.core.agent.profiles.AgentProfile;
+import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.gsd.GsdFeatureGate;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
@@ -2182,7 +2184,8 @@ public class ChatView extends ViewPart {
      * Builds an LLM request with the current conversation and available tools.
      */
     private LlmRequest buildRequestWithTools(TurnRuntime turn) {
-        LlmRequest.Builder requestBuilder = LlmRequest.builder();
+        LlmRequest.Builder requestBuilder = LlmRequest.builder()
+                .providerSessionId(viewSession().getId());
 
         // Add system prompt for 1C development
         requestBuilder.systemMessage(getSystemPrompt(turn));
@@ -3569,6 +3572,7 @@ public class ChatView extends ViewPart {
                     : SessionManager.getInstance().createSession();
             ChatProfileSelectorModel.carrySelection(
                     previousSession, session, configuredChatProfileId());
+            SessionManager.getInstance().saveSession(session);
         } catch (Exception e) {
             LOG.debug("clearChat: session management failed: " + e.getMessage()); //$NON-NLS-1$
             session = null;
@@ -3594,6 +3598,7 @@ public class ChatView extends ViewPart {
         refreshProfileSelector();
 
         appendSystemMessage(Messages.ChatView_WelcomeMessage);
+        refreshProfileSelector();
         requestGsdStatusRefresh();
     }
 

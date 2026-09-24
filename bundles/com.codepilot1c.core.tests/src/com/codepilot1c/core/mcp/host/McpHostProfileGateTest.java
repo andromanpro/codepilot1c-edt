@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import org.junit.After;
@@ -40,26 +39,31 @@ import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
 import com.codepilot1c.core.evaluation.trace.ArtifactLayout;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.validation.ValidationOperation;
+import com.codepilot1c.core.edt.validation.ValidationTokenStore;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
 import com.codepilot1c.core.mcp.model.McpContent;
 import com.codepilot1c.core.mcp.model.McpMessage;
 import com.codepilot1c.core.model.ToolCall;
-import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.TaskTool;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolRegistry.ToolResolution;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.diagnostics.EdtDiagnosticsTool;
+import com.codepilot1c.core.tools.extension.ExtensionManageTool;
+import com.codepilot1c.core.tools.workspace.WorkspaceImportProjectTool;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import sun.misc.Unsafe;
 
 public class McpHostProfileGateTest {
 
@@ -67,7 +71,7 @@ public class McpHostProfileGateTest {
     private String previousTraceEnabled;
     private Path traceRoot;
     private ToolRegistry registry;
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
     private final List<String> registeredProfileIds = new ArrayList<>();
 
     @Before
@@ -78,7 +82,7 @@ public class McpHostProfileGateTest {
         System.setProperty(ArtifactLayout.PROP_TRACE_DIR, traceRoot.toString());
         System.setProperty(AgentTraceSession.PROP_TRACE_ENABLED, Boolean.TRUE.toString());
         registry = isolatedRegistry();
-        previousRegistry = installRegistry(registry);
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
@@ -86,7 +90,7 @@ public class McpHostProfileGateTest {
         for (String profileId : registeredProfileIds) {
             AgentProfileRegistry.getInstance().unregister(profileId);
         }
-        installRegistry(previousRegistry);
+        registryLease.close();
         restoreProperty(ArtifactLayout.PROP_TRACE_DIR, previousTraceDir);
         restoreProperty(AgentTraceSession.PROP_TRACE_ENABLED, previousTraceEnabled);
     }
@@ -170,7 +174,136 @@ public class McpHostProfileGateTest {
     }
 
     @Test
-    public void mcpRuntimeCapabilitiesRemainUsableAndProfileScoped() {
+    public void profilelessAllowListsAndCallsConfirmingCommands() {
+        for (String name : List.of("edt_diagnostics", "workspace_import_project", //$NON-NLS-1$ //$NON-NLS-2$
+                "extension_manage", "read_file")) { //$NON-NLS-1$ //$NON-NLS-2$
+            boolean mutating = !"read_file".equals(name); //$NON-NLS-1$
+            CapturingTool tool = register(new CapturingTool(
+                    name, mutating, mutating, mutating));
+            McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW, "  "); //$NON-NLS-1$
+            Map<String, Object> listed = listedTool(router.route(
+                    request("tools/list", Map.of()), session()), name); //$NON-NLS-1$
+
+            assertFalse(name, listed.containsKey("_meta")); //$NON-NLS-1$
+            if (mutating) {
+                assertEquals(name, Boolean.TRUE, annotations(listed).get("destructiveHint")); //$NON-NLS-1$
+            }
+            McpMessage response = router.route(call(name, Map.of("command", "metadata_smoke")), //$NON-NLS-1$ //$NON-NLS-2$
+                    session());
+            assertFalse(name, isToolError(response));
+            assertEquals(name, 1, tool.calls);
+        }
+    }
+
+    @Test
+    public void profilelessAllowListsAndCallsDynamicMutatingTool() {
+        CapturingTool tool = new CapturingTool("mcp_external_mutation", true); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+        McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW, ""); //$NON-NLS-1$
+
+        Map<String, Object> listed = listedTool(router.route(
+                request("tools/list", Map.of()), session()), tool.getName()); //$NON-NLS-1$
+        assertEquals(Boolean.TRUE, annotations(listed).get("destructiveHint")); //$NON-NLS-1$
+        assertFalse(listed.containsKey("_meta")); //$NON-NLS-1$
+        assertFalse(isToolError(router.route(call(tool.getName(), Map.of()), session())));
+        assertEquals(1, tool.calls);
+    }
+
+    @Test
+    public void localAllowWildcardListsAndCallsTaggedTools() {
+        CapturingTool sensitive = register(new CapturingTool(
+                "get_infobase_credentials", false) { //$NON-NLS-1$
+            @Override
+            public Set<String> getTags() {
+                return Set.of("sensitive"); //$NON-NLS-1$
+            }
+        });
+        CapturingTool localExec = register(new CapturingTool(
+                "java_compile_probe", false) { //$NON-NLS-1$
+            @Override
+            public Set<String> getTags() {
+                return Set.of("local-exec"); //$NON-NLS-1$
+            }
+        });
+        McpHostConfig config = new McpHostConfig();
+        config.setBindAddress("127.0.0.1"); //$NON-NLS-1$
+        config.setMutationPolicy(McpHostConfig.MutationPolicy.ALLOW);
+        config.setExposedToolsFilter("*"); //$NON-NLS-1$
+        McpHostRequestRouter router = router(new DefaultMcpToolExposurePolicy(config),
+                McpHostConfig.MutationPolicy.ALLOW, ""); //$NON-NLS-1$
+
+        Set<String> listed = listedNames(router.route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
+        for (CapturingTool tool : List.of(sensitive, localExec)) {
+            assertTrue(tool.getName(), listed.contains(tool.getName()));
+            assertFalse(tool.getName(), isToolError(router.route(
+                    call(tool.getName(), Map.of()), session())));
+            assertEquals(tool.getName(), 1, tool.calls);
+        }
+    }
+
+    @Test
+    public void profilelessAllowStillRunsCommandValidators() {
+        register(new EdtDiagnosticsTool());
+        register(new WorkspaceImportProjectTool());
+        register(new ExtensionManageTool());
+        McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW, ""); //$NON-NLS-1$
+
+        McpMessage diagnostics = router.route(call("edt_diagnostics", //$NON-NLS-1$
+                Map.of("command", "metadata_smoke")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+        McpMessage workspace = router.route(call("workspace_import_project", Map.of()), session()); //$NON-NLS-1$
+        McpMessage extension = router.route(call("extension_manage", //$NON-NLS-1$
+                Map.of("command", "invalid")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(diagnostics));
+        assertTrue(text(diagnostics).contains("project")); //$NON-NLS-1$
+        assertTrue(isToolError(workspace));
+        assertTrue(text(workspace).contains("INVALID_ARGUMENT")); //$NON-NLS-1$
+        assertTrue(isToolError(extension));
+        assertTrue(text(extension).contains("Unknown command")); //$NON-NLS-1$
+        for (McpMessage response : List.of(diagnostics, workspace, extension)) {
+            assertFalse(text(response).contains("confirmation_unavailable_tool_policy")); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void profilelessAllowPassesTokenToInternalOneTimeValidator() {
+        TokenCheckingTool tool = register(new TokenCheckingTool());
+        McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW, ""); //$NON-NLS-1$
+        String token = tool.issueToken();
+
+        McpMessage missing = router.route(call(tool.getName(), Map.of()), session());
+        McpMessage forged = router.route(call(tool.getName(),
+                Map.of("validation_token", "forged")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+        McpMessage valid = router.route(call(tool.getName(),
+                Map.of("validation_token", token)), session()); //$NON-NLS-1$
+        McpMessage replay = router.route(call(tool.getName(),
+                Map.of("validation_token", token)), session()); //$NON-NLS-1$
+
+        assertTrue(text(missing), isToolError(missing));
+        assertTrue(text(missing).contains("KNOWLEDGE_REQUIRED")); //$NON-NLS-1$
+        assertTrue(text(forged), isToolError(forged));
+        assertTrue(text(forged).contains("INVALID_VALIDATION_TOKEN")); //$NON-NLS-1$
+        assertFalse(text(valid), isToolError(valid));
+        assertTrue(text(replay), isToolError(replay));
+        assertTrue(text(replay).contains("INVALID_VALIDATION_TOKEN")); //$NON-NLS-1$
+        assertEquals(4, tool.calls);
+    }
+
+    @Test
+    public void profilelessDenyAndAskRejectConfirmingCommands() {
+        CapturingTool tool = register(new CapturingTool(
+                "extension_manage", true, true, true)); //$NON-NLS-1$
+        for (McpHostConfig.MutationPolicy policy : List.of(
+                McpHostConfig.MutationPolicy.DENY, McpHostConfig.MutationPolicy.ASK)) {
+            McpMessage response = router(policy, "") //$NON-NLS-1$
+                    .route(call(tool.getName(), Map.of()), session());
+            assertTrue(policy.name(), isToolError(response));
+        }
+        assertEquals(0, tool.calls);
+    }
+
+    @Test
+    public void mcpRuntimeCapabilitiesRemainUsableRegardlessOfProfile() {
         CapturingTool read = new CapturingTool("mcp_tracker_search", false); //$NON-NLS-1$
         CapturingTool mutate = new CapturingTool("mcp_tracker_update", true); //$NON-NLS-1$
         CapturingTool unknown = new CapturingTool("mcp_tracker_unknown", false); //$NON-NLS-1$
@@ -184,19 +317,19 @@ public class McpHostProfileGateTest {
                 exposure, McpHostConfig.MutationPolicy.ALLOW, "gsd-discuss") //$NON-NLS-1$
                 .route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
         assertTrue(gsdNames.contains(read.getName()));
-        assertFalse(gsdNames.contains(mutate.getName()));
-        assertFalse(gsdNames.contains(unknown.getName()));
+        assertTrue(gsdNames.contains(mutate.getName()));
+        assertTrue(gsdNames.contains(unknown.getName()));
 
         Set<String> buildNames = listedNames(router(
                 exposure, McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
                 .route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
         assertTrue(buildNames.contains(read.getName()));
         assertTrue(buildNames.contains(mutate.getName()));
-        assertFalse(buildNames.contains(unknown.getName()));
+        assertTrue(buildNames.contains(unknown.getName()));
     }
 
     @Test
-    public void dynamicMutatingNoRuleIsRejectedUnderAllowWithMachineReadableReason() {
+    public void dynamicMutatingToolRunsUnderAllowRegardlessOfProfile() {
         CapturingTool tool = new CapturingTool("mcp_adversary_update", false); //$NON-NLS-1$
         registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
 
@@ -205,13 +338,8 @@ public class McpHostProfileGateTest {
                 McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
                 .route(call(tool.getName(), Map.of("value", "changed")), session()); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertTrue(isToolError(response));
-        assertEquals(0, tool.calls);
-        JsonObject denial = structuredContent(response);
-        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
-                denial.get("reason_code").getAsString()); //$NON-NLS-1$
-        assertEquals("tool", denial.get("layer").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("build", denial.get("profile").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(isToolError(response));
+        assertEquals(1, tool.calls);
     }
 
     @Test
@@ -245,7 +373,7 @@ public class McpHostProfileGateTest {
                 .route(call(name, Map.of()), session());
 
         assertTrue(isToolError(response));
-        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+        assertEquals("stale_tool_resolution", //$NON-NLS-1$
                 structuredContent(response).get("reason_code").getAsString()); //$NON-NLS-1$
         assertEquals(0, trusted.calls);
         assertEquals(0, replacement.calls);
@@ -272,7 +400,7 @@ public class McpHostProfileGateTest {
     }
 
     @Test
-    public void toolAndExposureConfirmationSignalsFailClosedUnderAllow() {
+    public void confirmationSignalsDoNotVetoMcpAllow() {
         CapturingTool confirming = new CapturingTool(
                 "mcp_local_confirming", false, true, false); //$NON-NLS-1$
         CapturingTool destructive = new CapturingTool(
@@ -301,15 +429,12 @@ public class McpHostProfileGateTest {
 
         for (McpMessage response : List.of(
                 confirmingResponse, destructiveResponse, policyResponse)) {
-            assertTrue(isToolError(response));
-            assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
-                    structuredContent(response).get("reason_code").getAsString()); //$NON-NLS-1$
+            assertFalse(isToolError(response));
         }
-        assertEquals(0, confirming.calls);
-        assertEquals(0, destructive.calls);
-        assertEquals(0, policyConfirmed.calls);
-        assertEquals(Boolean.TRUE, metadata(policyMetadata)
-                .get("codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+        assertEquals(1, confirming.calls);
+        assertEquals(1, destructive.calls);
+        assertEquals(1, policyConfirmed.calls);
+        assertFalse(policyMetadata.containsKey("_meta")); //$NON-NLS-1$
     }
 
     @Test
@@ -330,8 +455,7 @@ public class McpHostProfileGateTest {
         assertEquals(Boolean.TRUE, annotations(readMetadata).get("readOnlyHint")); //$NON-NLS-1$
         assertFalse(readMetadata.containsKey("_meta")); //$NON-NLS-1$
         assertEquals(Boolean.TRUE, annotations(mutateMetadata).get("destructiveHint")); //$NON-NLS-1$
-        assertEquals(Boolean.TRUE, metadata(mutateMetadata)
-                .get("codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+        assertFalse(mutateMetadata.containsKey("_meta")); //$NON-NLS-1$
     }
 
     @Test
@@ -358,165 +482,33 @@ public class McpHostProfileGateTest {
     }
 
     @Test
-    public void configuredProfileNarrowsToolListWithoutWideningExposure() {
-        register(new CapturingTool("profile_visible", false)); //$NON-NLS-1$
-        register(new CapturingTool("profile_disallowed", false)); //$NON-NLS-1$
-        register(new CapturingTool("profile_sensitive", false)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of("profile_visible", "profile_sensitive"), //$NON-NLS-1$ //$NON-NLS-2$
-                List.of(), false);
-        McpHostConfig config = McpHostConfig.defaults();
-        config.setExposedToolsFilter("*"); //$NON-NLS-1$
-        McpToolExposurePolicy exposure = new DefaultMcpToolExposurePolicy(
-                config, "profile_sensitive"::equals); //$NON-NLS-1$
-
-        McpMessage response = router(exposure, McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(request("tools/list", Map.of()), session()); //$NON-NLS-1$
-
-        assertEquals(Set.of("profile_visible"), listedNames(response)); //$NON-NLS-1$
+    public void configuredAgentProfilesDoNotFilterMcpListOrCalls() {
+        CapturingTool read = register(new CapturingTool("mcp_profile_read", false)); //$NON-NLS-1$
+        CapturingTool mutate = register(new CapturingTool("mcp_profile_mutate", true, true, true)); //$NON-NLS-1$
+        String profileId = registerProfile(Set.of(read.getName()),
+                List.of(PermissionRule.deny(mutate.getName()).forAllResources()), true);
+        for (String configuredId : List.of(profileId, "no-such-profile")) { //$NON-NLS-1$
+            McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW, configuredId);
+            Set<String> listed = listedNames(router.route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
+            assertTrue(configuredId, listed.contains(read.getName()));
+            assertTrue(configuredId, listed.contains(mutate.getName()));
+            assertFalse(configuredId, isToolError(router.route(call(mutate.getName(), Map.of()), session())));
+        }
+        assertEquals(2, mutate.calls);
     }
 
     @Test
-    public void emptyAllowlistExposesNoStaticTools() {
-        CapturingTool tool = register(new CapturingTool("empty_profile_static", false)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(), List.of(), true);
-        McpToolExposurePolicy exposure = new NamedExposurePolicy(Set.of(tool.getName()));
-        McpHostRequestRouter router = router(
-                exposure, McpHostConfig.MutationPolicy.ALLOW, profileId);
-
-        assertFalse(listedNames(router.route(
-                request("tools/list", Map.of()), session())).contains(tool.getName())); //$NON-NLS-1$
-        McpMessage response = router.route(call(tool.getName(), Map.of()), session());
-        assertTrue(text(response).contains("reason_code=tool_not_in_profile")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void mutatingToolIsDeniedUnderReadOnlyMcpProfile() {
-        CapturingTool tool = register(new CapturingTool("profile_mutation", true)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(tool.getName()),
-                List.of(PermissionRule.deny(tool.getName()).forAllResources()), true);
-
-        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of()), session());
-
-        assertTrue(isToolError(response));
-        assertTrue(text(response).contains("reason_code=denied_by_profile_rule")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void toolNotInConfiguredProfileIsDeniedBeforeExecution() {
-        CapturingTool tool = register(new CapturingTool("not_allowed", false)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of("another_tool"), List.of(), false); //$NON-NLS-1$
-
-        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of()), session());
-
-        assertTrue(text(response).contains("reason_code=tool_not_in_profile")); //$NON-NLS-1$
-        assertTrue(text(response).contains("layer=profile")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void profileDenyRuleProducesDeterministicPayload() {
-        CapturingTool tool = register(new CapturingTool("profile_rule_deny", true)); //$NON-NLS-1$
-        PermissionRule rule = PermissionRule.deny(tool.getName())
-                .withDescription("blocked by test") //$NON-NLS-1$
-                .forResourcePattern("src/**").build(); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(tool.getName()), List.of(rule), false);
-
-        McpMessage first = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of("path", "src/file.txt")), session()); //$NON-NLS-1$ //$NON-NLS-2$
-        McpMessage second = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of("path", "src/file.txt")), session()); //$NON-NLS-1$ //$NON-NLS-2$
-
-        assertEquals(text(first), text(second));
-        assertTrue(text(first).contains("resource=src/file.txt")); //$NON-NLS-1$
-        assertTrue(text(first).contains("reason_code=denied_by_profile_rule")); //$NON-NLS-1$
-        assertTrue(text(first).contains("rule_description=blocked by test")); //$NON-NLS-1$
-    }
-
-    @Test
-    public void resourceScopedProfileRuleAppliesToMutatingEdtTool() {
-        CapturingTool tool = register(new CapturingTool("create_metadata", true)); //$NON-NLS-1$
-        PermissionRule rule = PermissionRule.deny(tool.getName())
-                .forResourcePattern("Catalog.*").build(); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(tool.getName()), List.of(rule), false);
-
-        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of("target_fqn", "Catalog.Products")), session()); //$NON-NLS-1$ //$NON-NLS-2$
-
-        assertTrue(text(response).contains("resource=Catalog.Products")); //$NON-NLS-1$
-        assertTrue(text(response).contains("reason_code=denied_by_profile_rule")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void profileGateIsNotWeakenedByAllowMutationPolicy() {
-        CapturingTool tool = register(new CapturingTool("strict_profile_deny", true)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(tool.getName()),
-                List.of(PermissionRule.deny(tool.getName()).forAllResources()), false);
-
-        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                .route(call(tool.getName(), Map.of()), session());
-
-        assertTrue(isToolError(response));
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void mutationPolicyDenyIsNotWeakenedByProfileAllow() {
-        CapturingTool tool = register(new CapturingTool("strict_policy_deny", true)); //$NON-NLS-1$
+    public void mcpMutationPolicyStillDeniesCallsWhenAgentProfileAllowsThem() {
+        CapturingTool tool = register(new CapturingTool("mcp_profile_policy_deny", true)); //$NON-NLS-1$
         String profileId = registerProfile(Set.of(tool.getName()),
                 List.of(PermissionRule.allow(tool.getName()).forAllResources()), false);
-
-        McpMessage response = router(McpHostConfig.MutationPolicy.DENY, profileId)
-                .route(call(tool.getName(), Map.of()), session());
-
-        assertEquals("Tool execution denied by permission policy: DENY", text(response)); //$NON-NLS-1$
+        for (McpHostConfig.MutationPolicy policy : List.of(
+                McpHostConfig.MutationPolicy.DENY, McpHostConfig.MutationPolicy.ASK)) {
+            McpMessage response = router(policy, profileId).route(call(tool.getName(), Map.of()), session());
+            assertTrue(policy.name(), isToolError(response));
+            assertEquals("Tool execution denied by permission policy: " + policy, text(response)); //$NON-NLS-1$
+        }
         assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void profileAskIsFailClosedWithoutConfirmationSink() throws Exception {
-        CapturingTool tool = register(new CapturingTool("profile_ask", true)); //$NON-NLS-1$
-        String profileId = registerProfile(Set.of(tool.getName()),
-                List.of(PermissionRule.ask(tool.getName()).forAllResources()), false);
-
-        McpMessage response = CompletableFuture.supplyAsync(() ->
-                router(McpHostConfig.MutationPolicy.ALLOW, profileId)
-                        .route(call(tool.getName(), Map.of()), session()))
-                .get(1, TimeUnit.SECONDS);
-
-        assertTrue(text(response).contains("reason_code=confirmation_unavailable")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-    }
-
-    @Test
-    public void unknownConfiguredProfileFailsClosed() {
-        CapturingTool tool = register(new CapturingTool("unknown_profile_tool", false)); //$NON-NLS-1$
-        McpHostRequestRouter router = router(McpHostConfig.MutationPolicy.ALLOW,
-                "no-such-profile"); //$NON-NLS-1$
-
-        McpMessage callResponse = router.route(call(tool.getName(), Map.of()), session());
-        McpMessage listResponse = router.route(request("tools/list", Map.of()), session()); //$NON-NLS-1$
-
-        assertTrue(text(callResponse).contains("reason_code=profile_unresolved")); //$NON-NLS-1$
-        assertEquals(0, tool.calls);
-        assertTrue(listedNames(listResponse).isEmpty());
-    }
-
-    @Test
-    public void profileDenialPayloadMatchesAgentRunnerKeySet() {
-        ToolResult withoutResource = PermissionDenialPayload.denied(
-                "tool", "profile", null, "reason", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-        ToolResult withResource = PermissionDenialPayload.denied(
-                "tool", "profile", "resource", "reason", "profile", "rule"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
-
-        assertEquals(Set.of("error", "tool", "profile", "reason", "reason_code", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
-                "layer", "rule_description"), withoutResource.getStructuredData().keySet()); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals(Set.of("error", "tool", "profile", "reason", "reason_code", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
-                "layer", "rule_description", "resource"), withResource.getStructuredData().keySet()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     @Test
@@ -536,8 +528,8 @@ public class McpHostProfileGateTest {
         router(McpHostConfig.MutationPolicy.ALLOW, profileId)
                 .route(call(profileTool.getName(), Map.of()), session());
 
-        assertEquals(profileId, profileTool.context.parentProfileId());
-        assertEquals(AgentCapability.READ_ONLY, profileTool.context.delegationCeiling());
+        assertEquals("mcp-host", profileTool.context.parentProfileId()); //$NON-NLS-1$
+        assertEquals(AgentCapability.MUTATING, profileTool.context.delegationCeiling());
         assertEquals(0, profileTool.context.delegationDepth());
     }
 
@@ -693,13 +685,20 @@ public class McpHostProfileGateTest {
 
     private String registerProfile(
             Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly) {
+        return registerProfile(allowedTools, rules, readOnly, DynamicToolCapability.NONE);
+    }
+
+    private String registerProfile(
+            Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly,
+            DynamicToolCapability dynamicGrant) {
         String id = "mcp-test-profile-" + registeredProfileIds.size(); //$NON-NLS-1$
-        AgentProfileRegistry.getInstance().register(new StaticProfile(id, allowedTools, rules, readOnly));
+        AgentProfileRegistry.getInstance().register(
+                new StaticProfile(id, allowedTools, rules, readOnly, dynamicGrant));
         registeredProfileIds.add(id);
         return id;
     }
 
-    private CapturingTool register(CapturingTool tool) {
+    private <T extends ITool> T register(T tool) {
         registry.register(tool);
         return tool;
     }
@@ -774,11 +773,6 @@ public class McpHostProfileGateTest {
         return (Map<String, Object>) tool.get("annotations"); //$NON-NLS-1$
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> metadata(Map<String, Object> tool) {
-        return (Map<String, Object>) tool.get("_meta"); //$NON-NLS-1$
-    }
-
     private List<JsonObject> readJsonLines(Path file) throws IOException {
         return Files.readAllLines(file, StandardCharsets.UTF_8).stream()
                 .filter(line -> !line.isBlank())
@@ -794,22 +788,8 @@ public class McpHostProfileGateTest {
         }
     }
 
-    private static ToolRegistry isolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        setField(registry, "tools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicTools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicToolCapabilities", //$NON-NLS-1$
-                new HashMap<String, DynamicToolCapability>());
-        setField(registry, "gson", new Gson()); //$NON-NLS-1$
-        return registry;
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
+    private static ToolRegistry isolatedRegistry() {
+        return ToolRegistry.createDetached();
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {
@@ -818,22 +798,16 @@ public class McpHostProfileGateTest {
         field.set(target, value);
     }
 
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
-    }
-
     private record TraceRun(McpHostSession session, String toolName) {
     }
 
-    private static final class CapturingTool implements ITool {
+    private static class CapturingTool implements ITool {
 
         private final String name;
         private final boolean mutating;
         private final boolean requiresConfirmation;
         private final boolean destructive;
-        private int calls;
+        int calls;
         private Map<String, Object> parameters;
         private ToolExecutionContext context;
         private ToolResult result = ToolResult.success("ok"); //$NON-NLS-1$
@@ -897,20 +871,67 @@ public class McpHostProfileGateTest {
         }
     }
 
+    @ToolMeta(name = "scoped_metadata_mutation", mutating = true,
+            requiresValidationToken = true)
+    private static final class ScopedValidationTokenTool extends CapturingTool {
+
+        private ScopedValidationTokenTool(String name) {
+            super(name, true, true, true);
+        }
+    }
+
+    @ToolMeta(name = "token_checking_mutation", mutating = true,
+            requiresValidationToken = true)
+    private static final class TokenCheckingTool extends CapturingTool {
+
+        private final ValidationTokenStore tokens = new ValidationTokenStore();
+
+        private TokenCheckingTool() {
+            super("token_checking_mutation", true, true, true); //$NON-NLS-1$
+        }
+
+        private String issueToken() {
+            return tokens.issueToken(ValidationOperation.CREATE_METADATA,
+                    "TestProject", Map.of("name", "TestObject")).token(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+
+        @Override
+        public CompletableFuture<ToolResult> execute(
+                Map<String, Object> parameters, ToolExecutionContext context) {
+            calls++;
+            try {
+                tokens.consumeToken((String) parameters.get("validation_token"), //$NON-NLS-1$
+                        ValidationOperation.CREATE_METADATA, "TestProject", //$NON-NLS-1$
+                        Map.of("name", "TestObject")); //$NON-NLS-1$ //$NON-NLS-2$
+                return CompletableFuture.completedFuture(ToolResult.success("ok")); //$NON-NLS-1$
+            } catch (MetadataOperationException e) {
+                return CompletableFuture.completedFuture(
+                        ToolResult.failure(e.getCode().name()));
+            }
+        }
+    }
+
     private static final class StaticProfile implements AgentProfile {
 
         private final String id;
         private final Set<String> allowedTools;
         private final List<PermissionRule> rules;
         private final boolean readOnly;
+        private final DynamicToolCapability dynamicGrant;
 
         private StaticProfile(
                 String id, Set<String> allowedTools, List<PermissionRule> rules,
-                boolean readOnly) {
+                boolean readOnly, DynamicToolCapability dynamicGrant) {
             this.id = id;
             this.allowedTools = allowedTools;
             this.rules = rules;
             this.readOnly = readOnly;
+            this.dynamicGrant = dynamicGrant;
+        }
+
+        @Override
+        public DynamicToolCapability getDynamicToolGrant() {
+            return dynamicGrant;
         }
 
         @Override
