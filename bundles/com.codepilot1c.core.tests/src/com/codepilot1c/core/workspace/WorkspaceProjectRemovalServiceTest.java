@@ -88,7 +88,7 @@ public class WorkspaceProjectRemovalServiceTest {
         assertEquals("not_found",f.service.remove(f.workspace,"TemporaryProject",false,null).status());assertEquals(0,f.deleted);
     }
     @Test public void namesCannotBePathsOrWorkspaceRoot() throws Exception {
-        Fixture f=new Fixture();for(String name:List.of("", "../TemporaryProject", "F:/EDT_Workspace")) {
+        Fixture f=new Fixture();for(String name:List.of("", "../TemporaryProject", "/project/path")) {
             assertThrows(IllegalArgumentException.class,()->f.service.remove(f.workspace,name,false,f.directory.toString()));
         }
         assertEquals(0,f.deleted);
