@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -36,8 +37,14 @@ import com.codepilot1c.core.tools.ToolResult;
  * ({@code uuid}, {@code typeId}, {@code valueTypeId}, ...) under {@code src}
  * must be globally unique. Empirically a healthy project has zero repeated
  * values across all of them, so any duplicate is a finding, not noise.
- * Empty {@code uuid=""} attributes are reported too (EDT SU106: the project
- * stops exporting to the platform format).</p>
+ * Empty uuid attributes are reported too (EDT SU106: the project stops
+ * exporting to the platform format).</p>
+ *
+ * <p>The empty-value half used to match the single literal {@code uuid=""},
+ * while the duplicate half matched any attribute name — so an empty
+ * {@code id=""} of a predefined catalog item passed the gate unnoticed
+ * (found 2026-08-27). The required uuid attribute names now come from the
+ * EDT metamodel itself, see {@link #REQUIRED_MDO_UUID_ATTRIBUTES}.</p>
  */
 @ToolMeta(name = "edt_uuid_check", category = "diagnostics",
         surfaceCategory = "smoke_runtime_recovery", tags = {"workspace", "edt"})
@@ -60,13 +67,49 @@ public class EdtUuidCheckTool extends AbstractTool {
 
     private static final Pattern UUID_ATTRIBUTE = Pattern.compile(
             "([A-Za-z][A-Za-z0-9_]*)=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""); //$NON-NLS-1$
-    private static final Pattern EMPTY_UUID_ATTRIBUTE = Pattern.compile("\\buuid=\"\""); //$NON-NLS-1$
+    /**
+     * Имена атрибутов, обязанных нести uuid в {@code .mdo}. Список не угадан:
+     * снят обходом метамодели установленной EDT 2025.2.3 — все 134 EPackage,
+     * {@code EAttribute} с {@code instanceClassName == java.util.UUID} и
+     * {@code lowerBound == 1}. Метамодель дала 13 таких имён; здесь оставлены
+     * те, что реально встречаются в src рабочей конфигурации (5687 файлов):
+     * uuid 10504 вхождений, typeId 4276, valueTypeId 4276, id 455,
+     * classId 7, objectId 7, thisNode 2. Остальные шесть (instanceId, key,
+     * parentId, refTypeId, userId, value) принадлежат внутренним моделям EDT
+     * ({@code model}, {@code mcore}), в исходники проекта не сериализуются, а
+     * имена вроде {@code key} / {@code value} дали бы только ложную тревогу.
+     *
+     * <p>Носители: {@code uuid} — любой MdObject (166 EClass'ов);
+     * {@code id} — PredefinedItem и его 4 наследника (ровно тот случай, из-за
+     * которого гейт молчал); {@code typeId} / {@code valueTypeId} — 29
+     * EClass'ов пакета mdtype; {@code classId} и {@code objectId} —
+     * ContainedObject; {@code thisNode} — ExchangePlan.</p>
+     *
+     * <p>Список применяется только к {@code .mdo}: в {@code .scheme}
+     * графической схемы бизнес-процесса {@code id} целочисленный
+     * ({@code <Start id="1">}), и пустым он к антипаттерну #71 отношения не
+     * имеет. Прочие расширения закрывает выученная половина —
+     * см. {@link #scan(Path)}.</p>
+     */
+    private static final Set<String> REQUIRED_MDO_UUID_ATTRIBUTES = Set.of(
+            "uuid", "id", "typeId", "valueTypeId", "classId", "objectId", "thisNode"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$
+
+    private static final String MDO_EXTENSION = "mdo"; //$NON-NLS-1$
+
+    /**
+     * Пустое значение ЛЮБОГО атрибута; носитель uuid отбирается после скана по
+     * имени, а не регуляркой, иначе список пришлось бы держать в двух местах.
+     * Lookbehind отсекает префикс пространства имён, чтобы {@code xsi:type=""}
+     * не превратился в атрибут {@code type}.
+     */
+    private static final Pattern EMPTY_ATTRIBUTE = Pattern.compile(
+            "(?<![A-Za-z0-9_:.-])([A-Za-z][A-Za-z0-9_]*)=\"\""); //$NON-NLS-1$
 
     /**
      * Binary/irrelevant payloads: BSL has no uuid attributes, .bin is the support
      * map, and moxel templates (.mxl/.mxlx) repeat field ids by design — a
      * FieldName referenced from several cells is legitimate, not a clone
-     * (verified live on a label template from a vendor library).
+     * (verified live on ШаблоныЭтикетокИЦенниковБПО).
      */
     private static final Set<String> SKIPPED_EXTENSIONS = Set.of(
             "bsl", "os", "bin", "png", "jpg", "jpeg", "gif", "ico", "bmp", "svg", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$ //$NON-NLS-7$ //$NON-NLS-8$ //$NON-NLS-9$
@@ -75,6 +118,7 @@ public class EdtUuidCheckTool extends AbstractTool {
     private static final long MAX_FILE_BYTES = 32L * 1024 * 1024;
     private static final int MAX_DUPLICATES_LISTED = 50;
     private static final int MAX_OCCURRENCES_LISTED = 10;
+    private static final int MAX_EMPTY_LISTED = 50;
 
     private final EdtMetadataGateway gateway;
 
@@ -89,7 +133,8 @@ public class EdtUuidCheckTool extends AbstractTool {
     @Override
     public String getDescription() {
         return "Контроль уникальности uuid по src EDT-проекта (антипаттерн #71): дубли uuid/typeId/valueTypeId " //$NON-NLS-1$
-                + "после массовой генерации, adopt или слияния выгрузок. Пустые uuid=\"\" тоже находка (SU106)."; //$NON-NLS-1$
+                + "после массовой генерации, adopt или слияния выгрузок. Пустое значение любого обязательного " //$NON-NLS-1$
+                + "uuid-атрибута (uuid, id, typeId, valueTypeId, classId, objectId, thisNode) — тоже находка (SU106)."; //$NON-NLS-1$
     }
 
     @Override
@@ -104,6 +149,13 @@ public class EdtUuidCheckTool extends AbstractTool {
             return relativePath + ":" + line + " (" + attribute + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         }
     }
+
+    /**
+     * Пустой атрибут вместе с расширением файла: находкой он становится только
+     * после скана, когда известно, какие имена в этом расширении вообще несут
+     * uuid.
+     */
+    private record EmptyCandidate(UuidOccurrence occurrence, String extension) {}
 
     /** Pure scan outcome, independent from Eclipse resources for testability. */
     record ScanReport(int filesScanned, int totalValues,
@@ -149,10 +201,23 @@ public class EdtUuidCheckTool extends AbstractTool {
         });
     }
 
-    /** Scans every text artifact under {@code srcRoot} and groups uuid values. */
+    /**
+     * Scans every text artifact under {@code srcRoot} and groups uuid values.
+     *
+     * <p>Пустые значения собираются в два прохода. Первый попутно запоминает
+     * пары «расширение + имя атрибута», в которых встретился настоящий uuid, —
+     * это выученная половина: она закрывает носителей, о которых
+     * {@link #REQUIRED_MDO_UUID_ATTRIBUTES} не знает (другая версия EDT,
+     * {@code .scheme}, {@code .dcs}, расширения конфигурации). Второй проход
+     * по накопленным кандидатам оставляет только имена, обязанные нести uuid, —
+     * иначе гейт кричал бы на {@code SwapDate=""} и {@code title=""}, которых в
+     * живом src полторы тысячи, а гейт, кричащий на здоровой конфигурации,
+     * выключают целиком.</p>
+     */
     static ScanReport scan(Path srcRoot) throws IOException {
         Map<String, List<UuidOccurrence>> byValue = new LinkedHashMap<>();
-        List<UuidOccurrence> emptyUuids = new ArrayList<>();
+        List<EmptyCandidate> emptyCandidates = new ArrayList<>();
+        Set<String> uuidCarriers = new HashSet<>();
         int filesScanned = 0;
         int totalValues = 0;
         List<Path> files;
@@ -175,16 +240,25 @@ public class EdtUuidCheckTool extends AbstractTool {
             }
             filesScanned++;
             String relative = srcRoot.relativize(file).toString().replace('\\', '/');
+            String extension = extensionOf(file);
             Matcher matcher = UUID_ATTRIBUTE.matcher(text);
             while (matcher.find()) {
                 totalValues++;
                 String value = matcher.group(2).toLowerCase(Locale.ROOT);
                 byValue.computeIfAbsent(value, key -> new ArrayList<>())
                         .add(new UuidOccurrence(relative, matcher.group(1), lineOf(text, matcher.start())));
+                uuidCarriers.add(carrierKey(extension, matcher.group(1)));
             }
-            Matcher empty = EMPTY_UUID_ATTRIBUTE.matcher(text);
+            Matcher empty = EMPTY_ATTRIBUTE.matcher(text);
             while (empty.find()) {
-                emptyUuids.add(new UuidOccurrence(relative, "uuid", lineOf(text, empty.start()))); //$NON-NLS-1$
+                emptyCandidates.add(new EmptyCandidate(
+                        new UuidOccurrence(relative, empty.group(1), lineOf(text, empty.start())), extension));
+            }
+        }
+        List<UuidOccurrence> emptyUuids = new ArrayList<>();
+        for (EmptyCandidate candidate : emptyCandidates) {
+            if (carriesUuid(candidate.extension(), candidate.occurrence().attribute(), uuidCarriers)) {
+                emptyUuids.add(candidate.occurrence());
             }
         }
         Map<String, List<UuidOccurrence>> duplicates = new LinkedHashMap<>();
@@ -197,12 +271,29 @@ public class EdtUuidCheckTool extends AbstractTool {
     }
 
     private static boolean isSkipped(Path file) {
+        String extension = extensionOf(file);
+        return !extension.isEmpty() && SKIPPED_EXTENSIONS.contains(extension);
+    }
+
+    /** Расширение без точки, в нижнем регистре; пустая строка, если его нет. */
+    private static String extensionOf(Path file) {
         String name = file.getFileName().toString();
         int dot = name.lastIndexOf('.');
-        if (dot < 0) {
-            return false;
-        }
-        return SKIPPED_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.ROOT));
+        return dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT); //$NON-NLS-1$
+    }
+
+    private static String carrierKey(String extension, String attribute) {
+        return extension + '|' + attribute;
+    }
+
+    /**
+     * Обязан ли атрибут с таким именем нести uuid в файле такого расширения:
+     * либо он в снятом с метамодели списке для {@code .mdo}, либо в файлах
+     * этого же расширения уже встречался с настоящим uuid.
+     */
+    private static boolean carriesUuid(String extension, String attribute, Set<String> uuidCarriers) {
+        return (MDO_EXTENSION.equals(extension) && REQUIRED_MDO_UUID_ATTRIBUTES.contains(attribute))
+                || uuidCarriers.contains(carrierKey(extension, attribute));
     }
 
     private static int lineOf(String text, int offset) {
@@ -243,11 +334,18 @@ public class EdtUuidCheckTool extends AbstractTool {
                 out.append("  ... ещё ").append(occurrences.size() - MAX_OCCURRENCES_LISTED).append('\n'); //$NON-NLS-1$
             }
         }
-        for (UuidOccurrence emptyUuid : report.emptyUuids()) {
-            out.append("ПУСТОЙ uuid=\"\": ").append(emptyUuid.render()).append('\n'); //$NON-NLS-1$
+        List<UuidOccurrence> empties = report.emptyUuids();
+        for (int i = 0; i < empties.size() && i < MAX_EMPTY_LISTED; i++) {
+            out.append("ПУСТОЙ ").append(empties.get(i).attribute()).append("=\"\": ") //$NON-NLS-1$ //$NON-NLS-2$
+                    .append(empties.get(i).render()).append('\n');
+        }
+        if (empties.size() > MAX_EMPTY_LISTED) {
+            out.append("... (показаны первые ").append(MAX_EMPTY_LISTED) //$NON-NLS-1$
+                    .append(" пустых из ").append(empties.size()).append(")\n"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         out.append("Антипаттерн #71 (молчаливые отказы платформы): дубль uuid молча теряет/затирает объект ") //$NON-NLS-1$
-                .append("при загрузке, коллизия typeId ломает таблицу типов, пустой uuid валит экспорт (SU106). ") //$NON-NLS-1$
+                .append("при загрузке, коллизия typeId ломает таблицу типов, пустое значение обязательного ") //$NON-NLS-1$
+                .append("uuid-атрибута (uuid/id/typeId/valueTypeId/classId/objectId/thisNode) валит экспорт (SU106). ") //$NON-NLS-1$
                 .append("Исправь uuid на новые уникальные и повтори проверку; затем пробная загрузка в пустую базу."); //$NON-NLS-1$
         return out.toString();
     }

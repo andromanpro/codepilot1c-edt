@@ -40,8 +40,8 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "list_files" -> "List projects or directory contents in the workspace. Use it for pathname discovery, not for text search or semantic symbol lookup."; //$NON-NLS-1$
             case "glob" -> "Find files by glob pattern under the workspace or a subdirectory. Use it for pathname discovery before read_file."; //$NON-NLS-1$
             case "grep" -> "Search plain text or regex across workspace files. Use it for string occurrences only; prefer EDT semantic tools for symbols, metadata, and platform behavior."; //$NON-NLS-1$
-            case "edit_file" -> "Edit existing workspace text files; create only project-root Code.md. Never edit .mdo/.form/.mxl/DCS artifacts directly; use metadata/form/dcs/template tools."; //$NON-NLS-1$
-            case "write_file" -> "Overwrite existing workspace text files; may create project-root Code.md and documentation (*.md, *.txt). Never write .mdo/.form/.mxl/DCS artifacts directly; use semantic EDT tools."; //$NON-NLS-1$
+            case "edit_file" -> "Edit existing workspace text files; create only project-root Code.md. Never edit .mdo/.form/.mxl/DCS/.cmi artifacts directly; use metadata/form/dcs/template/command interface tools."; //$NON-NLS-1$
+            case "write_file" -> "Overwrite existing workspace text files; may create project-root Code.md and documentation (*.md, *.txt). Never write .mdo/.form/.mxl/DCS/.cmi artifacts directly; use semantic EDT tools."; //$NON-NLS-1$
             case "workspace_copy_transform" -> "Copy one workspace text file with plain/regex replacements, dry-run, safety checks, and refresh. Use it for moving BSL modules without full-content edits."; //$NON-NLS-1$
             case "workspace_copy_transform_batch" -> "Copy multiple workspace text files with shared replacements and per-file results. Use dry_run first for BSL module migration batches."; //$NON-NLS-1$
             case "workspace_import_project" -> "Import an existing Eclipse/EDT project directory into the current workspace. Inspect repository and project state first, then import only when a .project-based project already exists."; //$NON-NLS-1$
@@ -52,7 +52,7 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "edt_content_assist" -> "Return EDT AST-aware content assist for a BSL position. Prefer it over grep when you need semantic completions or symbol-aware editing help."; //$NON-NLS-1$
             case "edt_find_references" -> "Find semantic references for metadata objects or EDT-resolved symbols. Prefer it over raw text search for usage questions."; //$NON-NLS-1$
             case "edt_metadata_details" -> "Read structured EDT metadata details for one or more object FQNs. Use it for configuration structure, not for platform-language reference."; //$NON-NLS-1$
-            case "scan_metadata_index" -> "List top-level metadata objects in an EDT configuration with scope and name filters. Use it before deeper metadata inspection or mutation."; //$NON-NLS-1$
+            case "scan_metadata_index" -> "List a stable page of top-level metadata objects in an EDT configuration with scope and name filters. When hasMore is true, pass nextOffset as offset to fetch the next page."; //$NON-NLS-1$
             case "edt_field_type_candidates" -> "List valid EDT type candidates for a metadata field such as type. Use it to resolve diagnostics about missing or invalid types."; //$NON-NLS-1$
             case "inspect_platform_reference" -> "Read EDT platform-language documentation for builtin types, methods, and properties. Use it for platform API questions, not configuration metadata."; //$NON-NLS-1$
             case "bsl_symbol_at_position" -> "Resolve the semantic BSL symbol at a source position, including its kind and owning container."; //$NON-NLS-1$
@@ -66,14 +66,16 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "edt_validate_request" -> "Проверяет запрос на изменение метаданных и выдаёт ОДНОРАЗОВЫЙ validation_token. Каждый токен может быть использован ТОЛЬКО ОДИН РАЗ — для каждой новой мутации запрашивай НОВЫЙ токен. Обязателен перед metadata/forms/DCS/template/extension/external мутациями."; //$NON-NLS-1$
             case "create_form" -> "Создаёт управляемую форму через BM API. owner_fqn: ПОЛНЫЙ FQN с типом (Document.ПоступлениеТоваров, ExternalDataProcessor.МояОбработка). НЕ используй короткое имя. После создания запусти диагностику."; //$NON-NLS-1$
             case "create_metadata" -> "Создаёт метаданный объект через BM API. Свойства: COMMON_MODULE — clientManagedApplication/server/global. DOCUMENT — useStandardCommands. CATALOG — hierarchical+hierarchyType. После создания запусти диагностику."; //$NON-NLS-1$
-            case "add_metadata_child" -> "Создаёт дочерний объект через BM API. Для batch передай properties.children=[{name,type,...}] и не передавай top-level name. Для Number(15,3) используй scale=3. Для макетов: child_kind=Template, template_type=spreadsheet — .mxl создаётся автоматически."; //$NON-NLS-1$
+            case "add_metadata_child" -> "Создаёт дочерний объект через BM API. Для batch передай properties.children=[{name,type,...}] и не передавай top-level name. Для Number(15,3) используй scale=3. Для макетов: child_kind=Template и template_type (spreadsheet/text/binary/html/dcs) — файл содержимого по типу создаётся автоматически (Template.mxl/.txt/.bin/.htmldoc; Template.dcs — через dcs_manage)."; //$NON-NLS-1$
             case "ensure_module_artifact" -> "Ensure that a metadata-owned BSL module artifact exists and return its path. Use it after edt_validate_request and before edit_file or write_file when changing object-owned module code."; //$NON-NLS-1$
             case "update_metadata" -> "Применяет изменения свойств через BM API. Формат: {\"set\":{\"field\":\"value\"}}. Для EventSubscription.source: {\"set\":{\"source\":{\"types\":[\"TaskObject.X\"]}}}. НЕ используй: subsystems, name. После изменений запусти диагностику."; //$NON-NLS-1$
             case "mutate_form_model" -> "Изменяет форму через operations:[{op:...}]. " //$NON-NLS-1$
                     + "op: add_field|add_group|add_command|add_button|set_item|remove_item|move_item|set_form_props. " //$NON-NLS-1$
                     + "add_field: ОБЯЗАТЕЛЬНО name+data_path, field_type=LABEL_FIELD|INPUT_FIELD. " //$NON-NLS-1$
-                    + "add_command: name+action(обработчик)+title; процедура action создаётся автоматически, не пиши её отдельно через write_file. add_button: name+command_name(ссылка на команду), parent автоматически=CommandBar. " //$NON-NLS-1$
+                    + "add_command: name+action(обработчик)+title; процедура action создаётся автоматически, не пиши её отдельно через write_file. add_button: name+command_name(ссылка на команду), parent автоматически=ФормаКоманднаяПанель (автокомандная панель формы, id -1; панель таблицы <Таблица>КоманднаяПанель тоже годится в родители). " //$NON-NLS-1$
                     + "set_item: ОБЯЗАТЕЛЬНО item_id(число) ИЛИ item_name(строка) + set:{...}. НЕ используй id или name вместо item_id/item_name. " //$NON-NLS-1$
+                    + "Стандартные команды скрывать set:{excludedCommands:[\"Write\",\"Delete\"]} (set_form_props для формы, set_item для таблицы; список заменяет текущий). " //$NON-NLS-1$
+                    + "Заголовок страницы из данных: set_item set:{titleDataPath:\"Объект.Товары.RowsCount\"}. " //$NON-NLS-1$
                     + "Родитель: parent_item_id(число) ИЛИ parent_item_name(строка). НЕ используй parent_id или parent. " //$NON-NLS-1$
                     + "Сначала вызови inspect_form_layout чтобы узнать ID элементов. " //$NON-NLS-1$
                     + "op: add_event_handler|set_event_handler|remove_event_handler: event(имя события EN/RU)+" //$NON-NLS-1$
@@ -108,7 +110,7 @@ public final class ProviderNeutralToolSurfaceRewriteContributor implements ToolS
             case "edt_diagnostics" -> "Запускает EDT диагностику и runtime-команды: smoke, trace export, разбор ошибок, обновление инфобазы и запуск приложения."; //$NON-NLS-1$
             case "qa_inspect" -> "Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation."; //$NON-NLS-1$
             case "qa_generate" -> "Генерирует QA-артефакты: создаёт или мигрирует qa-config и собирает feature-файл из структурированного сценарного плана."; //$NON-NLS-1$
-            case "discover_tools" -> "Показывает скрытые domain tools по категории, когда текущей поверхности недостаточно. Сам работу не выполняет, только раскрывает инструменты."; //$NON-NLS-1$
+            case "discover_tools" -> "Раскрывает инструменты по category или возвращает описание и полную схему одного tool_name. Передай ровно один параметр. Справка не выполняет инструмент и не раскрывает категорию."; //$NON-NLS-1$
             default -> null;
         };
     }

@@ -219,7 +219,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         "EDT update returned false for project: " + projectName); //$NON-NLS-1$
                 LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: update returned false", //$NON-NLS-1$
                         opId, EdtToolErrorCode.UPDATE_FAILED, elapsedMs(startedNanos));
-                return pretty(error);
+                throw new BackgroundUpdateFailure(pretty(error));
             }
             LOG.info("[%s] DONE edt_update_infobase (async) updated=true durationMs=%d", //$NON-NLS-1$
                     opId, elapsedMs(startedNanos));
@@ -227,12 +227,34 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         } catch (EdtToolException e) {
             LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: %s", //$NON-NLS-1$
                     opId, e.getCode(), elapsedMs(startedNanos), e.getMessage());
-            return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
+            throw new BackgroundUpdateFailure(
+                    pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
+        } catch (BackgroundUpdateFailure e) {
+            throw e;
         } catch (Exception e) {
             LOG.warn("[%s] FAILED edt_update_infobase (async) code=%s durationMs=%d: %s", //$NON-NLS-1$
                     opId, EdtToolErrorCode.UPDATE_FAILED, elapsedMs(startedNanos), e.getMessage());
-            return pretty(errorPayload(opId, projectName, workspaceRoot,
-                    EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
+            throw new BackgroundUpdateFailure(pretty(errorPayload(opId, projectName, workspaceRoot,
+                    EdtToolErrorCode.UPDATE_FAILED, e.getMessage())));
+        }
+    }
+
+    /**
+     * Signals a failed background update to {@link BackgroundJobRegistry}.
+     *
+     * <p>The registry decides a job's state from whether the work threw: a
+     * normal return is recorded as {@code DONE}. Returning a rendered error
+     * payload therefore reported a broken update as a finished one, and callers
+     * that trust {@code state} walked away believing the configuration had been
+     * delivered. Throwing puts the job in {@code FAILED} and moves the payload
+     * into the status tool's {@code error} field, where it belongs.</p>
+     */
+    private static final class BackgroundUpdateFailure extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        BackgroundUpdateFailure(String payload) {
+            super(payload);
         }
     }
 

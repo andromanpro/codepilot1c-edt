@@ -1,0 +1,157 @@
+package com.codepilot1c.core.mcp.host.transport;
+
+import static org.junit.Assert.assertEquals;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.junit.Test;
+
+import com.codepilot1c.core.mcp.host.McpContractMetadata;
+import com.codepilot1c.core.mcp.host.McpContractMetadataService;
+import com.codepilot1c.core.mcp.host.McpHostConfig;
+import com.codepilot1c.core.mcp.host.McpHostRequestRouter;
+import com.codepilot1c.core.mcp.host.McpReadiness;
+import com.codepilot1c.core.mcp.host.McpToolExposurePolicy;
+import com.codepilot1c.core.mcp.host.ProjectReadiness;
+import com.codepilot1c.core.mcp.host.llm.McpHostLlmBroker;
+import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
+import com.codepilot1c.core.mcp.model.McpPrompt;
+import com.codepilot1c.core.mcp.model.McpPromptResult;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+
+public class McpHostHttpTransportHealthContractTest {
+
+    @Test
+    public void keepsLivenessAndExposesDeterministicReadinessEndpoint() throws Exception {
+        AtomicReference<McpReadiness> readiness = new AtomicReference<>(McpReadiness.available());
+        McpContractMetadataService metadataService = new McpContractMetadataService(() ->
+            new McpContractMetadata(1, "plugin", "2025.2", "gui", "/workspace", readiness.get()));
+        McpHostRequestRouter router = new McpHostRequestRouter(
+                new AllowAllExposurePolicy(), List.of(), new EmptyPromptProvider(),
+                McpHostConfig.MutationPolicy.ALLOW, metadataService);
+        McpHostHttpTransport transport = new McpHostHttpTransport(
+                "127.0.0.1", 0,
+                new McpHostOAuthService("127.0.0.1", 0, ""),
+                router,
+                McpHostConfig.AuthMode.NONE);
+        try {
+            transport.start();
+            int port = transport.getBoundPort();
+            HttpClient client = HttpClient.newHttpClient();
+
+            HttpResponse<String> liveness = client.send(get(port, "/health"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
+            assertEquals(200, liveness.statusCode());
+            assertEquals("ok", liveness.body()); //$NON-NLS-1$
+
+            HttpResponse<String> ready = client.send(get(port, "/health/ready"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
+            assertEquals(200, ready.statusCode());
+            assertEquals(Map.of(
+                    "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "services", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(), //$NON-NLS-1$
+                    "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
+                    "capabilities", List.of("llm.v1")), json(ready.body())); //$NON-NLS-1$ //$NON-NLS-2$
+
+            // Semantic readiness drops while the host stays live, and the staged detail travels
+            // with it so a CLI never has to fall back to /health as a success signal.
+            readiness.set(McpReadiness.starting(
+                    "edtServices: IBmModelManager is unavailable in EDT runtime", //$NON-NLS-1$
+                    List.of(new ProjectReadiness("Neutral", "building")))); //$NON-NLS-1$ //$NON-NLS-2$
+            HttpResponse<String> notReady = client.send(get(port, "/health/ready"), HttpResponse.BodyHandlers.ofString()); //$NON-NLS-1$
+            assertEquals(503, notReady.statusCode());
+            assertEquals("liveness must stay 200 while semantic readiness is 503", //$NON-NLS-1$
+                    200, client.send(get(port, "/health"), HttpResponse.BodyHandlers.ofString()).statusCode()); //$NON-NLS-1$
+            assertEquals(Map.of(
+                    "status", "not_ready", //$NON-NLS-1$
+                    "ready", Boolean.FALSE, //$NON-NLS-1$
+                    "reason", "edtServices: IBmModelManager is unavailable in EDT runtime", //$NON-NLS-1$
+                    "services", "starting", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(Map.of("name", "Neutral", "state", "building")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    "llmBrokerStatus", "available", //$NON-NLS-1$ //$NON-NLS-2$
+                    "capabilities", List.of("llm.v1")), json(notReady.body())); //$NON-NLS-1$ //$NON-NLS-2$
+
+            HttpRequest post = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/health/ready")) //$NON-NLS-1$
+                    .POST(HttpRequest.BodyPublishers.noBody()).build();
+            assertEquals(405, client.send(post, HttpResponse.BodyHandlers.ofString()).statusCode());
+        } finally {
+            transport.stop();
+        }
+    }
+
+    @Test
+    public void omitsLlmCapabilityWhenBrokerPreferenceIsDisabled() throws Exception {
+        McpContractMetadataService metadataService = new McpContractMetadataService(() ->
+            new McpContractMetadata(1, "plugin", "2025.2", "headless", "/workspace", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    McpReadiness.available()));
+        McpHostRequestRouter router = new McpHostRequestRouter(
+                new AllowAllExposurePolicy(), List.of(), new EmptyPromptProvider(),
+                McpHostConfig.MutationPolicy.ALLOW, metadataService);
+        McpHostHttpTransport transport = new McpHostHttpTransport(
+                "127.0.0.1", 0, //$NON-NLS-1$
+                new McpHostOAuthService("127.0.0.1", 0, ""), //$NON-NLS-1$ //$NON-NLS-2$
+                router, McpHostConfig.AuthMode.NONE, Duration.ofMinutes(30),
+                new McpHostLlmBroker(false, () -> null));
+        try {
+            transport.start();
+            HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    get(transport.getBoundPort(), "/health/ready"), //$NON-NLS-1$
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, response.statusCode());
+            assertEquals(Map.of(
+                    "status", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "ready", Boolean.TRUE, //$NON-NLS-1$
+                    "services", "ready", //$NON-NLS-1$ //$NON-NLS-2$
+                    "projects", List.of(), //$NON-NLS-1$
+                    "llmBrokerStatus", "disabled"), json(response.body())); //$NON-NLS-1$ //$NON-NLS-2$
+        } finally {
+            transport.stop();
+        }
+    }
+
+    private static HttpRequest get(int port, String path) {
+        return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).GET().build(); //$NON-NLS-1$
+    }
+
+    private static Map<String, Object> json(String value) {
+        return new Gson().fromJson(value, new TypeToken<Map<String, Object>>() { }.getType());
+    }
+
+    private static final class AllowAllExposurePolicy implements McpToolExposurePolicy {
+        @Override
+        public boolean isExposed(String toolName) {
+            return true;
+        }
+
+        @Override
+        public boolean requiresConfirmation(String toolName, Map<String, Object> args) {
+            return false;
+        }
+
+        @Override
+        public boolean isDestructive(String toolName) {
+            return false;
+        }
+    }
+
+    private static final class EmptyPromptProvider implements IMcpPromptProvider {
+        @Override
+        public List<McpPrompt> listPrompts() {
+            return List.of();
+        }
+
+        @Override
+        public java.util.Optional<McpPromptResult> getPrompt(String name, Map<String, Object> arguments) {
+            return java.util.Optional.empty();
+        }
+    }
+}

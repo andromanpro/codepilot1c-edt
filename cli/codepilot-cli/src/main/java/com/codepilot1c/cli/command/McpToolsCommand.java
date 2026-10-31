@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+package com.codepilot1c.cli.command;
+
+import java.util.concurrent.Callable;
+import picocli.CommandLine.Command;
+
+@Command(name = "tools", mixinStandardHelpOptions = true, description = "Initialize a session and list exposed MCP tools.")
+final class McpToolsCommand implements Callable<Integer> {
+    private final RootCommand root; private final McpCommand options;
+    McpToolsCommand(RootCommand root, McpCommand options) { this.root = root; this.options = options; }
+    @Override public Integer call() { return McpCommandSupport.tools(root, options); }
+}

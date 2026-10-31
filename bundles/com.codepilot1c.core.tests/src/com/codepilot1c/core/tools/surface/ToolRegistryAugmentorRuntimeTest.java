@@ -24,7 +24,6 @@ import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.google.gson.Gson;
 
-import sun.misc.Unsafe;
 
 public class ToolRegistryAugmentorRuntimeTest {
 
@@ -48,9 +47,8 @@ public class ToolRegistryAugmentorRuntimeTest {
         ToolDefinition expected = toolRegistry.getToolDefinitions(
                 toolRegistry.createRuntimeSurfaceContext(null)).get(0);
 
-        ToolRegistry previous = installSingleton(toolRegistry);
         List<Map<String, Object>> tools;
-        try {
+        try (ToolRegistry.ScopedTestLease ignored = ToolRegistry.installScopedForTesting(toolRegistry)) {
             McpHostRequestRouter router = new McpHostRequestRouter(
                     new AllowAllExposurePolicy(),
                     List.of(),
@@ -61,8 +59,6 @@ public class ToolRegistryAugmentorRuntimeTest {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> effectiveTools = (List<Map<String, Object>>) listTools.invoke(router);
             tools = effectiveTools;
-        } finally {
-            installSingleton(previous);
         }
 
         assertFalse(tools.isEmpty());
@@ -97,32 +93,7 @@ public class ToolRegistryAugmentorRuntimeTest {
         }
     }
 
-    private static ToolRegistry createIsolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        setRegistryField(registry, "tools", new HashMap<String, com.codepilot1c.core.tools.ITool>()); //$NON-NLS-1$
-        setRegistryField(registry, "dynamicTools", new ConcurrentHashMap<String, com.codepilot1c.core.tools.ITool>()); //$NON-NLS-1$
-        setRegistryField(registry, "gson", new Gson()); //$NON-NLS-1$
-        setRegistryField(registry, "augmentor", ToolSurfaceAugmentor.defaultAugmentor()); //$NON-NLS-1$
-        return registry;
-    }
-
-    private static ToolRegistry installSingleton(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
-    }
-
-    private static void setRegistryField(ToolRegistry registry, String name, Object value) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(registry, value);
-    }
-
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
+    private static ToolRegistry createIsolatedRegistry() {
+        return ToolRegistry.createDetached();
     }
 }

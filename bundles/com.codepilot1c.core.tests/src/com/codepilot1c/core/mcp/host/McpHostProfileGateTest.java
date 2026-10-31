@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -36,6 +37,7 @@ import org.junit.Test;
 import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
 import com.codepilot1c.core.evaluation.trace.AgentTraceSession;
 import com.codepilot1c.core.evaluation.trace.ArtifactLayout;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
@@ -47,16 +49,17 @@ import com.codepilot1c.core.permissions.PermissionDenialPayload;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.TaskTool;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
+import com.codepilot1c.core.tools.ToolRegistry.ToolResolution;
 import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import sun.misc.Unsafe;
 
 public class McpHostProfileGateTest {
 
@@ -64,7 +67,7 @@ public class McpHostProfileGateTest {
     private String previousTraceEnabled;
     private Path traceRoot;
     private ToolRegistry registry;
-    private ToolRegistry previousRegistry;
+    private ToolRegistry.ScopedTestLease registryLease;
     private final List<String> registeredProfileIds = new ArrayList<>();
 
     @Before
@@ -75,7 +78,7 @@ public class McpHostProfileGateTest {
         System.setProperty(ArtifactLayout.PROP_TRACE_DIR, traceRoot.toString());
         System.setProperty(AgentTraceSession.PROP_TRACE_ENABLED, Boolean.TRUE.toString());
         registry = isolatedRegistry();
-        previousRegistry = installRegistry(registry);
+        registryLease = ToolRegistry.installScopedForTesting(registry);
     }
 
     @After
@@ -83,7 +86,7 @@ public class McpHostProfileGateTest {
         for (String profileId : registeredProfileIds) {
             AgentProfileRegistry.getInstance().unregister(profileId);
         }
-        installRegistry(previousRegistry);
+        registryLease.close();
         restoreProperty(ArtifactLayout.PROP_TRACE_DIR, previousTraceDir);
         restoreProperty(AgentTraceSession.PROP_TRACE_ENABLED, previousTraceEnabled);
     }
@@ -167,6 +170,194 @@ public class McpHostProfileGateTest {
     }
 
     @Test
+    public void mcpRuntimeCapabilitiesRemainUsableAndProfileScoped() {
+        CapturingTool read = new CapturingTool("mcp_tracker_search", false); //$NON-NLS-1$
+        CapturingTool mutate = new CapturingTool("mcp_tracker_update", true); //$NON-NLS-1$
+        CapturingTool unknown = new CapturingTool("mcp_tracker_unknown", false); //$NON-NLS-1$
+        registry.registerDynamicTool(read, DynamicToolCapability.READ_ONLY);
+        registry.registerDynamicTool(mutate, DynamicToolCapability.MUTATING);
+        registry.registerDynamicTool(unknown);
+        McpToolExposurePolicy exposure = new NamedExposurePolicy(Set.of(
+                read.getName(), mutate.getName(), unknown.getName()));
+
+        Set<String> gsdNames = listedNames(router(
+                exposure, McpHostConfig.MutationPolicy.ALLOW, "gsd-discuss") //$NON-NLS-1$
+                .route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
+        assertTrue(gsdNames.contains(read.getName()));
+        assertFalse(gsdNames.contains(mutate.getName()));
+        assertFalse(gsdNames.contains(unknown.getName()));
+
+        Set<String> buildNames = listedNames(router(
+                exposure, McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(request("tools/list", Map.of()), session())); //$NON-NLS-1$
+        assertTrue(buildNames.contains(read.getName()));
+        assertTrue(buildNames.contains(mutate.getName()));
+        assertFalse(buildNames.contains(unknown.getName()));
+    }
+
+    @Test
+    public void dynamicMutatingNoRuleIsRejectedUnderAllowWithMachineReadableReason() {
+        CapturingTool tool = new CapturingTool("mcp_adversary_update", false); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(tool.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(tool.getName(), Map.of("value", "changed")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertEquals(0, tool.calls);
+        JsonObject denial = structuredContent(response);
+        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                denial.get("reason_code").getAsString()); //$NON-NLS-1$
+        assertEquals("tool", denial.get("layer").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("build", denial.get("profile").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void trustedDynamicReadOnlyToolStillExecutesUnderAllow() {
+        CapturingTool tool = new CapturingTool("mcp_tracker_search", false); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.READ_ONLY);
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(tool.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(tool.getName(), Map.of("query", "open")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(isToolError(response));
+        assertEquals("ok", text(response)); //$NON-NLS-1$
+        assertEquals(1, tool.calls);
+    }
+
+    @Test
+    public void dynamicReplacementBetweenAuthorizationAndDispatchFailsClosed()
+            throws Exception {
+        String name = "mcp_race_replace"; //$NON-NLS-1$
+        CapturingTool trusted = new CapturingTool(name, false);
+        CapturingTool replacement = new CapturingTool(name, false);
+        registry.registerDynamicTool(trusted, DynamicToolCapability.READ_ONLY);
+        setField(registry, "executionService", new RegisteringExecutionService( //$NON-NLS-1$
+                registry, replacement, DynamicToolCapability.MUTATING));
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(name)),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(name, Map.of()), session());
+
+        assertTrue(isToolError(response));
+        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                structuredContent(response).get("reason_code").getAsString()); //$NON-NLS-1$
+        assertEquals(0, trusted.calls);
+        assertEquals(0, replacement.calls);
+        assertSame(replacement, registry.getTool(name));
+    }
+
+    @Test
+    public void unrelatedDynamicRefreshDoesNotInvalidateStableResolution()
+            throws Exception {
+        CapturingTool stable = new CapturingTool("mcp_stable_read", false); //$NON-NLS-1$
+        CapturingTool unrelated = new CapturingTool("mcp_unrelated_update", false); //$NON-NLS-1$
+        registry.registerDynamicTool(stable, DynamicToolCapability.READ_ONLY);
+        setField(registry, "executionService", new RegisteringExecutionService( //$NON-NLS-1$
+                registry, unrelated, DynamicToolCapability.MUTATING));
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(stable.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(stable.getName(), Map.of()), session());
+
+        assertFalse(isToolError(response));
+        assertEquals(1, stable.calls);
+        assertEquals(0, unrelated.calls);
+    }
+
+    @Test
+    public void toolAndExposureConfirmationSignalsFailClosedUnderAllow() {
+        CapturingTool confirming = new CapturingTool(
+                "mcp_local_confirming", false, true, false); //$NON-NLS-1$
+        CapturingTool destructive = new CapturingTool(
+                "mcp_local_destructive", false, false, true); //$NON-NLS-1$
+        CapturingTool policyConfirmed = new CapturingTool(
+                "mcp_policy_confirming", false); //$NON-NLS-1$
+        registry.registerDynamicTool(confirming, DynamicToolCapability.READ_ONLY);
+        registry.registerDynamicTool(destructive, DynamicToolCapability.READ_ONLY);
+        registry.registerDynamicTool(policyConfirmed, DynamicToolCapability.READ_ONLY);
+
+        McpMessage confirmingResponse = router(
+                new NamedExposurePolicy(Set.of(confirming.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(confirming.getName(), Map.of()), session());
+        McpMessage destructiveResponse = router(
+                new NamedExposurePolicy(Set.of(destructive.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(destructive.getName(), Map.of()), session());
+        McpHostRequestRouter policyRouter = router(
+                new ConfirmingExposurePolicy(policyConfirmed.getName()),
+                McpHostConfig.MutationPolicy.ALLOW, "build"); //$NON-NLS-1$
+        Map<String, Object> policyMetadata = listedTool(policyRouter.route(
+                request("tools/list", Map.of()), session()), policyConfirmed.getName()); //$NON-NLS-1$
+        McpMessage policyResponse = policyRouter.route(
+                call(policyConfirmed.getName(), Map.of()), session());
+
+        for (McpMessage response : List.of(
+                confirmingResponse, destructiveResponse, policyResponse)) {
+            assertTrue(isToolError(response));
+            assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                    structuredContent(response).get("reason_code").getAsString()); //$NON-NLS-1$
+        }
+        assertEquals(0, confirming.calls);
+        assertEquals(0, destructive.calls);
+        assertEquals(0, policyConfirmed.calls);
+        assertEquals(Boolean.TRUE, metadata(policyMetadata)
+                .get("codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void toolListMetadataUsesEffectiveDynamicCapability() {
+        CapturingTool read = new CapturingTool("mcp_metadata_read", false); //$NON-NLS-1$
+        CapturingTool mutate = new CapturingTool("mcp_metadata_update", false); //$NON-NLS-1$
+        registry.registerDynamicTool(read, DynamicToolCapability.READ_ONLY);
+        registry.registerDynamicTool(mutate, DynamicToolCapability.MUTATING);
+        McpToolExposurePolicy exposure = new NamedExposurePolicy(
+                Set.of(read.getName(), mutate.getName()));
+
+        McpMessage response = router(
+                exposure, McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(request("tools/list", Map.of()), session()); //$NON-NLS-1$
+        Map<String, Object> readMetadata = listedTool(response, read.getName());
+        Map<String, Object> mutateMetadata = listedTool(response, mutate.getName());
+
+        assertEquals(Boolean.TRUE, annotations(readMetadata).get("readOnlyHint")); //$NON-NLS-1$
+        assertFalse(readMetadata.containsKey("_meta")); //$NON-NLS-1$
+        assertEquals(Boolean.TRUE, annotations(mutateMetadata).get("destructiveHint")); //$NON-NLS-1$
+        assertEquals(Boolean.TRUE, metadata(mutateMetadata)
+                .get("codepilot1c/requiresConfirmation")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void builtInCollisionKeepsBuiltInExecutionAndMetadata() throws Exception {
+        String name = "mcp_collision"; //$NON-NLS-1$
+        CapturingTool builtIn = register(new CapturingTool(name, false));
+        CapturingTool dynamic = new CapturingTool(name, false);
+        setField(registry, "executionService", new RegisteringExecutionService( //$NON-NLS-1$
+                registry, dynamic, DynamicToolCapability.MUTATING));
+        McpToolExposurePolicy exposure = new NamedExposurePolicy(Set.of(name));
+        McpHostRequestRouter router = router(
+                exposure, McpHostConfig.MutationPolicy.ALLOW, ""); //$NON-NLS-1$
+
+        McpMessage response = router.route(call(name, Map.of()), session());
+        Map<String, Object> listed = listedTool(router.route(
+                request("tools/list", Map.of()), session()), name); //$NON-NLS-1$
+
+        assertSame(builtIn, registry.getTool(name));
+        assertFalse(listed.containsKey("annotations")); //$NON-NLS-1$
+        assertFalse(listed.containsKey("_meta")); //$NON-NLS-1$
+        assertFalse(isToolError(response));
+        assertEquals(1, builtIn.calls);
+        assertEquals(0, dynamic.calls);
+    }
+
+    @Test
     public void configuredProfileNarrowsToolListWithoutWideningExposure() {
         register(new CapturingTool("profile_visible", false)); //$NON-NLS-1$
         register(new CapturingTool("profile_disallowed", false)); //$NON-NLS-1$
@@ -182,6 +373,21 @@ public class McpHostProfileGateTest {
                 .route(request("tools/list", Map.of()), session()); //$NON-NLS-1$
 
         assertEquals(Set.of("profile_visible"), listedNames(response)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void emptyAllowlistExposesNoStaticTools() {
+        CapturingTool tool = register(new CapturingTool("empty_profile_static", false)); //$NON-NLS-1$
+        String profileId = registerProfile(Set.of(), List.of(), true);
+        McpToolExposurePolicy exposure = new NamedExposurePolicy(Set.of(tool.getName()));
+        McpHostRequestRouter router = router(
+                exposure, McpHostConfig.MutationPolicy.ALLOW, profileId);
+
+        assertFalse(listedNames(router.route(
+                request("tools/list", Map.of()), session())).contains(tool.getName())); //$NON-NLS-1$
+        McpMessage response = router.route(call(tool.getName(), Map.of()), session());
+        assertTrue(text(response).contains("reason_code=tool_not_in_profile")); //$NON-NLS-1$
+        assertEquals(0, tool.calls);
     }
 
     @Test
@@ -284,6 +490,71 @@ public class McpHostProfileGateTest {
 
         assertTrue(text(response).contains("reason_code=confirmation_unavailable")); //$NON-NLS-1$
         assertEquals(0, tool.calls);
+    }
+
+    @Test
+    public void permittedProfileAdmitsExactlyScopedValidationTokenConfirmation() {
+        ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
+                "scoped_metadata_mutation")); //$NON-NLS-1$
+        String profileId = registerProfile(Set.of(tool.getName()),
+                List.of(PermissionRule.ask(tool.getName()).forAllResources()), false);
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
+                .route(call(tool.getName(), Map.of("validation_token", "test-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(isToolError(response));
+        assertEquals(1, tool.calls);
+    }
+
+    @Test
+    public void annotatedDynamicMutatingToolCannotEnterScopedValidationTokenBypass() {
+        ScopedValidationTokenTool tool = new ScopedValidationTokenTool(
+                "mcp_adversary_metadata"); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+
+        McpMessage response = router(
+                new NamedExposurePolicy(Set.of(tool.getName())),
+                McpHostConfig.MutationPolicy.ALLOW, "build") //$NON-NLS-1$
+                .route(call(tool.getName(),
+                        Map.of("validation_token", "forged-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertEquals(0, tool.calls);
+        JsonObject denial = structuredContent(response);
+        assertEquals("confirmation_unavailable_tool_policy", //$NON-NLS-1$
+                denial.get("reason_code").getAsString()); //$NON-NLS-1$
+        assertEquals("tool", denial.get("layer").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void annotatedDynamicMutatingToolCannotBypassProfileAskConfirmation() {
+        ScopedValidationTokenTool tool = new ScopedValidationTokenTool(
+                "mcp_adversary_ask_metadata"); //$NON-NLS-1$
+        registry.registerDynamicTool(tool, DynamicToolCapability.MUTATING);
+        String profileId = registerProfile(Set.of(),
+                List.of(PermissionRule.ask(tool.getName()).forAllResources()), false,
+                DynamicToolCapability.MUTATING);
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, profileId)
+                .route(call(tool.getName(),
+                        Map.of("validation_token", "forged-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(isToolError(response));
+        assertEquals(0, tool.calls);
+        assertTrue(text(response).contains("reason_code=confirmation_unavailable")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void legacyHostWithoutProfileAdmitsScopedValidationTokenConfirmation() {
+        ScopedValidationTokenTool tool = register(new ScopedValidationTokenTool(
+                "scoped_metadata_mutation")); //$NON-NLS-1$
+
+        McpMessage response = router(McpHostConfig.MutationPolicy.ALLOW, "") //$NON-NLS-1$
+                .route(call(tool.getName(), Map.of("validation_token", "test-token")), session()); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(isToolError(response));
+        assertFalse(text(response).contains("profile_required_for_scoped_confirmation")); //$NON-NLS-1$
+        assertEquals(1, tool.calls);
     }
 
     @Test
@@ -487,14 +758,21 @@ public class McpHostProfileGateTest {
 
     private String registerProfile(
             Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly) {
+        return registerProfile(allowedTools, rules, readOnly, DynamicToolCapability.NONE);
+    }
+
+    private String registerProfile(
+            Set<String> allowedTools, List<PermissionRule> rules, boolean readOnly,
+            DynamicToolCapability dynamicGrant) {
         String id = "mcp-test-profile-" + registeredProfileIds.size(); //$NON-NLS-1$
-        AgentProfileRegistry.getInstance().register(new StaticProfile(id, allowedTools, rules, readOnly));
+        AgentProfileRegistry.getInstance().register(
+                new StaticProfile(id, allowedTools, rules, readOnly, dynamicGrant));
         registeredProfileIds.add(id);
         return id;
     }
 
-    private CapturingTool register(CapturingTool tool) {
-        registry.registerDynamicTool(tool);
+    private <T extends ITool> T register(T tool) {
+        registry.register(tool);
         return tool;
     }
 
@@ -537,6 +815,12 @@ public class McpHostProfileGateTest {
     }
 
     @SuppressWarnings("unchecked")
+    private JsonObject structuredContent(McpMessage response) {
+        Map<String, Object> result = (Map<String, Object>) response.getResult();
+        return (JsonObject) result.get("structuredContent"); //$NON-NLS-1$
+    }
+
+    @SuppressWarnings("unchecked")
     private Set<String> listedNames(McpMessage response) {
         Map<String, Object> result = (Map<String, Object>) response.getResult();
         List<Map<String, Object>> tools = (List<Map<String, Object>>) result.get("tools"); //$NON-NLS-1$
@@ -545,6 +829,26 @@ public class McpHostProfileGateTest {
             names.add(String.valueOf(tool.get("name"))); //$NON-NLS-1$
         }
         return names;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> listedTool(McpMessage response, String name) {
+        Map<String, Object> result = (Map<String, Object>) response.getResult();
+        List<Map<String, Object>> tools = (List<Map<String, Object>>) result.get("tools"); //$NON-NLS-1$
+        return tools.stream()
+                .filter(tool -> name.equals(tool.get("name"))) //$NON-NLS-1$
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing listed tool: " + name)); //$NON-NLS-1$
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> annotations(Map<String, Object> tool) {
+        return (Map<String, Object>) tool.get("annotations"); //$NON-NLS-1$
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> metadata(Map<String, Object> tool) {
+        return (Map<String, Object>) tool.get("_meta"); //$NON-NLS-1$
     }
 
     private List<JsonObject> readJsonLines(Path file) throws IOException {
@@ -562,20 +866,8 @@ public class McpHostProfileGateTest {
         }
     }
 
-    private static ToolRegistry isolatedRegistry() throws Exception {
-        ToolRegistry registry = (ToolRegistry) unsafe().allocateInstance(ToolRegistry.class);
-        setField(registry, "tools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "dynamicTools", new HashMap<String, ITool>()); //$NON-NLS-1$
-        setField(registry, "gson", new Gson()); //$NON-NLS-1$
-        return registry;
-    }
-
-    private static ToolRegistry installRegistry(ToolRegistry registry) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("instance"); //$NON-NLS-1$
-        field.setAccessible(true);
-        ToolRegistry previous = (ToolRegistry) field.get(null);
-        field.set(null, registry);
-        return previous;
+    private static ToolRegistry isolatedRegistry() {
+        return ToolRegistry.createDetached();
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {
@@ -584,28 +876,32 @@ public class McpHostProfileGateTest {
         field.set(target, value);
     }
 
-    private static Unsafe unsafe() throws Exception {
-        Field field = Unsafe.class.getDeclaredField("theUnsafe"); //$NON-NLS-1$
-        field.setAccessible(true);
-        return (Unsafe) field.get(null);
-    }
-
     private record TraceRun(McpHostSession session, String toolName) {
     }
 
-    private static final class CapturingTool implements ITool {
+    private static class CapturingTool implements ITool {
 
         private final String name;
         private final boolean mutating;
-        private int calls;
+        private final boolean requiresConfirmation;
+        private final boolean destructive;
+        int calls;
         private Map<String, Object> parameters;
         private ToolExecutionContext context;
         private ToolResult result = ToolResult.success("ok"); //$NON-NLS-1$
         private CompletableFuture<ToolResult> future;
 
         private CapturingTool(String name, boolean mutating) {
+            this(name, mutating, false, false);
+        }
+
+        private CapturingTool(
+                String name, boolean mutating, boolean requiresConfirmation,
+                boolean destructive) {
             this.name = name;
             this.mutating = mutating;
+            this.requiresConfirmation = requiresConfirmation;
+            this.destructive = destructive;
         }
 
         @Override
@@ -641,6 +937,25 @@ public class McpHostProfileGateTest {
         public boolean isMutating() {
             return mutating;
         }
+
+        @Override
+        public boolean requiresConfirmation() {
+            return requiresConfirmation;
+        }
+
+        @Override
+        public boolean isDestructive() {
+            return destructive;
+        }
+    }
+
+    @ToolMeta(name = "scoped_metadata_mutation", mutating = true,
+            requiresValidationToken = true)
+    private static final class ScopedValidationTokenTool extends CapturingTool {
+
+        private ScopedValidationTokenTool(String name) {
+            super(name, true, true, true);
+        }
     }
 
     private static final class StaticProfile implements AgentProfile {
@@ -649,14 +964,21 @@ public class McpHostProfileGateTest {
         private final Set<String> allowedTools;
         private final List<PermissionRule> rules;
         private final boolean readOnly;
+        private final DynamicToolCapability dynamicGrant;
 
         private StaticProfile(
                 String id, Set<String> allowedTools, List<PermissionRule> rules,
-                boolean readOnly) {
+                boolean readOnly, DynamicToolCapability dynamicGrant) {
             this.id = id;
             this.allowedTools = allowedTools;
             this.rules = rules;
             this.readOnly = readOnly;
+            this.dynamicGrant = dynamicGrant;
+        }
+
+        @Override
+        public DynamicToolCapability getDynamicToolGrant() {
+            return dynamicGrant;
         }
 
         @Override
@@ -708,6 +1030,7 @@ public class McpHostProfileGateTest {
         public boolean canExecuteShell() {
             return !readOnly;
         }
+
     }
 
     private static final class AllowAllExposurePolicy implements McpToolExposurePolicy {
@@ -752,6 +1075,30 @@ public class McpHostProfileGateTest {
         }
     }
 
+    private static final class ConfirmingExposurePolicy implements McpToolExposurePolicy {
+
+        private final String exposedTool;
+
+        private ConfirmingExposurePolicy(String exposedTool) {
+            this.exposedTool = exposedTool;
+        }
+
+        @Override
+        public boolean isExposed(String toolName) {
+            return exposedTool.equals(toolName);
+        }
+
+        @Override
+        public boolean requiresConfirmation(String toolName, Map<String, Object> args) {
+            return exposedTool.equals(toolName);
+        }
+
+        @Override
+        public boolean isDestructive(String toolName) {
+            return false;
+        }
+    }
+
     private static final class TimeoutExecutionService extends ToolExecutionService {
 
         private TimeoutExecutionService(ToolRegistry registry) {
@@ -759,11 +1106,38 @@ public class McpHostProfileGateTest {
         }
 
         @Override
-        public CompletableFuture<ToolResult> execute(
+        public Optional<CompletableFuture<ToolResult>> executeIfCurrent(
                 ToolCall toolCall, Map<String, Object> parameters,
                 AgentTraceSession traceSession, String parentEventId,
-                ToolExecutionContext context) {
-            return CompletableFuture.failedFuture(new TimeoutException("forced timeout")); //$NON-NLS-1$
+                ToolExecutionContext context, ToolResolution resolution) {
+            return Optional.of(CompletableFuture.failedFuture(
+                    new TimeoutException("forced timeout"))); //$NON-NLS-1$
+        }
+    }
+
+    private static final class RegisteringExecutionService extends ToolExecutionService {
+
+        private final ToolRegistry registry;
+        private final ITool replacement;
+        private final DynamicToolCapability capability;
+
+        private RegisteringExecutionService(
+                ToolRegistry registry, ITool replacement,
+                DynamicToolCapability capability) {
+            super(registry);
+            this.registry = registry;
+            this.replacement = replacement;
+            this.capability = capability;
+        }
+
+        @Override
+        public Optional<CompletableFuture<ToolResult>> executeIfCurrent(
+                ToolCall toolCall, Map<String, Object> parameters,
+                AgentTraceSession traceSession, String parentEventId,
+                ToolExecutionContext context, ToolResolution resolution) {
+            registry.registerDynamicTool(replacement, capability);
+            return super.executeIfCurrent(toolCall, parameters, traceSession,
+                    parentEventId, context, resolution);
         }
     }
 }

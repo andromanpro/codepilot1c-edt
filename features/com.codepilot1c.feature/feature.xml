@@ -2,7 +2,7 @@
 <feature
       id="com.codepilot1c.feature"
       label="%featureName"
-      version="1.3.3.qualifier"
+      version="1.3.9.qualifier"
       provider-name="%providerName">
 
    <description>%description</description>
@@ -11,10 +11,18 @@
 
    <license url="%licenseURL">%license</license>
 
-   <requires>
-      <import feature="org.eclipse.tm.terminal.feature" version="0.0.0" match="compatible"/>
-      <import feature="org.eclipse.cdt.native" version="0.0.0" match="compatible"/>
-   </requires>
+   <!--
+      Keep the install root limited to CodePilot bundles only.
+
+      Do not list Eclipse/CDT implementation bundles here. When the update site is built
+      on a newer EDT/Eclipse target, explicit plugin entries turn into exact p2 IU requirements for
+      that target's bundle versions. Installing such a site into an older supported EDT then fails
+      before CodePilot is touched, for example when org.eclipse.cdt.core.native from Eclipse 2025-12
+      requires org.eclipse.core.runtime [3.33.0,4.0.0) but the host EDT ships an older runtime.
+
+      CodePilot does not integrate the Eclipse Terminal view. It must not require Terminal
+      packages in its OSGi manifests or include Terminal bundles in the update-site payload.
+   -->
 
    <plugin
          id="com.codepilot1c.core"
@@ -29,5 +37,6 @@
          install-size="0"
          version="0.0.0"
          unpack="false"/>
+
 
 </feature>

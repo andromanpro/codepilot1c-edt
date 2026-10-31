@@ -42,6 +42,11 @@ public record AddMetadataChildRequest(
                     MetadataOperationCode.INVALID_METADATA_NAME,
                     "Invalid metadata child name: " + name, false); //$NON-NLS-1$
         }
+        if (childKind == MetadataChildKind.TEMPLATE) {
+            // An unknown or unsupported template_type is refused here, before the BM mutation:
+            // afterwards the template would already exist without a content file EDT reads.
+            TemplateArtifact.requestedTemplates(this);
+        }
     }
 
     public boolean hasSingleName() {

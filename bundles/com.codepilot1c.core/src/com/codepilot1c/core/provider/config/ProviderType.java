@@ -69,6 +69,11 @@ public enum ProviderType {
         return displayName;
     }
 
+    /** Returns whether requests use a user-configured static API key. */
+    public boolean requiresStaticApiKey() {
+        return this != OLLAMA && this != OPENAI_CODEX;
+    }
+
     /**
      * Returns whether this provider type supports fetching model list from API.
      */

@@ -21,7 +21,8 @@ import com.codepilot1c.core.logging.VibeLogger;
 /**
  * Ensures module artifact (*.bsl) exists for a metadata object.
  */
-@ToolMeta(name = "ensure_module_artifact", category = "metadata", mutating = true, tags = {"workspace", "edt"})
+@ToolMeta(name = "ensure_module_artifact", category = "metadata", mutating = true,
+        requiresValidationToken = true, tags = {"workspace", "edt"})
 public class EnsureModuleArtifactTool extends AbstractTool {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EnsureModuleArtifactTool.class);
@@ -40,7 +41,7 @@ public class EnsureModuleArtifactTool extends AbstractTool {
                 },
                 "module_kind": {
                   "type": "string",
-                  "description": "Какой модуль материализовать: auto|object|manager|module"
+                  "description": "Какой модуль материализовать: auto|object|manager|module|command|recordset. У регистров модуль набора записей, а не объекта: auto определяет это сам."
                 },
                 "create_if_missing": {
                   "type": "boolean",
@@ -122,7 +123,8 @@ public class EnsureModuleArtifactTool extends AbstractTool {
                 Map<String, Object> validatedPayload = validationService.consumeToken(
                         validationToken,
                         ValidationOperation.ENSURE_MODULE_ARTIFACT,
-                        projectName);
+                        projectName,
+                        normalizedPayload);
                 if (!validatedPayload.equals(normalizedPayload)) {
                     LOG.warn("[%s] Input payload differs from validated payload, applying validated payload from token", opId); //$NON-NLS-1$
                 }

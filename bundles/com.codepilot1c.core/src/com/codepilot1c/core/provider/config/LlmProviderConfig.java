@@ -190,7 +190,7 @@ public class LlmProviderConfig {
             return false;
         }
         // API key is optional for local providers (Ollama) and OAuth providers (Codex).
-        if (type != ProviderType.OLLAMA && type != ProviderType.OPENAI_CODEX
+        if (type.requiresStaticApiKey()
                 && (apiKey == null || apiKey.trim().isEmpty())) {
             return false;
         }

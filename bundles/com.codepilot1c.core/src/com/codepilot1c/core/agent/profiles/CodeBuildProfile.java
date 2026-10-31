@@ -55,6 +55,7 @@ public class CodeBuildProfile implements AgentProfile {
             "edt_get_module_structure",
             "edt_search_in_code",
             "edt_get_method_call_hierarchy",
+            "edt_get_project_call_graph",
             "edt_go_to_definition",
             "edt_get_symbol_info",
             "get_diagnostics",
@@ -114,6 +115,7 @@ public class CodeBuildProfile implements AgentProfile {
                 PermissionRule.allow("edt_get_module_structure").forAllResources(),
                 PermissionRule.allow("edt_search_in_code").forAllResources(),
                 PermissionRule.allow("edt_get_method_call_hierarchy").forAllResources(),
+                PermissionRule.allow("edt_get_project_call_graph").forAllResources(),
                 PermissionRule.allow("edt_go_to_definition").forAllResources(),
                 PermissionRule.allow("edt_get_symbol_info").forAllResources(),
                 PermissionRule.allow("get_diagnostics").forAllResources(),
@@ -165,5 +167,10 @@ public class CodeBuildProfile implements AgentProfile {
     @Override
     public boolean canExecuteShell() {
         return false;
+    }
+
+    @Override
+    public DynamicToolCapability getDynamicToolGrant() {
+        return DynamicToolCapability.MUTATING;
     }
 }

@@ -28,6 +28,7 @@ public class GetMethodCallHierarchyTool extends AbstractTool {
               "properties": {
                 "projectName": {"type": "string", "description": "EDT project name"},
                 "methodFqn": {"type": "string", "description": "Method FQN"},
+                "modulePath": {"type": "string", "description": "Optional module file_path relative to src/; use it to disambiguate duplicate module FQNs"},
                 "direction": {"type": "string", "enum": ["callers", "callees", "both"], "description": "Hierarchy direction"},
                 "depth": {"type": "integer", "description": "Traversal depth, default 1"}
               },
@@ -66,6 +67,7 @@ public class GetMethodCallHierarchyTool extends AbstractTool {
                 JsonObject result = support.methodCallHierarchy(
                         projectName,
                         params.requireString("methodFqn"), //$NON-NLS-1$
+                        params.optString("modulePath", ""), //$NON-NLS-1$ //$NON-NLS-2$
                         params.optString("direction", "both"), //$NON-NLS-1$ //$NON-NLS-2$
                         params.optInt("depth", 1)); //$NON-NLS-1$
                 return ToolResult.success(EdtProjectAnalysisSupport.pretty(result), ToolResult.ToolResultType.CODE, result);

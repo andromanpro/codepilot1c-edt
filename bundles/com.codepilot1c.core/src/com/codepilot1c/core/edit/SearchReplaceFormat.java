@@ -48,17 +48,6 @@ public class SearchReplaceFormat {
     );
 
     /**
-     * Pattern for removing markdown code fence around blocks.
-     * Supports any language specifier (diff, patch, java, text, etc.)
-     */
-    private static final Pattern CODE_FENCE_PATTERN = Pattern.compile(
-            "```[a-zA-Z0-9]*\\s*\\n?" +         // Opening fence with optional language
-            "(.*?)" +                            // Content
-            "\\n?```",                           // Closing fence
-            Pattern.DOTALL
-    );
-
-    /**
      * Parses edit blocks from LLM response.
      *
      * @param llmResponse the raw LLM response text
@@ -72,8 +61,8 @@ public class SearchReplaceFormat {
         // Normalize line endings to \n for consistent matching
         String normalized = llmResponse.replace("\r\n", "\n").replace("\r", "\n"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
 
-        // Remove code fences if present
-        String content = unwrapCodeFences(normalized);
+        // Block markers are recognized inside wrapper fences. Do not rewrite payload code.
+        String content = normalized;
 
         List<EditBlock> blocks = new ArrayList<>();
         Matcher matcher = SEARCH_REPLACE_PATTERN.matcher(content);
@@ -106,7 +95,7 @@ public class SearchReplaceFormat {
         if (llmResponse == null || llmResponse.isEmpty()) {
             return false;
         }
-        String content = unwrapCodeFences(llmResponse);
+        String content = llmResponse;
         return SEARCH_REPLACE_PATTERN.matcher(content).find();
     }
 
@@ -260,30 +249,6 @@ public class SearchReplaceFormat {
         }
         sb.append(">>>>>>> REPLACE"); //$NON-NLS-1$
         return sb.toString();
-    }
-
-    /**
-     * Removes markdown code fences from content.
-     */
-    private String unwrapCodeFences(String content) {
-        // First, try to extract content from code fences
-        Matcher fenceMatcher = CODE_FENCE_PATTERN.matcher(content);
-        StringBuilder result = new StringBuilder();
-        int lastEnd = 0;
-
-        while (fenceMatcher.find()) {
-            // Add content before the fence
-            result.append(content.substring(lastEnd, fenceMatcher.start()));
-            // Add content inside the fence (unwrapped)
-            result.append(fenceMatcher.group(1));
-            lastEnd = fenceMatcher.end();
-        }
-
-        // Add remaining content
-        result.append(content.substring(lastEnd));
-
-        String unwrapped = result.toString();
-        return unwrapped.isEmpty() ? content : unwrapped;
     }
 
     /**

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.provider.codex.CodexOAuthConstants;
@@ -33,14 +34,20 @@ public class ModelFetchService {
 
     private static ModelFetchService instance;
     private final HttpClient httpClient;
+    private final Function<LlmProviderConfig, String> apiKeyResolver;
 
     private ModelFetchService() {
-        this.httpClient = HttpClient.newBuilder()
+        this(HttpClient.newBuilder()
                 // Keep this compatible with plain-HTTP OpenAI-compatible deployments (vLLM/uvicorn),
                 // where Java HttpClient HTTP/2 (h2c) can lead to "missing body" validation errors.
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(10))
-                .build();
+                .build(), LlmProviderConfigStore::resolveApiKey);
+    }
+
+    ModelFetchService(HttpClient httpClient, Function<LlmProviderConfig, String> apiKeyResolver) {
+        this.httpClient = httpClient;
+        this.apiKeyResolver = apiKeyResolver;
     }
 
     /**
@@ -171,7 +178,7 @@ public class ModelFetchService {
                 .GET();
 
         // Add authorization if API key provided
-        if (apiKey != null && !apiKey.isEmpty()) {
+        if (type.requiresStaticApiKey() && apiKey != null && !apiKey.isEmpty()) {
             builder.header("Authorization", "Bearer " + apiKey); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
@@ -189,7 +196,7 @@ public class ModelFetchService {
      * Fetches models using a provider configuration.
      */
     public CompletableFuture<FetchResult> fetchModels(LlmProviderConfig config) {
-        return fetchModels(config.getBaseUrl(), config.getApiKey(), config.getType());
+        return fetchModels(config.getBaseUrl(), apiKeyResolver.apply(config), config.getType());
     }
 
     /**

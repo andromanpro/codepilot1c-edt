@@ -1,6 +1,7 @@
 package com.codepilot1c.core.tools.metadata;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
 
@@ -31,16 +32,19 @@ public class ScanMetadataIndexTool extends AbstractTool {
                 "projectName": {"type": "string", "description": "EDT project whose configuration should be scanned. Optional: if omitted, the active editor project (or the single open project) is used; otherwise the error lists available projects."},
                 "scope": {"type": "string", "description": "High-level metadata scope filter such as all, catalogs, documents, commonModules"},
                 "nameContains": {"type": "string", "description": "Case-insensitive object name filter for broad discovery"},
-                "limit": {"type": "integer", "description": "Maximum number of index entries to return (1..1000, default 200)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of index entries to return"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Zero-based offset in the stable sorted result set; when hasMore is true, pass the returned nextOffset here"},
                 "language": {"type": "string", "description": "Preferred synonym language for display values (ru, en, ...)"},
                 "includeModules": {"type": "boolean", "description": "Compatibility flag; does not replace detailed module inspection"}
-              }
+              },
+              "additionalProperties": false
             }
             """; //$NON-NLS-1$
 
     @Override
     public String getDescription() {
-        return "Возвращает индекс верхнеуровневых объектов метаданных EDT по проекту с широкими фильтрами."; //$NON-NLS-1$
+        return "Возвращает стабильную страницу индекса верхнеуровневых объектов метаданных EDT; " //$NON-NLS-1$
+                + "для продолжения передайте nextOffset как offset, когда hasMore=true."; //$NON-NLS-1$
     }
 
     @Override
@@ -50,10 +54,16 @@ public class ScanMetadataIndexTool extends AbstractTool {
 
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
+        return doExecute(params, ToolExecutionContext.unscoped());
+    }
+
+    @Override
+    protected CompletableFuture<ToolResult> doExecute(
+            ToolParameters params, ToolExecutionContext context) {
         return CompletableFuture.supplyAsync(() -> {
             Map<String, Object> parameters = params.getRaw();
             try {
-                String projectName = resolveProjectName(parameters);
+                String projectName = resolveProjectName(parameters, context);
                 if (projectName == null || projectName.isBlank()) {
                     return ToolResult.failure(missingProjectMessage());
                 }
@@ -76,13 +86,14 @@ public class ScanMetadataIndexTool extends AbstractTool {
      * active editor project, otherwise the single open workspace project. Returns {@code null} when
      * the project cannot be determined unambiguously.
      */
-    private String resolveProjectName(Map<String, Object> parameters) {
+    private String resolveProjectName(
+            Map<String, Object> parameters, ToolExecutionContext context) {
         Object raw = parameters.get("projectName"); //$NON-NLS-1$
         String name = raw == null ? null : String.valueOf(raw).trim();
         if (name != null && !name.isBlank()) {
             return name;
         }
-        return ActiveProjectSupport.resolveActiveProjectName();
+        return ActiveProjectSupport.resolveActiveProjectName(context);
     }
 
     private String missingProjectMessage() {

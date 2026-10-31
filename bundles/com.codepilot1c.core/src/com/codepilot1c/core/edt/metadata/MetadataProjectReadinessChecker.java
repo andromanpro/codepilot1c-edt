@@ -57,7 +57,7 @@ public class MetadataProjectReadinessChecker {
                     "Cannot determine derived-data status", true); //$NON-NLS-1$
         }
 
-        if (isReady(ddManager)) {
+        if (isDerivedDataReady(ddManager)) {
             LOG.debug("[%s] Project %s is ready without wait (idle=%s allComputed=%s strict=%s)", opId, // $NON-NLS-1$
                     project.getName(), ddManager.isIdle(), ddManager.isAllComputed(), REQUIRE_ALL_COMPUTED);
             return;
@@ -67,7 +67,7 @@ public class MetadataProjectReadinessChecker {
                 opId, project.getName(), WAIT_TIMEOUT_MS, REQUIRE_ALL_COMPUTED);
         long deadline = startedAt + WAIT_TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {
-            if (isReady(ddManager)) {
+            if (isDerivedDataReady(ddManager)) {
                 LOG.info("[%s] Project %s became ready in %s", opId, project.getName(), // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt));
                 return;
@@ -76,7 +76,7 @@ public class MetadataProjectReadinessChecker {
                 long remainingMs = Math.max(1L, deadline - System.currentTimeMillis());
                 long waitSliceMs = Math.min(PROGRESS_LOG_STEP_MS, remainingMs);
                 boolean allComputationsFinished = ddManager.waitAllComputations(waitSliceMs);
-                if (isReady(ddManager)) {
+                if (isDerivedDataReady(ddManager)) {
                     LOG.info("[%s] Project %s became ready in %s", opId, project.getName(), // $NON-NLS-1$
                             LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt));
                     return;
@@ -115,7 +115,13 @@ public class MetadataProjectReadinessChecker {
                 true);
     }
 
-    private boolean isReady(IDerivedDataManager ddManager) {
+    /**
+     * Canonical non-blocking derived-data predicate for semantic EDT operations.
+     *
+     * <p>Readiness publishers must use this instead of a lifecycle approximation so a published
+     * ready state never races a metadata tool into {@code PROJECT_NOT_READY}.</p>
+     */
+    public static boolean isDerivedDataReady(IDerivedDataManager ddManager) {
         return ddManager.isIdle() && (!REQUIRE_ALL_COMPUTED || ddManager.isAllComputed());
     }
 

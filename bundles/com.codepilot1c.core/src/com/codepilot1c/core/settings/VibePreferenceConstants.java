@@ -39,16 +39,6 @@ public final class VibePreferenceConstants {
     /** Path to Vanessa Automation .epf */
     public static final String PREF_QA_VA_EPF_PATH = "qa.vanessaEpfPath"; //$NON-NLS-1$
 
-    // Terminal preferences
-    /** Terminal start directory mode: project|selection|workspace|home */
-    public static final String PREF_TERMINAL_CWD_MODE = "terminal.cwd.mode"; //$NON-NLS-1$
-    /** Add NO_COLOR=1 to terminal environment */
-    public static final String PREF_TERMINAL_NO_COLOR = "terminal.noColor"; //$NON-NLS-1$
-    /** Optional terminal tab title prefix */
-    public static final String PREF_TERMINAL_TITLE_PREFIX = "terminal.titlePrefix"; //$NON-NLS-1$
-    /** Always use active project as working directory */
-    public static final String PREF_TERMINAL_ALWAYS_USE_ACTIVE_PROJECT = "terminal.alwaysUseActiveProject"; //$NON-NLS-1$
-
     // Claude preferences
     public static final String PREF_CLAUDE_API_KEY = "claude.apiKey"; //$NON-NLS-1$
     public static final String PREF_CLAUDE_API_URL = "claude.apiUrl"; //$NON-NLS-1$
@@ -111,13 +101,19 @@ public final class VibePreferenceConstants {
     public static final String PREF_MCP_HOST_HTTP_BIND_ADDRESS = "mcp.host.http.bindAddress"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_HTTP_PORT = "mcp.host.http.port"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_AUTH_MODE = "mcp.host.auth.mode"; //$NON-NLS-1$
+    /** Enable the authenticated plugin-side LLM broker endpoints. */
+    public static final String PREF_MCP_HOST_LLM_ENABLED = "mcp.host.llm.enabled"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION =
         "mcp.host.policy.defaultMutationDecision"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_POLICY_SESSION_PROFILE =
         "mcp.host.policy.sessionProfile"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_POLICY_EXPOSED_TOOLS = "mcp.host.policy.exposedTools"; //$NON-NLS-1$
+    public static final String PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS =
+        "mcp.host.session.idleTimeoutSeconds"; //$NON-NLS-1$
 
     // Feature flags
+    /** Workspace feature flag for the GSD workflow. */
+    public static final String PREF_GSD_ENABLED = "gsd.enabled"; //$NON-NLS-1$
     /** Feature flag: enable LLM-based history compaction instead of lossy truncation. */
     public static final String PREF_ENABLE_LLM_COMPACTION = "codepilot.feature.llm_compaction"; //$NON-NLS-1$
 

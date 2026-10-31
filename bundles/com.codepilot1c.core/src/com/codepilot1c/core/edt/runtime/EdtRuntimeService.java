@@ -394,8 +394,8 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.resolveSettings(infobase);
-        } catch (Exception | NoSuchMethodError e) {
+            settings = resolveAccessManagerSettings(accessManager, infobase);
+        } catch (Exception | LinkageError e) {
             return null;
         }
         if (settings == null || settings == IInfobaseAccessSettings.NOT_DEFINED) {
@@ -593,7 +593,8 @@ public class EdtRuntimeService {
         }
         builder.forInfobase(infobase.getConnectionString(), false);
         applyAccessSettings(builder, infobase);
-        builder.updateDatabaseConfiguration();
+        invokeCompatibleNoArg(builder,
+                "updateDatabaseConfiguration", "updateInfobase"); //$NON-NLS-1$ //$NON-NLS-2$
         builder.disableStartupDialogs();
         builder.disableStartupMessages();
         if (logFile != null) {
@@ -658,6 +659,36 @@ public class EdtRuntimeService {
             }
             throw new IllegalStateException("EDT updateInfobase failed: " + e.getMessage(), e); //$NON-NLS-1$
         }
+    }
+
+    public boolean reloadExtension(IProject extension, InfobaseReference infobase, boolean keepConnected,
+            boolean allowConflictOverride, IProgressMonitor monitor) throws Exception {
+        IProgressMonitor usedMonitor = monitor != null ? monitor : new NullProgressMonitor();
+        try (EdtRuntimeGateway.SynchronizationLease lease = gateway.acquireNativeInfobaseSynchronizationManager()) {
+            Object manager = lease.service();
+            ClassLoader loader = manager.getClass().getClassLoader();
+            Class<?> callbackType = Class.forName(
+                    "com._1c.g5.v8.dt.platform.services.core.infobases.sync.IInfobaseUpdateCallback", true, loader);
+            Object callback = Proxy.newProxyInstance(callbackType.getClassLoader(), new Class<?>[] {callbackType},
+                    (proxy, method, args) -> handleExtensionUpdateCallback(proxy, method, args, allowConflictOverride));
+            return EdtExtensionReloadInvoker.reload(manager, extension, infobase, callback, keepConnected, usedMonitor);
+        }
+    }
+
+    static Object handleExtensionUpdateCallback(Object proxy, Method method, Object[] args, boolean allowOverride) {
+        if ("resolveInfobaseChanges".equals(method.getName()) || "onInfobaseChanges".equals(method.getName())) {
+            if (!allowOverride) {
+                throw new EdtToolException(EdtToolErrorCode.UPDATE_FAILED,
+                        "The infobase extension has conflicting changes; review them before retrying with allow_conflict_override=true");
+            }
+            Object resolved = invokeConflictOverride(args);
+            if (resolved == null || !method.getReturnType().isInstance(resolved)) {
+                throw new EdtToolException(EdtToolErrorCode.UPDATE_FAILED,
+                        "EDT could not resolve the extension conflict; no successful override was reported");
+            }
+            return resolved;
+        }
+        return handleUpdateCallback(proxy, method, args);
     }
 
     public void applyAccessSettings(RuntimeExecutionCommandBuilder builder, AccessSettings settings) {
@@ -872,8 +903,8 @@ public class EdtRuntimeService {
         IInfobaseAccessSettings settings = null;
         try {
             IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
-            settings = accessManager.resolveSettings(infobase);
-        } catch (Exception | NoSuchMethodError e) {
+            settings = resolveAccessManagerSettings(accessManager, infobase);
+        } catch (Exception | LinkageError e) {
             LOG.warn("Failed to resolve access settings (possible EDT 2025.2 API change): " + e.getMessage(), e); //$NON-NLS-1$
             settings = null;
         }
@@ -903,6 +934,69 @@ public class EdtRuntimeService {
         if (fallback != null && !fallback.isBlank()) {
             builder.additionalParameters(fallback);
         }
+    }
+
+    private static IInfobaseAccessSettings resolveAccessManagerSettings(
+            IInfobaseAccessManager manager, InfobaseReference infobase) throws Exception {
+        Method method = findCompatibleMethod(manager.getClass(),
+                new String[] {"resolveSettings", "getSettings"}, //$NON-NLS-1$ //$NON-NLS-2$
+                InfobaseReference.class);
+        if (method == null) {
+            throw new NoSuchMethodException(
+                    "IInfobaseAccessManager settings resolver is unavailable"); //$NON-NLS-1$
+        }
+        try {
+            Object value = method.invoke(manager, infobase);
+            if (value == null || value instanceof IInfobaseAccessSettings) {
+                return (IInfobaseAccessSettings) value;
+            }
+            throw new IllegalStateException(
+                    "EDT access settings resolver returned an unexpected result type"); //$NON-NLS-1$
+        } catch (InvocationTargetException e) {
+            if (e.getCause() instanceof Exception cause) {
+                throw cause;
+            }
+            if (e.getCause() instanceof Error cause) {
+                throw cause;
+            }
+            throw new IllegalStateException("Access settings resolution failed", e); //$NON-NLS-1$
+        }
+    }
+
+    private static void invokeCompatibleNoArg(Object receiver, String... methodNames) {
+        Method method = findCompatibleMethod(receiver.getClass(), methodNames);
+        if (method == null) {
+            throw new IllegalStateException(
+                    "Compatible EDT runtime command builder operation is unavailable"); //$NON-NLS-1$
+        }
+        try {
+            method.invoke(receiver);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException(
+                    "EDT runtime command builder operation failed: " + cause.getMessage(), cause); //$NON-NLS-1$
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(
+                    "EDT runtime command builder operation failed: " + e.getMessage(), e); //$NON-NLS-1$
+        }
+    }
+
+    private static Method findCompatibleMethod(
+            Class<?> type, String[] methodNames, Class<?>... parameterTypes) {
+        for (String name : methodNames) {
+            try {
+                return type.getMethod(name, parameterTypes);
+            } catch (NoSuchMethodException e) {
+                // try the next API-version name
+            }
+        }
+        return null;
     }
 
     private String buildStartupOption(File vaParamsPath, File workspaceRoot, boolean showMainForm,

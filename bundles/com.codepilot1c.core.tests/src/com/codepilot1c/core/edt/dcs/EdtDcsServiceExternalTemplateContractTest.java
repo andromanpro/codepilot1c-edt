@@ -23,6 +23,12 @@ public class EdtDcsServiceExternalTemplateContractTest {
         String source = Files.readString(servicePath());
 
         assertTrue(source.contains("Template.dcs")); //$NON-NLS-1$
+        // Оба диалекта: платформенный — единственный, который читает платформа и
+        // которым пишутся новые схемы; design-time остаётся только для чтения
+        // схем, написанных прежними сборками. Утверждение про один лишь
+        // design-time держалось здесь и тогда, когда сервис уже был обязан
+        // говорить на платформенном — см. EdtDcsPlatformDialectTest.
+        assertTrue(source.contains("http://v8.1c.ru/8.1/data-composition-system/schema")); //$NON-NLS-1$
         assertTrue(source.contains("http://g5.1c.ru/v8/dt/data-composition-system/schema")); //$NON-NLS-1$
     }
 

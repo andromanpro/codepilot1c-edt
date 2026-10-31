@@ -19,6 +19,8 @@ import com.google.gson.JsonParser;
 import com.codepilot1c.core.agent.profiles.AgentCapability;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
+import com.codepilot1c.core.agent.profiles.ProfileToolAccess;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.prompt.IMcpPromptProvider;
@@ -37,8 +39,11 @@ import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolExecutionContext;
+import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolRegistry;
+import com.codepilot1c.core.tools.ToolRegistry.ToolResolution;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
 
@@ -51,6 +56,18 @@ public class McpHostRequestRouter {
     private static final String SERVER_NAME = "CodePilot1C MCP Host"; //$NON-NLS-1$
     private static final String SERVER_VERSION = "1.3.0"; //$NON-NLS-1$
     private static final String COMPAT_PROFILE_ID = "mcp-host"; //$NON-NLS-1$
+
+    /** Tool argument every long-running tool publishes in its own schema. */
+    private static final String TIMEOUT_SECONDS_ARGUMENT = "timeout_s"; //$NON-NLS-1$
+    /** Wait for tools that publish no timeout of their own. */
+    private static final int DEFAULT_DISPATCH_TIMEOUT_SECONDS = 120;
+    /** Ceiling kept for {@code qa_run}, which relied on it before timeout_s was honoured. */
+    private static final String QA_RUN_TOOL = "qa_run"; //$NON-NLS-1$
+    private static final int LEGACY_QA_RUN_DISPATCH_TIMEOUT_SECONDS = 3600;
+    /** Slack so the tool's own timeout fires before the host abandons the dispatch. */
+    private static final int DISPATCH_TIMEOUT_HEADROOM_SECONDS = 60;
+    /** Upper bound so a stray argument cannot pin a dispatch slot indefinitely. */
+    private static final int MAX_DISPATCH_TIMEOUT_SECONDS = 7200;
     /** Global rules remain exclusively in {@link #resolvePermissionDecision}. */
     private static final List<PermissionRule> NO_GLOBAL_RULES = List.of();
     private static final ToolExecutionContext LEGACY_CONTEXT =
@@ -70,13 +87,15 @@ public class McpHostRequestRouter {
     private final AgentProfile sessionProfile;
     private final boolean profileGateEnabled;
     private final ToolExecutionContext executionContext;
+    private final McpContractMetadataService contractMetadataService;
 
     public McpHostRequestRouter(
             McpToolExposurePolicy exposurePolicy,
             List<IMcpResourceProvider> resourceProviders,
             IMcpPromptProvider promptProvider,
             McpHostConfig.MutationPolicy defaultMutationPolicy) {
-        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, ""); //$NON-NLS-1$
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, "", //$NON-NLS-1$
+                new McpContractMetadataService());
     }
 
     public McpHostRequestRouter(
@@ -85,6 +104,27 @@ public class McpHostRequestRouter {
             IMcpPromptProvider promptProvider,
             McpHostConfig.MutationPolicy defaultMutationPolicy,
             String sessionProfileId) {
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy,
+                sessionProfileId, new McpContractMetadataService());
+    }
+
+    public McpHostRequestRouter(
+            McpToolExposurePolicy exposurePolicy,
+            List<IMcpResourceProvider> resourceProviders,
+            IMcpPromptProvider promptProvider,
+            McpHostConfig.MutationPolicy defaultMutationPolicy,
+            McpContractMetadataService contractMetadataService) {
+        this(exposurePolicy, resourceProviders, promptProvider, defaultMutationPolicy, "", //$NON-NLS-1$
+                contractMetadataService);
+    }
+
+    public McpHostRequestRouter(
+            McpToolExposurePolicy exposurePolicy,
+            List<IMcpResourceProvider> resourceProviders,
+            IMcpPromptProvider promptProvider,
+            McpHostConfig.MutationPolicy defaultMutationPolicy,
+            String sessionProfileId,
+            McpContractMetadataService contractMetadataService) {
         this.exposurePolicy = exposurePolicy;
         this.resourceProviders = resourceProviders;
         this.promptProvider = promptProvider;
@@ -99,7 +139,7 @@ public class McpHostRequestRouter {
         } else {
             this.profileGateEnabled = true;
             this.sessionProfile = AgentProfileRegistry.getInstance()
-                    .getProfile(configuredProfileId)
+                    .getAvailableProfile(configuredProfileId)
                     .orElse(null);
             if (sessionProfile != null) {
                 this.executionContext = ToolExecutionContext.of(sessionProfile, 0);
@@ -109,6 +149,9 @@ public class McpHostRequestRouter {
                         configuredProfileId);
             }
         }
+        this.contractMetadataService = contractMetadataService != null
+            ? contractMetadataService
+            : new McpContractMetadataService();
     }
 
     public McpMessage route(McpMessage request, McpHostSession session) {
@@ -157,14 +200,22 @@ public class McpHostRequestRouter {
 
         Map<String, Object> result = new HashMap<>();
         result.put("protocolVersion", negotiated); //$NON-NLS-1$
-        result.put("capabilities", Map.of( //$NON-NLS-1$
-            "tools", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "resources", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "prompts", Map.of("listChanged", true), //$NON-NLS-1$ //$NON-NLS-2$
-            "logging", Map.of() //$NON-NLS-1$
-        ));
+        Map<String, Object> capabilities = new LinkedHashMap<>();
+        capabilities.put("tools", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("resources", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("prompts", Map.of("listChanged", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        capabilities.put("logging", Map.of()); //$NON-NLS-1$
+        capabilities.put("experimental", contractMetadataService.experimentalMetadata()); //$NON-NLS-1$
+        result.put("capabilities", capabilities); //$NON-NLS-1$
         result.put("serverInfo", Map.of("name", SERVER_NAME, "version", SERVER_VERSION)); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         return ok(request, result);
+    }
+
+    /**
+     * Returns the current readiness snapshot for the HTTP health handler.
+     */
+    public McpReadiness readiness() {
+        return contractMetadataService.readiness();
     }
 
     private McpMessage handleInitialized(McpMessage request, McpHostSession session) {
@@ -184,11 +235,18 @@ public class McpHostRequestRouter {
             return error(request, -32602, "Missing required parameter: name"); //$NON-NLS-1$
         }
 
+        ToolRegistry registry = ToolRegistry.getInstance();
+        if (!registry.isToolModelFacing(toolName)) {
+            return ok(request, toMcpToolResult(
+                    ToolExecutionService.gsdDisabledResult(toolName)));
+        }
+
         if (!exposurePolicy.isExposed(toolName)) {
             return ok(request, toolError("Tool is not exposed: " + toolName)); //$NON-NLS-1$
         }
 
-        ITool tool = ToolRegistry.getInstance().getTool(toolName);
+        ToolResolution resolution = registry.resolveTool(toolName);
+        ITool tool = resolution.tool();
         if (tool == null) {
             return ok(request, toolError("Unknown tool: " + toolName)); //$NON-NLS-1$
         }
@@ -198,8 +256,7 @@ public class McpHostRequestRouter {
                 return denyByProfile(request, session, toolName, arguments, null,
                         "profile_unresolved", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
             }
-            Set<String> allowedTools = sessionProfile.getAllowedTools();
-            if (allowedTools != null && !allowedTools.isEmpty() && !allowedTools.contains(toolName)) {
+            if (!ProfileToolAccess.allows(sessionProfile, resolution)) {
                 return denyByProfile(request, session, toolName, arguments, null,
                         "tool_not_in_profile", "profile", null); //$NON-NLS-1$ //$NON-NLS-2$
             }
@@ -212,8 +269,14 @@ public class McpHostRequestRouter {
                         gate.layer(), ruleDescription);
             }
             if (gate.decision() == ProfilePermissionGate.GateDecision.ASK) {
-                return denyByProfile(request, session, toolName, arguments, gate.resource(),
-                        "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
+                if (hasScopedValidationTokenConfirmation(resolution, arguments)) {
+                    // A validation-token tool verifies and consumes its one-time token in its
+                    // own execution path. The explicitly configured profile remains the
+                    // authority that permits this tool; an MCP host has no interactive sink.
+                } else {
+                    return denyByProfile(request, session, toolName, arguments, gate.resource(),
+                            "confirmation_unavailable", gate.layer(), ruleDescription); //$NON-NLS-1$
+                }
             }
         }
 
@@ -226,14 +289,29 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Tool execution denied by permission policy: " + decision)); //$NON-NLS-1$
         }
 
+        EffectiveToolPolicy effectivePolicy = effectiveToolPolicy(resolution, arguments);
+        // Two independent relaxations, both kept: McpHostConfirmationPolicy honours the configured
+        // MutationPolicy when no profile is set, and a scoped validation token substitutes for the
+        // confirmation this transport cannot ask for.
+        if (McpHostConfirmationPolicy.refusesUnconfirmable(
+                effectivePolicy.requiresConfirmation(), profileGateEnabled, defaultMutationPolicy)
+                && !hasScopedValidationTokenConfirmation(resolution, arguments)) {
+            return denyConfirmationUnavailable(request, session, toolName, arguments);
+        }
+
         ToolResult toolResult;
         try {
-            int timeoutSeconds = "qa_run".equals(toolName) ? 3600 : 120; //$NON-NLS-1$
+            int timeoutSeconds = resolveDispatchTimeoutSeconds(toolName, arguments);
             ToolCall call = new ToolCall(String.valueOf(request.getRawId()), toolName, null);
-            toolResult = ToolRegistry.getInstance().getExecutionService()
-                .execute(call, arguments, null, null, executionContext)
-                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
-                .join();
+            var dispatched = registry.getExecutionService().executeIfCurrent(
+                    call, arguments, null, null, executionContext, resolution);
+            if (dispatched.isEmpty()) {
+                return denyConfirmationUnavailable(
+                        request, session, toolName, arguments);
+            }
+            toolResult = dispatched.get()
+                    .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                    .join();
         } catch (Exception e) {
             writeMcpToolTrace(session, toolName, arguments, decision, null,
                     Duration.between(startedAt, Instant.now()), e);
@@ -259,6 +337,48 @@ public class McpHostRequestRouter {
         LOG.warn("mcp_permission_denied tool=%s profile=%s layer=%s resource=%s reason_code=%s", //$NON-NLS-1$
                 toolName, configuredProfileId, layer, resource, reasonCode);
         return ok(request, toolError(denied.getErrorMessage()));
+    }
+
+    private McpMessage denyConfirmationUnavailable(
+            McpMessage request, McpHostSession session, String toolName,
+            Map<String, Object> arguments) {
+        String reasonCode = "confirmation_unavailable_tool_policy"; //$NON-NLS-1$
+        ToolResult denied = PermissionDenialPayload.denied(
+                toolName, configuredProfileId, null, reasonCode, "tool", null); //$NON-NLS-1$
+        writeMcpToolTrace(session, toolName, arguments, PermissionDecision.DENY,
+                denied, Duration.ZERO, null);
+        LOG.warn("mcp_permission_denied tool=%s profile=%s layer=tool resource=null reason_code=%s", //$NON-NLS-1$
+                toolName, configuredProfileId, reasonCode);
+        return ok(request, toMcpToolResult(denied));
+    }
+
+    /**
+     * A scoped validation token is a tool-contract confirmation substitute only
+     * for an exact built-in resolution. Dynamically registered implementations
+     * never enter this path: their annotation is untrusted runtime metadata and
+     * they are not guaranteed to verify or consume the token at all, so they stay
+     * fail-closed. When a session profile is explicitly configured, the profile
+     * gate above remains the authority that permits the tool before this helper
+     * can be consulted. With no configured profile the legacy MCP host path is
+     * intentionally profile-neutral: validation-token tools may use their own
+     * token contract as the non-interactive confirmation substitute. Token
+     * validity, exact payload binding, expiry, and one-time consumption remain
+     * enforced by the tool's validation service before it performs a mutation.
+     */
+    private boolean hasScopedValidationTokenConfirmation(
+            ToolResolution resolution, Map<String, Object> arguments) {
+        if (resolution == null || resolution.dynamic() || resolution.tool() == null
+                || arguments == null) {
+            return false;
+        }
+        return isValidationTokenTool(resolution.tool(), arguments);
+    }
+
+    private boolean isValidationTokenTool(ITool tool, Map<String, Object> arguments) {
+        ToolMeta metadata = tool.getClass().getAnnotation(ToolMeta.class);
+        Object token = arguments.get("validation_token"); //$NON-NLS-1$
+        return metadata != null && metadata.requiresValidationToken()
+                && token != null && !String.valueOf(token).isBlank();
     }
 
     private PermissionDecision resolvePermissionDecision(String toolName, Map<String, Object> arguments) {
@@ -315,8 +435,9 @@ public class McpHostRequestRouter {
         List<Map<String, Object>> out = new ArrayList<>();
         ToolRegistry registry = ToolRegistry.getInstance();
         ToolSurfaceContext surfaceContext = registry.createRuntimeSurfaceContext(
-                ToolSurfaceContext.defaultProfile());
-        for (ITool tool : registry.getAllTools()) {
+                sessionProfile != null ? sessionProfile : ToolSurfaceContext.defaultProfile());
+        for (ToolResolution resolution : registry.getModelFacingToolResolutions()) {
+            ITool tool = resolution.tool();
             if (!exposurePolicy.isExposed(tool.getName())) {
                 continue;
             }
@@ -324,9 +445,7 @@ public class McpHostRequestRouter {
                 if (sessionProfile == null) {
                     continue;
                 }
-                Set<String> allowedTools = sessionProfile.getAllowedTools();
-                if (allowedTools != null && !allowedTools.isEmpty()
-                        && !allowedTools.contains(tool.getName())) {
+                if (!ProfileToolAccess.allows(sessionProfile, resolution)) {
                     continue;
                 }
             }
@@ -335,9 +454,70 @@ public class McpHostRequestRouter {
             item.put("name", tool.getName()); //$NON-NLS-1$
             item.put("description", effectiveTool.getDescription()); //$NON-NLS-1$
             item.put("inputSchema", parseSchema(effectiveTool.getParametersSchema())); //$NON-NLS-1$
+            addToolContractMetadata(item, tool,
+                    effectiveToolPolicy(resolution, Map.of()));
             out.add(item);
         }
         return out;
+    }
+
+    private void addToolContractMetadata(
+            Map<String, Object> item, ITool tool, EffectiveToolPolicy effectivePolicy) {
+        Map<String, Object> annotations = new LinkedHashMap<>();
+        boolean destructive = effectivePolicy.destructive();
+        if (destructive) {
+            annotations.put("destructiveHint", Boolean.TRUE); //$NON-NLS-1$
+        }
+        Set<String> tags = tool.getTags();
+        boolean trustedReadOnly = effectivePolicy.dynamicCapability()
+                == DynamicToolCapability.READ_ONLY;
+        if (!destructive && (trustedReadOnly || (!tool.isMutating()
+                && tags != null && tags.contains("read-only")))) { //$NON-NLS-1$
+            annotations.put("readOnlyHint", Boolean.TRUE); //$NON-NLS-1$
+        }
+        if (!annotations.isEmpty()) {
+            item.put("annotations", annotations); //$NON-NLS-1$
+        }
+        if (effectivePolicy.requiresConfirmation()) {
+            item.put("_meta", Map.of( //$NON-NLS-1$
+                    "codepilot1c/requiresConfirmation", Boolean.TRUE)); //$NON-NLS-1$
+        }
+    }
+
+    private EffectiveToolPolicy effectiveToolPolicy(
+            ToolResolution resolution, Map<String, Object> arguments) {
+        ITool tool = resolution.tool();
+        DynamicToolCapability dynamicCapability = resolution.dynamicCapability();
+        boolean destructive = dynamicCapability == DynamicToolCapability.MUTATING;
+        boolean requiresConfirmation = destructive;
+        try {
+            destructive |= tool.isDestructive();
+        } catch (RuntimeException e) {
+            destructive = true;
+            LOG.warn("MCP tool destructive classification failed closed: %s", tool.getName()); //$NON-NLS-1$
+        }
+        try {
+            destructive |= exposurePolicy.isDestructive(tool.getName());
+        } catch (RuntimeException e) {
+            destructive = true;
+            LOG.warn("MCP exposure destructive classification failed closed: %s", tool.getName()); //$NON-NLS-1$
+        }
+        requiresConfirmation |= destructive;
+        try {
+            requiresConfirmation |= tool.requiresConfirmation();
+        } catch (RuntimeException e) {
+            requiresConfirmation = true;
+            LOG.warn("MCP tool confirmation classification failed closed: %s", tool.getName()); //$NON-NLS-1$
+        }
+        try {
+            requiresConfirmation |= exposurePolicy.requiresConfirmation(
+                    tool.getName(), arguments != null ? arguments : Map.of());
+        } catch (RuntimeException e) {
+            requiresConfirmation = true;
+            LOG.warn("MCP exposure confirmation classification failed closed: %s", tool.getName()); //$NON-NLS-1$
+        }
+        return new EffectiveToolPolicy(
+                dynamicCapability, destructive, requiresConfirmation);
     }
 
     private List<McpResource> listResources(McpHostSession session) {
@@ -366,10 +546,24 @@ public class McpHostRequestRouter {
     }
 
     private String negotiateProtocol(String requested) {
-        if (requested != null && SUPPORTED_PROTOCOLS.contains(requested)) {
+        if (isSupportedProtocolVersion(requested)) {
             return requested;
         }
         return SUPPORTED_PROTOCOLS.get(0);
+    }
+
+    /**
+     * Returns whether an MCP protocol version can be negotiated by this host.
+     */
+    public static boolean isSupportedProtocolVersion(String protocolVersion) {
+        return protocolVersion != null && SUPPORTED_PROTOCOLS.contains(protocolVersion);
+    }
+
+    /**
+     * Returns the versions accepted by the streamable HTTP transport.
+     */
+    public static List<String> supportedProtocolVersions() {
+        return SUPPORTED_PROTOCOLS;
     }
 
     @SuppressWarnings("unchecked")
@@ -483,5 +677,65 @@ public class McpHostRequestRouter {
             payload.put("exception_message", error.getMessage()); //$NON-NLS-1$
         }
         session.getTraceSession().writeMcpEvent(TraceEventType.MCP_RESPONSE, null, payload);
+    }
+
+    /**
+     * Resolves how long the host waits for a tool before abandoning the dispatch.
+     *
+     * <p>The wait used to be a flat 120 seconds with a single hard-coded exception for
+     * {@code qa_run}. That cap sat <em>below</em> the default the long-running tools declare for
+     * themselves: {@code run_yaxunit_tests} and {@code run_bsl_snippet} document
+     * {@code timeout_s} with a default of 300 seconds. So a caller asking for 1800 got 120, and
+     * even a caller asking for nothing got less than the documented default — the parameter was
+     * advertised in the tool schema and then silently discarded here. Any run longer than two
+     * minutes reported {@code TimeoutException} while the underlying process kept going, which
+     * reads as "the run never started" and invites a retry that spawns a second 1C test client.
+     *
+     * <p>The wait now follows the argument the tool itself publishes. Tools that do not publish
+     * {@code timeout_s} keep the previous ceiling, so nothing silently gains an unbounded wait.
+     *
+     * @param toolName name of the dispatched tool, used only for the legacy fallback ceiling
+     * @param arguments raw tool arguments; may be {@code null}
+     * @return seconds to wait, always positive
+     */
+    static int resolveDispatchTimeoutSeconds(String toolName, Map<String, Object> arguments) {
+        Integer requested = positiveTimeoutSeconds(arguments);
+        if (requested == null) {
+            return QA_RUN_TOOL.equals(toolName)
+                    ? LEGACY_QA_RUN_DISPATCH_TIMEOUT_SECONDS
+                    : DEFAULT_DISPATCH_TIMEOUT_SECONDS;
+        }
+        // The tool enforces timeout_s itself and turns it into a structured answer naming the
+        // run directory and the log. Giving the host the identical deadline makes the two race,
+        // and when the host wins the caller gets a bare TimeoutException instead of that answer.
+        // The headroom lets the tool's own timeout fire first, so the diagnosis survives.
+        long withHeadroom = (long) requested + DISPATCH_TIMEOUT_HEADROOM_SECONDS;
+        return (int) Math.min(withHeadroom, MAX_DISPATCH_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Reads {@code timeout_s} without judging it.
+     *
+     * <p>Validation belongs to the tool: it answers a malformed value with
+     * {@code INVALID_ARGUMENT} and a message naming the parameter. Rejecting it here would
+     * replace that message with a routing error about a parameter the caller never sees the
+     * host handle. Anything not a positive number therefore falls back to the default wait and
+     * lets the tool speak.
+     */
+    private static Integer positiveTimeoutSeconds(Map<String, Object> arguments) {
+        Object value = arguments == null ? null : arguments.get(TIMEOUT_SECONDS_ARGUMENT);
+        if (value instanceof Number number) {
+            long seconds = number.longValue();
+            if (seconds > 0) {
+                return Integer.valueOf((int) Math.min(seconds, MAX_DISPATCH_TIMEOUT_SECONDS));
+            }
+        }
+        return null;
+    }
+
+    private record EffectiveToolPolicy(
+            DynamicToolCapability dynamicCapability,
+            boolean destructive,
+            boolean requiresConfirmation) {
     }
 }

@@ -8,6 +8,7 @@
 package com.codepilot1c.core.provider.config;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,14 +19,22 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
 
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
+import org.osgi.framework.Bundle;
+import org.osgi.framework.FrameworkUtil;
 
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.LogSanitizer;
@@ -40,6 +49,7 @@ import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.provider.ILlmProvider;
 import com.codepilot1c.core.provider.LlmProviderException;
+import com.codepilot1c.core.provider.LlmRequestCancellation;
 import com.codepilot1c.core.provider.ProviderCapabilities;
 import com.codepilot1c.core.provider.ProviderUtils;
 import com.codepilot1c.core.provider.codex.CodexProvider;
@@ -60,6 +70,8 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(DynamicLlmProvider.class);
     private static final String HEADER_CODEPILOT_PROMPT_CACHE = "X-CodePilot-Prompt-Cache"; //$NON-NLS-1$
+    private static final String HEADER_OPENCODE_SESSION = "x-opencode-session"; //$NON-NLS-1$
+    private static final String HEADER_USER_AGENT = "User-Agent"; //$NON-NLS-1$
     private static final int OUTBOUND_TOOL_RESULT_CHAR_LIMIT = 50_000;
     private static final int OUTBOUND_TOOL_RESULT_HEAD_CHARS = 30_000;
     private static final int OUTBOUND_TOOL_RESULT_TAIL_CHARS = 15_000;
@@ -70,22 +82,34 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     private final LlmProviderConfig config;
     private final OpenAiModelCompatibilityPolicy openAiCompatibilityPolicy;
-    private final OpenAiStreamingToolCallParser streamingToolCallParser;
     private final ProviderHttpTransport httpTransport;
     private final Gson gson;
     private final ILlmProvider codexDelegate;
-    private final AtomicBoolean cancelled = new AtomicBoolean(false);
-    private CompletableFuture<?> currentRequest;
-    private LlmRequest currentLlmRequest; // Store for tool support
+    private final Function<LlmProviderConfig, String> apiKeyResolver;
+    private final IntSupplier requestTimeoutSupplier;
+    private final ConcurrentHashMap<LlmRequestCancellation, AtomicInteger> activeRequests =
+            new ConcurrentHashMap<>();
 
     /**
      * Creates a new dynamic provider with the given configuration.
      */
     public DynamicLlmProvider(LlmProviderConfig config) {
+        this(config, LlmProviderConfigStore::resolveApiKey);
+    }
+
+    DynamicLlmProvider(LlmProviderConfig config, Function<LlmProviderConfig, String> apiKeyResolver) {
+        this(config, apiKeyResolver, null);
+    }
+
+    DynamicLlmProvider(LlmProviderConfig config, Function<LlmProviderConfig, String> apiKeyResolver,
+            IntSupplier requestTimeoutSupplier) {
         this.config = config;
+        this.apiKeyResolver = apiKeyResolver;
+        this.requestTimeoutSupplier = requestTimeoutSupplier != null
+                ? requestTimeoutSupplier
+                : this::loadRequestTimeoutSeconds;
         this.openAiCompatibilityPolicy = new OpenAiModelCompatibilityPolicy();
         this.gson = new Gson();
-        this.streamingToolCallParser = new OpenAiStreamingToolCallParser();
 
         HttpClient client = HttpClient.newBuilder()
                 // vLLM/uvicorn deployments are commonly exposed over plain HTTP and can fail
@@ -118,7 +142,9 @@ public class DynamicLlmProvider implements ILlmProvider {
         if (codexDelegate != null) {
             return codexDelegate.isConfigured();
         }
-        return config.isConfigured();
+        LlmProviderConfig resolvedConfig = config.copy();
+        resolvedConfig.setApiKey(apiKeyResolver.apply(config));
+        return resolvedConfig.isConfigured();
     }
 
     @Override
@@ -146,45 +172,56 @@ public class DynamicLlmProvider implements ILlmProvider {
 
     @Override
     public CompletableFuture<LlmResponse> complete(LlmRequest request) {
+        return complete(request, new LlmRequestCancellation());
+    }
+
+    @Override
+    public CompletableFuture<LlmResponse> complete(
+            LlmRequest request, LlmRequestCancellation cancellation) {
         if (codexDelegate != null) {
-            return codexDelegate.complete(request);
+            return codexDelegate.complete(request, cancellation);
         }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
         if (!isConfigured()) {
-            LOG.warn("[%s] Provider not configured: %s", correlationId, config.getName()); //$NON-NLS-1$
+            LOG.warn("[%s] Provider is not configured", correlationId); //$NON-NLS-1$
             return CompletableFuture.failedFuture(
-                    new LlmProviderException("Provider not configured: " + config.getName())); //$NON-NLS-1$
+                    new LlmProviderException("Provider is not configured")); //$NON-NLS-1$
         }
 
-        cancelled.set(false);
-        currentLlmRequest = request; // Store for tool support
+        LlmRequestCancellation requestCancellation = beginRequest(cancellation);
 
-        LOG.info("[%s] DynamicProvider complete: provider=%s, model=%s, messages=%d", //$NON-NLS-1$
-                correlationId, config.getName(), config.getModel(), request.getMessages().size());
+        LOG.info("[%s] DynamicProvider complete: messages=%d", //$NON-NLS-1$
+                correlationId, request.getMessages().size());
 
         ProviderExecutionPlan executionPlan = buildExecutionPlan(request, false);
-        return completeWithPlan(request, executionPlan, startTime, correlationId);
+        return completeWithPlan(request, executionPlan, startTime, correlationId, requestCancellation)
+                .whenComplete((result, error) -> endRequest(requestCancellation));
     }
 
     @Override
     public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer) {
+        streamComplete(request, consumer, new LlmRequestCancellation());
+    }
+
+    @Override
+    public void streamComplete(LlmRequest request, Consumer<LlmStreamChunk> consumer,
+            LlmRequestCancellation cancellation) {
         if (codexDelegate != null) {
-            codexDelegate.streamComplete(request, consumer);
+            codexDelegate.streamComplete(request, consumer, cancellation);
             return;
         }
         long startTime = System.currentTimeMillis();
         String correlationId = LogSanitizer.newCorrelationId();
 
         if (!isConfigured()) {
-            LOG.warn("[%s] Provider not configured: %s (stream)", correlationId, config.getName()); //$NON-NLS-1$
-            throw new LlmProviderException("Provider not configured: " + config.getName()); //$NON-NLS-1$
+            LOG.warn("[%s] Provider is not configured for streaming", correlationId); //$NON-NLS-1$
+            throw new LlmProviderException("Provider is not configured"); //$NON-NLS-1$
         }
 
-        cancelled.set(false);
-        currentLlmRequest = request;
-        streamingToolCallParser.clear();
+        LlmRequestCancellation requestCancellation = beginRequest(cancellation);
+        OpenAiStreamingToolCallParser streamingToolCallParser = new OpenAiStreamingToolCallParser();
         ProviderExecutionPlan executionPlan = buildExecutionPlan(request, true);
         // CODEPILOT_BACKEND is wire-compatible with OpenAI — use OpenAiStreamingSession for both
         boolean useOpenAiStreaming = config.getType() == ProviderType.OPENAI_COMPATIBLE
@@ -200,32 +237,45 @@ public class DynamicLlmProvider implements ILlmProvider {
                 ? openAiSession.getSummary()
                 : new ProviderStreamProcessingSummary(correlationId, request.hasTools());
 
-        LOG.info("[%s] DynamicProvider streamComplete: provider=%s, model=%s, messages=%d", //$NON-NLS-1$
-                correlationId, config.getName(), config.getModel(), request.getMessages().size());
+        LOG.info("[%s] DynamicProvider streamComplete: messages=%d", //$NON-NLS-1$
+                correlationId, request.getMessages().size());
         if (!executionPlan.isStreaming()) {
-            LOG.info("[%s] Using non-stream execution plan for streaming request: %s", correlationId, //$NON-NLS-1$
-                    executionPlan.getReason() != null ? executionPlan.getReason() : "compatibility policy"); //$NON-NLS-1$
-            replayResponseAsStream(request, consumer, correlationId, executionPlan);
+            LOG.info("[%s] Using non-stream execution plan for streaming request", correlationId); //$NON-NLS-1$
+            try {
+                replayResponseAsStream(request, consumer, correlationId, executionPlan, requestCancellation);
+            } finally {
+                endRequest(requestCancellation);
+            }
             return;
         }
 
         String requestBody = buildRequestBody(request, executionPlan);
-        HttpRequest httpRequest = buildHttpRequest(requestBody);
+        HttpRequest httpRequest = buildHttpRequest(requestBody, request);
 
+        AtomicReference<java.util.stream.Stream<String>> responseBody = new AtomicReference<>();
         try {
-            // Use BodyHandlers.ofLines() for true SSE streaming
-            HttpResponse<java.util.stream.Stream<String>> response = httpTransport.sendStreamingLines(httpRequest);
+            CompletableFuture<HttpResponse<java.util.stream.Stream<String>>> exchange =
+                    httpTransport.sendStreamingLinesAsync(httpRequest);
+            requestCancellation.onCancel(() -> {
+                exchange.cancel(true);
+                java.util.stream.Stream<String> body = responseBody.get();
+                if (body != null) {
+                    body.close();
+                }
+            });
+            HttpResponse<java.util.stream.Stream<String>> response = exchange.join();
+            responseBody.set(response.body());
 
-            if (cancelled.get()) {
+            if (requestCancellation.isCancelled()) {
                 LOG.debug("[%s] Stream cancelled before processing", correlationId); //$NON-NLS-1$
                 return;
             }
 
             if (response.statusCode() != 200) {
-                // For error case, collect body for error message
-                String errorBody = response.body().collect(java.util.stream.Collectors.joining("\n")); //$NON-NLS-1$
+                response.body().close();
                 LOG.error("[%s] Stream API error: status=%d", correlationId, response.statusCode()); //$NON-NLS-1$
-                throw new LlmProviderException("API error: " + response.statusCode() + " - " + errorBody); //$NON-NLS-1$ //$NON-NLS-2$
+                throw new LlmProviderException("Provider returned an HTTP error", null, //$NON-NLS-1$
+                        response.statusCode(), null);
             }
 
             // Track finish reason from stream
@@ -233,7 +283,7 @@ public class DynamicLlmProvider implements ILlmProvider {
 
             // Process lines as they arrive
             response.body().forEach(line -> {
-                if (cancelled.get()) {
+                if (requestCancellation.isCancelled()) {
                     return;
                 }
                 String finishReason = processStreamLine(line, consumer, summary, openAiSession);
@@ -242,20 +292,20 @@ public class DynamicLlmProvider implements ILlmProvider {
                 }
             });
 
-            if (!cancelled.get() && openAiSession != null) {
+            if (!requestCancellation.isCancelled() && openAiSession != null) {
                 String completionFinishReason = openAiSession.completePendingToolCalls(consumer);
                 if (completionFinishReason != null) {
                     streamFinishReason[0] = completionFinishReason;
                 }
             }
 
-            if (!cancelled.get() && summary.hasTerminalError()) {
+            if (!requestCancellation.isCancelled() && summary.hasTerminalError()) {
                 logStreamSummary(summary, openAiSession);
-                LOG.warn("[%s] Structured stream error: %s", correlationId, summary.getTerminalErrorMessage()); //$NON-NLS-1$
+                LOG.warn("[%s] Structured stream error", correlationId); //$NON-NLS-1$
                 return;
             }
 
-            if (!cancelled.get() && summary.shouldFallbackToNonStreaming()) {
+            if (!requestCancellation.isCancelled() && summary.shouldFallbackToNonStreaming()) {
                 if (summary.isReasoningOnlyResponse()) {
                     LOG.warn("[%s] Reasoning-only response detected (reasoning=%d, content=0, toolCalls=0) — retrying as non-streaming", //$NON-NLS-1$
                             correlationId, summary.getReasoningChunks().get());
@@ -264,12 +314,12 @@ public class DynamicLlmProvider implements ILlmProvider {
                             correlationId, summary.getParseFailures().get(), summary.getOpaqueChunks().get());
                 }
                 streamingToolCallParser.clear();
-                replayNonStreamingFallback(request, consumer, correlationId);
+                replayNonStreamingFallback(request, consumer, correlationId, requestCancellation);
                 return;
             }
 
             // Send final chunk if not already done
-            if (!cancelled.get()) {
+            if (!requestCancellation.isCancelled()) {
                 consumer.accept(LlmStreamChunk.complete(normalizeFinishReason(streamFinishReason[0])));
             }
 
@@ -277,13 +327,19 @@ public class DynamicLlmProvider implements ILlmProvider {
             logStreamSummary(summary, openAiSession);
             LOG.info("[%s] DynamicProvider stream completed in %s", correlationId, LogSanitizer.formatDuration(duration)); //$NON-NLS-1$
 
-        } catch (IOException | InterruptedException e) {
+        } catch (CompletionException | CancellationException | UncheckedIOException e) {
             long duration = System.currentTimeMillis() - startTime;
-            if (!cancelled.get()) {
-                LOG.error("[%s] DynamicProvider stream failed after %s: %s", //$NON-NLS-1$
-                        correlationId, LogSanitizer.formatDuration(duration), e.getMessage());
-                throw new LlmProviderException("Stream request failed: " + e.getMessage(), e); //$NON-NLS-1$
+            if (!requestCancellation.isCancelled()) {
+                LOG.error("[%s] DynamicProvider stream failed after %s", //$NON-NLS-1$
+                        correlationId, LogSanitizer.formatDuration(duration));
+                throw new LlmProviderException("Stream request failed", e); //$NON-NLS-1$
             }
+        } finally {
+            java.util.stream.Stream<String> body = responseBody.get();
+            if (body != null) {
+                body.close();
+            }
+            endRequest(requestCancellation);
         }
     }
 
@@ -322,7 +378,7 @@ public class DynamicLlmProvider implements ILlmProvider {
 
             } catch (Exception e) {
                 summary.getParseFailures().incrementAndGet();
-                LOG.debug("[%s] Failed to parse stream chunk: %s", summary.getCorrelationId(), e.getMessage()); //$NON-NLS-1$
+                LOG.debug("[%s] Failed to parse stream chunk", summary.getCorrelationId()); //$NON-NLS-1$
             }
         }
         return null;
@@ -381,9 +437,10 @@ public class DynamicLlmProvider implements ILlmProvider {
         return finishReason;
     }
 
-    private void replayNonStreamingFallback(LlmRequest request, Consumer<LlmStreamChunk> consumer, String correlationId) {
+    private void replayNonStreamingFallback(LlmRequest request, Consumer<LlmStreamChunk> consumer,
+            String correlationId, LlmRequestCancellation cancellation) {
         replayResponseAsStream(buildNonStreamingFallbackRequest(request), consumer, correlationId,
-                buildExecutionPlan(buildNonStreamingFallbackRequest(request), false));
+                buildExecutionPlan(buildNonStreamingFallbackRequest(request), false), cancellation);
     }
 
     private LlmRequest buildNonStreamingFallbackRequest(LlmRequest request) {
@@ -422,16 +479,31 @@ public class DynamicLlmProvider implements ILlmProvider {
                 summary.getToolCallFragments().get());
     }
 
+    private LlmRequestCancellation beginRequest(LlmRequestCancellation cancellation) {
+        LlmRequestCancellation effective = cancellation != null
+                ? cancellation : new LlmRequestCancellation();
+        activeRequests.compute(effective, (ignored, count) -> {
+            if (count == null) {
+                return new AtomicInteger(1);
+            }
+            count.incrementAndGet();
+            return count;
+        });
+        return effective;
+    }
+
+    private void endRequest(LlmRequestCancellation cancellation) {
+        activeRequests.computeIfPresent(cancellation, (ignored, count) ->
+                count.decrementAndGet() <= 0 ? null : count);
+    }
+
     @Override
     public void cancel() {
         if (codexDelegate != null) {
             codexDelegate.cancel();
             return;
         }
-        cancelled.set(true);
-        if (currentRequest != null) {
-            currentRequest.cancel(true);
-        }
+        activeRequests.keySet().forEach(LlmRequestCancellation::cancel);
     }
 
     @Override
@@ -447,58 +519,90 @@ public class DynamicLlmProvider implements ILlmProvider {
      * Builds the HTTP request with appropriate headers.
      */
     private HttpRequest buildHttpRequest(String body) {
+        return buildHttpRequest(body, null);
+    }
+
+    private HttpRequest buildHttpRequest(String body, LlmRequest request) {
         String url = config.getChatEndpointUrl();
         int timeoutSeconds = resolveRequestTimeoutSeconds(body);
-
-        LOG.info("=== HTTP REQUEST BUILD ==="); //$NON-NLS-1$
-        LOG.info("URL: %s", url); //$NON-NLS-1$
-        LOG.info("Base URL from config: %s", config.getBaseUrl()); //$NON-NLS-1$
-        LOG.info("Provider type: %s", config.getType()); //$NON-NLS-1$
-        LOG.info("Request timeout (seconds): %d", timeoutSeconds); //$NON-NLS-1$
+        URI uri = URI.create(url);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(uri)
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json"); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Add authorization header based on provider type
-        String apiKey = config.getApiKey();
-        if (apiKey != null && !apiKey.isEmpty()) {
-            LOG.info("API Key length: %d, first 8 chars: %s...", //$NON-NLS-1$
-                    apiKey.length(), apiKey.substring(0, Math.min(8, apiKey.length())));
+        String apiKey = apiKeyResolver.apply(config);
+        boolean authenticated = config.getType().requiresStaticApiKey()
+                && apiKey != null && !apiKey.isEmpty();
+        if (authenticated) {
             switch (config.getType()) {
                 case ANTHROPIC:
                     builder.header("x-api-key", apiKey); //$NON-NLS-1$
                     builder.header("anthropic-version", "2023-06-01"); //$NON-NLS-1$ //$NON-NLS-2$
-                    LOG.info("Auth: x-api-key header (Anthropic)"); //$NON-NLS-1$
                     break;
                 case OPENAI_COMPATIBLE:
-                case OLLAMA:
+                case CODEPILOT_BACKEND:
                 default:
                     builder.header("Authorization", "Bearer " + apiKey); //$NON-NLS-1$ //$NON-NLS-2$
-                    LOG.info("Auth: Bearer token (OpenAI compatible)"); //$NON-NLS-1$
                     break;
             }
-        } else {
-            LOG.warn("No API key configured!"); //$NON-NLS-1$
         }
 
         if (ProviderUtils.supportsPromptCacheHeaders(config)) {
             builder.header(HEADER_CODEPILOT_PROMPT_CACHE, "prefer"); //$NON-NLS-1$
         }
 
+        addOpenCodeGoAffinityHeaders(builder, uri, request);
+
         // Add custom headers
         config.getCustomHeaders().forEach((key, value) -> {
-            LOG.info("Custom header: %s = %s", key, value); //$NON-NLS-1$
             builder.header(key, value);
         });
 
         builder.POST(HttpRequest.BodyPublishers.ofString(body));
-        LOG.info("=== END HTTP REQUEST BUILD ==="); //$NON-NLS-1$
+        LOG.debug("HTTP request built: bodyChars=%d, timeoutSeconds=%d, authenticated=%b, customHeaders=%d", //$NON-NLS-1$
+                body != null ? body.length() : 0, timeoutSeconds, authenticated,
+                config.getCustomHeaders().size());
         return builder.build();
     }
 
+    private void addOpenCodeGoAffinityHeaders(HttpRequest.Builder builder, URI uri, LlmRequest request) {
+        if (!isOpenCodeHost(uri)) {
+            return;
+        }
+        String sessionId = request != null ? request.getProviderSessionId() : null;
+        if (sessionId != null && !sessionId.isBlank()
+                && !config.getCustomHeaders().containsKey(HEADER_OPENCODE_SESSION)) {
+            builder.header(HEADER_OPENCODE_SESSION, sessionId.trim());
+        }
+        if (!config.getCustomHeaders().containsKey(HEADER_USER_AGENT)) {
+            builder.header(HEADER_USER_AGENT, codePilotUserAgent());
+        }
+    }
+
+    private static boolean isOpenCodeHost(URI uri) {
+        if (uri == null || uri.getHost() == null) {
+            return false;
+        }
+        String host = uri.getHost().toLowerCase(Locale.ROOT);
+        return "opencode.ai".equals(host) || host.endsWith(".opencode.ai"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static String codePilotUserAgent() {
+        Bundle bundle = FrameworkUtil.getBundle(DynamicLlmProvider.class);
+        String version = bundle != null && bundle.getVersion() != null
+                ? bundle.getVersion().toString()
+                : "dev"; //$NON-NLS-1$
+        return "CodePilot1C-EDT/" + version; //$NON-NLS-1$
+    }
+
     private int getRequestTimeoutSeconds() {
+        return requestTimeoutSupplier.getAsInt();
+    }
+
+    private int loadRequestTimeoutSeconds() {
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
         return prefs.getInt(VibePreferenceConstants.PREF_REQUEST_TIMEOUT, 60);
     }
@@ -518,42 +622,45 @@ public class DynamicLlmProvider implements ILlmProvider {
     }
 
     private CompletableFuture<LlmResponse> completeWithPlan(LlmRequest request,
-            ProviderExecutionPlan executionPlan, long startTime, String correlationId) {
+            ProviderExecutionPlan executionPlan, long startTime, String correlationId,
+            LlmRequestCancellation cancellation) {
         if (executionPlan.getReason() != null) {
-            LOG.debug("[%s] Provider execution plan: stream=%b, reason=%s", correlationId, //$NON-NLS-1$
-                    executionPlan.isStreaming(), executionPlan.getReason());
+            LOG.debug("[%s] Provider execution plan: stream=%b", correlationId, //$NON-NLS-1$
+                    executionPlan.isStreaming());
         }
 
         String requestBody = buildRequestBody(request, executionPlan);
-        LOG.debug("[%s] Request body: %s", correlationId, //$NON-NLS-1$
-                requestBody.length() < 5000 ? requestBody : "(truncated, length=" + requestBody.length() + ")"); //$NON-NLS-1$
+        LOG.debug("[%s] Request body size: chars=%d", correlationId, requestBody.length()); //$NON-NLS-1$
 
-        HttpRequest httpRequest = buildHttpRequest(requestBody);
+        HttpRequest httpRequest = buildHttpRequest(requestBody, request);
 
-        currentRequest = httpTransport.sendStringAsync(httpRequest)
+        CompletableFuture<HttpResponse<String>> exchange = httpTransport.sendStringAsync(httpRequest);
+        cancellation.onCancel(() -> exchange.cancel(true));
+        CompletableFuture<LlmResponse> responseFuture = exchange
                 .thenApply(response -> {
-                    if (cancelled.get()) {
+                    if (cancellation.isCancelled()) {
                         throw new CancellationException("Request cancelled"); //$NON-NLS-1$
                     }
                     long duration = System.currentTimeMillis() - startTime;
                     LOG.debug("[%s] Response status: %d in %s", correlationId, response.statusCode(), //$NON-NLS-1$
                             LogSanitizer.formatDuration(duration));
-                    LOG.debug("[%s] Response body: %s", correlationId, //$NON-NLS-1$
-                            response.body().length() < 5000 ? response.body() : "(truncated, length=" + response.body().length() + ")"); //$NON-NLS-1$
-                    return parseResponse(response);
+                    LOG.debug("[%s] Response body size: chars=%d", correlationId, //$NON-NLS-1$
+                            response.body() != null ? response.body().length() : 0);
+                    return parseResponse(response, request);
                 })
                 .whenComplete((result, error) -> {
                     long duration = System.currentTimeMillis() - startTime;
                     if (error != null) {
-                        LOG.error("[%s] DynamicProvider request failed after %s: %s", //$NON-NLS-1$
-                                correlationId, LogSanitizer.formatDuration(duration), error.getMessage());
+                        LOG.error("[%s] DynamicProvider request failed after %s", //$NON-NLS-1$
+                                correlationId, LogSanitizer.formatDuration(duration));
                     } else {
                         LOG.info("[%s] DynamicProvider response received in %s", //$NON-NLS-1$
                                 correlationId, LogSanitizer.formatDuration(duration));
                     }
                 });
 
-        return currentRequest.thenApply(obj -> (LlmResponse) obj);
+        cancellation.onCancel(() -> responseFuture.cancel(true));
+        return responseFuture;
     }
 
     private ProviderExecutionPlan buildExecutionPlan(LlmRequest request, boolean requestedStreaming) {
@@ -567,38 +674,38 @@ public class DynamicLlmProvider implements ILlmProvider {
     }
 
     private void replayResponseAsStream(LlmRequest request, Consumer<LlmStreamChunk> consumer,
-            String correlationId, ProviderExecutionPlan executionPlan) {
-        if (cancelled.get()) {
+            String correlationId, ProviderExecutionPlan executionPlan,
+            LlmRequestCancellation cancellation) {
+        if (cancellation.isCancelled()) {
             return;
         }
 
         long fallbackStartTime = System.currentTimeMillis();
         LlmResponse response = completeWithPlan(request, executionPlan, fallbackStartTime,
-                correlationId + "-replay").join(); //$NON-NLS-1$
+                correlationId + "-replay", cancellation).join(); //$NON-NLS-1$
 
-        if (cancelled.get()) {
+        if (cancellation.isCancelled()) {
             return;
         }
 
-        LOG.info("[%s] Non-stream replay completed: hasContent=%b, toolCalls=%d, finishReason=%s", //$NON-NLS-1$
+        LOG.info("[%s] Non-stream replay completed: hasContent=%b, toolCalls=%d", //$NON-NLS-1$
                 correlationId,
                 response.getContent() != null && !response.getContent().isEmpty(),
-                response.getToolCalls().size(),
-                response.getFinishReason());
+                response.getToolCalls().size());
 
-        if (response.hasReasoningField() && !cancelled.get()) {
+        if (response.hasReasoningField() && !cancellation.isCancelled()) {
             consumer.accept(LlmStreamChunk.reasoning(response.getReasoningContent()));
         }
-        if (response.getContent() != null && !response.getContent().isEmpty() && !cancelled.get()) {
+        if (response.getContent() != null && !response.getContent().isEmpty() && !cancellation.isCancelled()) {
             consumer.accept(LlmStreamChunk.content(response.getContent()));
         }
-        if (response.hasToolCalls() && !cancelled.get()) {
+        if (response.hasToolCalls() && !cancellation.isCancelled()) {
             consumer.accept(LlmStreamChunk.toolCalls(response.getToolCalls()));
         }
-        if (response.getUsage() != null && !cancelled.get()) {
+        if (response.getUsage() != null && !cancellation.isCancelled()) {
             consumer.accept(LlmStreamChunk.usage(response.getUsage()));
         }
-        if (!cancelled.get()) {
+        if (!cancellation.isCancelled()) {
             consumer.accept(LlmStreamChunk.complete(normalizeFinishReason(response.getFinishReason())));
         }
     }
@@ -746,8 +853,8 @@ public class DynamicLlmProvider implements ILlmProvider {
             builder.append(content, content.length() - tailChars, content.length());
         }
 
-        LOG.info("Truncated outbound tool result for %s: original=%d chars, outbound=%d chars", //$NON-NLS-1$
-                message.getToolCallId(), content.length(), builder.length());
+        LOG.info("Truncated outbound tool result: original=%d chars, outbound=%d chars", //$NON-NLS-1$
+                content.length(), builder.length());
         return builder.toString();
     }
 
@@ -907,7 +1014,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         try {
             return Base64.getEncoder().encodeToString(Files.readAllBytes(Path.of(effectivePath)));
         } catch (IOException | RuntimeException e) {
-            LOG.warn("Failed to read Ollama image attachment %s: %s", effectivePath, e.getMessage()); //$NON-NLS-1$
+            LOG.warn("Failed to read Ollama image attachment"); //$NON-NLS-1$
             return null;
         }
     }
@@ -922,9 +1029,10 @@ public class DynamicLlmProvider implements ILlmProvider {
     /**
      * Parses the API response based on provider type.
      */
-    private LlmResponse parseResponse(HttpResponse<String> response) {
+    private LlmResponse parseResponse(HttpResponse<String> response, LlmRequest request) {
         if (response.statusCode() != 200) {
-            throw new LlmProviderException("API error: " + response.statusCode() + " - " + response.body()); //$NON-NLS-1$ //$NON-NLS-2$
+            throw new LlmProviderException("Provider returned an HTTP error", null, //$NON-NLS-1$
+                    response.statusCode(), null);
         }
 
         try {
@@ -932,22 +1040,22 @@ public class DynamicLlmProvider implements ILlmProvider {
 
             switch (config.getType()) {
                 case ANTHROPIC:
-                    return parseAnthropicResponse(json);
+                    return parseAnthropicResponse(json, request);
                 case OLLAMA:
-                    return parseOllamaResponse(json);
+                    return parseOllamaResponse(json, request);
                 case OPENAI_COMPATIBLE:
                 default:
-                    return parseOpenAiResponse(json);
+                    return parseOpenAiResponse(json, request);
             }
-        } catch (Exception e) {
-            throw new LlmProviderException("Failed to parse response: " + e.getMessage(), e); //$NON-NLS-1$
+        } catch (Exception ignored) {
+            throw new LlmProviderException("Failed to parse provider response"); //$NON-NLS-1$
         }
     }
 
     /**
      * Parses OpenAI-compatible response.
      */
-    private LlmResponse parseOpenAiResponse(JsonObject json) {
+    private LlmResponse parseOpenAiResponse(JsonObject json, LlmRequest request) {
         JsonArray choices = getArray(json, "choices"); //$NON-NLS-1$
         if (choices == null || choices.size() == 0) {
             throw new LlmProviderException("No choices in response"); //$NON-NLS-1$
@@ -963,7 +1071,7 @@ public class DynamicLlmProvider implements ILlmProvider {
         }
 
         // Log message structure for debugging
-        LOG.debug("Message keys: %s", message.keySet()); //$NON-NLS-1$
+        LOG.debug("Response message field count: %d", message.keySet().size()); //$NON-NLS-1$
 
         // Handle content - may be null when tool_calls are present
         String content = null;
@@ -992,10 +1100,6 @@ public class DynamicLlmProvider implements ILlmProvider {
             toolCalls = parseToolCalls(toolCallsJson);
 
             LOG.debug("Parsed %d tool calls", toolCalls.size()); //$NON-NLS-1$
-            for (ToolCall tc : toolCalls) {
-                LOG.debug("  Tool call: %s(%s)", tc.getName(), tc.getArguments()); //$NON-NLS-1$
-            }
-
             // Set finish reason to tool_use if we have tool calls
             if (!toolCalls.isEmpty() && !LlmResponse.FINISH_REASON_TOOL_USE.equals(finishReason)) { //$NON-NLS-1$
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
@@ -1029,9 +1133,7 @@ public class DynamicLlmProvider implements ILlmProvider {
                 && ContentToolCallFallbackParser.hasToolCallMarkers(contentToCheck)) {
             List<ToolCall> fallbackCalls = ContentToolCallFallbackParser.extractFromContent(contentToCheck);
             if (!fallbackCalls.isEmpty()) {
-                LOG.info("Content fallback: extracted %d tool call(s) from %s", //$NON-NLS-1$
-                        fallbackCalls.size(),
-                        contentToCheck == reasoningContent ? "reasoning_content" : "content"); //$NON-NLS-1$ //$NON-NLS-2$
+                LOG.info("Content fallback: extracted %d tool call(s)", fallbackCalls.size()); //$NON-NLS-1$
                 toolCalls = fallbackCalls;
                 finishReason = LlmResponse.FINISH_REASON_TOOL_USE;
                 // Strip tool call blocks from whichever field contained them
@@ -1042,17 +1144,18 @@ public class DynamicLlmProvider implements ILlmProvider {
             }
         }
 
-        LOG.debug("Response parsed: finishReason=%s, hasContent=%b, hasReasoning=%b, toolCalls=%d", //$NON-NLS-1$
-                finishReason, content != null && !content.isEmpty(),
+        LOG.debug("Response parsed: hasContent=%b, hasReasoning=%b, toolCalls=%d", //$NON-NLS-1$
+                content != null && !content.isEmpty(),
                 reasoningContent != null && !reasoningContent.isEmpty(),
                 toolCalls != null ? toolCalls.size() : 0);
 
-        return new LlmResponse(content, resolveRequestedModel(), responseModel, usage, finishReason, toolCalls, reasoningContent);
+        return new LlmResponse(content, resolveRequestedModel(request), responseModel,
+                usage, finishReason, toolCalls, reasoningContent);
     }
 
-    private String resolveRequestedModel() {
-        if (currentLlmRequest != null && currentLlmRequest.getModel() != null && !currentLlmRequest.getModel().isBlank()) {
-            return currentLlmRequest.getModel();
+    private String resolveRequestedModel(LlmRequest request) {
+        if (request != null && request.getModel() != null && !request.getModel().isBlank()) {
+            return request.getModel();
         }
         return config.getModel();
     }
@@ -1092,11 +1195,11 @@ public class DynamicLlmProvider implements ILlmProvider {
             Optional<ToolCallArguments.Normalized> arguments =
                     ToolCallArguments.normalizeWithStatus(function.get("arguments")); //$NON-NLS-1$
             if (arguments.isEmpty()) {
-                LOG.warn("Dropping tool call %s (%s): arguments is not a JSON object", id, name); //$NON-NLS-1$
+                LOG.warn("Dropping tool call because arguments are not a JSON object"); //$NON-NLS-1$
                 continue;
             }
             if (arguments.get().repaired()) {
-                LOG.warn("Tool call %s (%s): arguments repaired from malformed payload", id, name); //$NON-NLS-1$
+                LOG.warn("Tool call arguments repaired from malformed payload"); //$NON-NLS-1$
             }
             toolCalls.add(new ToolCall(id, name, arguments.get().json(), arguments.get().repaired()));
         }
@@ -1106,7 +1209,7 @@ public class DynamicLlmProvider implements ILlmProvider {
     /**
      * Parses Anthropic response.
      */
-    private LlmResponse parseAnthropicResponse(JsonObject json) {
+    private LlmResponse parseAnthropicResponse(JsonObject json, LlmRequest request) {
         JsonArray content = json.getAsJsonArray("content"); //$NON-NLS-1$
         if (content == null || content.size() == 0) {
             throw new LlmProviderException("No content in response"); //$NON-NLS-1$
@@ -1123,18 +1226,19 @@ public class DynamicLlmProvider implements ILlmProvider {
         String stopReason = json.has("stop_reason") ? //$NON-NLS-1$
                 json.get("stop_reason").getAsString() : "end_turn"; //$NON-NLS-1$ //$NON-NLS-2$
 
-        return new LlmResponse(sb.toString(), resolveRequestedModel(), config.getModel(), null, stopReason, null);
+        return new LlmResponse(sb.toString(), resolveRequestedModel(request),
+                config.getModel(), null, stopReason, null);
     }
 
     /**
      * Parses Ollama response.
      */
-    private LlmResponse parseOllamaResponse(JsonObject json) {
+    private LlmResponse parseOllamaResponse(JsonObject json, LlmRequest request) {
         JsonObject message = json.getAsJsonObject("message"); //$NON-NLS-1$
         String content = message.get("content").getAsString(); //$NON-NLS-1$
 
         boolean done = json.has("done") && json.get("done").getAsBoolean(); //$NON-NLS-1$ //$NON-NLS-2$
-        return new LlmResponse(content, resolveRequestedModel(), config.getModel(), null,
+        return new LlmResponse(content, resolveRequestedModel(request), config.getModel(), null,
                 done ? "stop" : "length", null); //$NON-NLS-1$ //$NON-NLS-2$
     }
 

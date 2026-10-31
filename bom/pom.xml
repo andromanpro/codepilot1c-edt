@@ -13,7 +13,7 @@
 
     <groupId>com.codepilot1c</groupId>
     <artifactId>vibe-bom</artifactId>
-    <version>1.3.3-SNAPSHOT</version>
+    <version>1.3.9-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>1C Copilot - Bill of Materials</name>
@@ -23,6 +23,13 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+        <!--
+            Execution environment of the target platform follows the EDT line in -Dedt.home:
+            EDT 2025.2.x runs on Java 17 (the bundles' own BREE), EDT 2026.2+ needs
+            -Dedt.executionEnvironment=JavaSE-25 and a Java 25 build JDK. A JavaSE-25 value under a
+            Java 17 build leaves Tycho with an empty resolution context and the target fails to resolve.
+        -->
+        <edt.executionEnvironment>JavaSE-17</edt.executionEnvironment>
     </properties>
 
     <build>
@@ -82,6 +89,7 @@
                                 <version>${project.version}</version>
                             </artifact>
                         </target>
+                        <executionEnvironment>${edt.executionEnvironment}</executionEnvironment>
                         <environments>
                             <environment>
                                 <os>linux</os>

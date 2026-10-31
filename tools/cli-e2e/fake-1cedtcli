@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# POSIX fake launcher used only by tools/run-cli-e2e.sh's default mode.
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$SCRIPT_DIR/fake_edt.py" "$@"

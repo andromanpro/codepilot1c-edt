@@ -122,18 +122,13 @@ public class Messages extends NLS {
     public static String PreferencePage_AutoCompactEnabledLabel;
     public static String PreferencePage_AutoCompactThresholdLabel;
     public static String PreferencePage_ShowTokenUsageLabel;
+    public static String PreferencePage_GsdEnabledLabel;
     public static String PreferencePage_VaEpfPathLabel;
-    public static String PreferencePage_TerminalCwdModeLabel;
-    public static String PreferencePage_TerminalCwdModeProject;
-    public static String PreferencePage_TerminalCwdModeSelection;
-    public static String PreferencePage_TerminalCwdModeWorkspace;
-    public static String PreferencePage_TerminalCwdModeHome;
-    public static String PreferencePage_TerminalAlwaysUseActiveProjectLabel;
-    public static String PreferencePage_TerminalNoColorLabel;
-    public static String PreferencePage_TerminalTitlePrefixLabel;
     public static String PreferencePage_TestConnectionButton;
     public static String PreferencePage_TestSuccess;
     public static String PreferencePage_TestFailed;
+
+    public static String Gsd_ProfileFallbackNotice;
 
     public static String AccountPreferencePage_Description;
     public static String AccountPreferencePage_ConnectionGroup;
@@ -243,6 +238,7 @@ public class Messages extends NLS {
     public static String ProvidersPreferencePage_AccountDetailsDisconnected;
     public static String ProvidersPreferencePage_AccountNotAvailableTitle;
     public static String ProvidersPreferencePage_AccountNotAvailableMessage;
+    public static String ProvidersPreferencePage_SaveError;
 
     // Provider edit dialog
     public static String ProviderEditDialog_TitleAdd;

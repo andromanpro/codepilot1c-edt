@@ -132,7 +132,7 @@ public class ProfileConfigStore {
     public synchronized void save() {
         try {
             getPreferences().flush();
-        } catch (BackingStoreException e) {
+        } catch (BackingStoreException | RuntimeException e) {
             LOG.error("Failed to flush profile config preferences", e); //$NON-NLS-1$
         }
     }
@@ -193,11 +193,12 @@ public class ProfileConfigStore {
     // ---- persistence ----
 
     private JsonObject readOverrides() {
-        String json = getPreferences().get(PREF_PROFILE_OVERRIDES, "{}"); //$NON-NLS-1$
         try {
+            String json = getPreferences().get(PREF_PROFILE_OVERRIDES, "{}"); //$NON-NLS-1$
             return JsonParser.parseString(json).getAsJsonObject();
         } catch (Exception e) {
-            LOG.warn("Failed to parse profile overrides JSON, resetting: " + e.getMessage()); //$NON-NLS-1$
+            LOG.warn("Profile overrides are unavailable or invalid, using defaults: " //$NON-NLS-1$
+                    + e.getMessage());
             return new JsonObject();
         }
     }

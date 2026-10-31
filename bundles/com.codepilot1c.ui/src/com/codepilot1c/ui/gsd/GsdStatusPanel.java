@@ -8,7 +8,9 @@
 package com.codepilot1c.ui.gsd;
 
 import java.nio.file.Path;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import org.eclipse.core.resources.IProject;
@@ -22,8 +24,9 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
 
-import com.codepilot1c.core.gsd.GsdState;
+import com.codepilot1c.core.gsd.GsdFeatureGate;
 import com.codepilot1c.core.gsd.GsdStateStore;
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.ui.theme.ThemeManager;
 import com.codepilot1c.ui.theme.VibeTheme;
 
@@ -36,8 +39,7 @@ import com.codepilot1c.ui.theme.VibeTheme;
  *
  * <h2>Threading model</h2>
  * <p>{@link GsdStateStore#loadReadOnly()} runs off the SWT/UI thread via
- * {@link CompletableFuture#supplyAsync(java.util.function.Supplier)}. The resulting
- * {@link GsdUiSnapshot} is applied to controls only inside
+ * {@link GsdAsyncStateLoader}. The resulting {@link GsdUiSnapshot} is applied to controls only inside
  * {@link Display#asyncExec(Runnable)} with disposed checks. This class never
  * blocks the UI thread on I/O.</p>
  *
@@ -48,13 +50,17 @@ import com.codepilot1c.ui.theme.VibeTheme;
  */
 public class GsdStatusPanel {
 
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(GsdStatusPanel.class);
     private static final int PANEL_MARGIN = 6;
     private static final int PANEL_COLUMNS = 4;
+    private static final int AUTO_REFRESH_DEBOUNCE_MS = 125;
+    private static final long LOAD_FAILURE_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(30);
 
     private final Composite root;
     private final Composite contentArea;
     private final Button collapseToggle;
     private final Button refreshButton;
+    private final Display display;
 
     // Status labels
     private Label phaseLabel;
@@ -73,6 +79,18 @@ public class GsdStatusPanel {
     /** Guards against stale async results overwriting fresh data. */
     private final GsdRefreshCoordinator coordinator = new GsdRefreshCoordinator();
 
+    /** Prevents a failing auto-refresh loop from flooding the Eclipse log. */
+    private final GsdLoadFailureLogGuard loadFailureLogGuard =
+            new GsdLoadFailureLogGuard(LOAD_FAILURE_LOG_INTERVAL_NANOS);
+
+    /** Async boundary whose executor and disk loader are independently testable. */
+    private final GsdAsyncStateLoader asyncStateLoader = new GsdAsyncStateLoader(
+            ForkJoinPool.commonPool(),
+            projectRoot -> new GsdStateStore(projectRoot).loadReadOnly());
+
+    /** Latest automatic refresh request; older timer callbacks become no-ops. */
+    private final AtomicLong refreshRequestSequence = new AtomicLong();
+
     /** Volatile so the constructor-registered click listener always sees the latest value. */
     private volatile GsdUiSnapshot currentSnapshot;
 
@@ -88,8 +106,13 @@ public class GsdStatusPanel {
     public GsdStatusPanel(Composite parent) {
         VibeTheme theme = ThemeManager.getInstance().getTheme();
         this.currentSnapshot = GsdUiSnapshot.empty();
+        this.display = parent.getDisplay();
 
         root = new Composite(parent, SWT.NONE);
+        root.addDisposeListener(e -> {
+            refreshRequestSequence.incrementAndGet();
+            coordinator.dispose();
+        });
         root.setBackground(theme.getSurface());
         GridLayout rootLayout = new GridLayout(1, false);
         rootLayout.marginWidth = 0;
@@ -256,7 +279,8 @@ public class GsdStatusPanel {
      * @param projectRoot the project root path; may be {@code null} (disables refresh)
      */
     public void setProjectRoot(Path projectRoot) {
-        this.coordinator.setProjectRoot(projectRoot);
+        this.coordinator.setProjectRoot(GsdFeatureGate.getInstance().isEnabled()
+                ? projectRoot : null);
     }
 
     /**
@@ -278,38 +302,111 @@ public class GsdStatusPanel {
      * refreshes invalidate earlier tokens).
      */
     public void refresh() {
+        refreshRequestSequence.incrementAndGet();
+        refreshNow();
+    }
+
+    /**
+     * Requests a debounced automatic refresh. Safe from tool-completion and
+     * session-listener threads; all SWT work is marshalled to the UI thread.
+     */
+    public void refreshDebounced() {
+        long request = refreshRequestSequence.incrementAndGet();
+        if (display == null || display.isDisposed() || coordinator.isDisposed()) {
+            return;
+        }
+        Runnable schedule = () -> {
+            if (root.isDisposed() || coordinator.isDisposed()) {
+                return;
+            }
+            display.timerExec(AUTO_REFRESH_DEBOUNCE_MS, () -> {
+                if (request == refreshRequestSequence.get()
+                        && !root.isDisposed() && !coordinator.isDisposed()) {
+                    refresh();
+                }
+            });
+        };
+        if (display.getThread() == Thread.currentThread()) {
+            schedule.run();
+        } else {
+            try {
+                display.asyncExec(schedule);
+            } catch (org.eclipse.swt.SWTException e) {
+                // Display was disposed between the guard and dispatch.
+            }
+        }
+    }
+
+    private void refreshNow() {
+        if (!GsdFeatureGate.getInstance().isEnabled()) {
+            coordinator.setProjectRoot(null);
+            return;
+        }
         GsdRefreshCoordinator.RefreshToken token = this.coordinator.beginRefresh();
         if (token == null) {
-            applySnapshot(GsdUiSnapshot.error("No project root resolved")); //$NON-NLS-1$
+            if (!coordinator.isDisposed()) {
+                applySnapshot(GsdUiSnapshot.error("No project root resolved")); //$NON-NLS-1$
+            }
             return;
         }
 
-        Display display = root.getDisplay();
         if (display == null || display.isDisposed()) {
             return;
         }
 
         Path projectRoot = token.projectRoot();
 
-        CompletableFuture.supplyAsync(() -> {
-            try {
-                GsdStateStore store = new GsdStateStore(projectRoot);
-                GsdState state = store.loadReadOnly();
-                return GsdUiSnapshotMapper.toSnapshot(state);
-            } catch (Exception e) {
-                String msg = e.getMessage();
-                return GsdUiSnapshot.error(msg != null ? msg : e.getClass().getSimpleName());
+        asyncStateLoader.load(projectRoot, this.coordinator, token)
+                .thenAccept(result -> {
+            if (result.skipped()) {
+                return;
             }
-        }).thenAccept(snapshot -> {
+            GsdUiSnapshot snapshot;
+            if (result.error() != null) {
+                logLoadFailure(token, result.error());
+                String msg = result.error().getMessage();
+                snapshot = GsdUiSnapshot.error(
+                        msg != null ? msg : result.error().getClass().getSimpleName());
+            } else {
+                snapshot = GsdUiSnapshotMapper.toSnapshot(result.state());
+            }
             if (!display.isDisposed()) {
-                display.asyncExec(() -> {
-                    if (!root.isDisposed()
-                            && this.coordinator.shouldApply(token)) {
-                        applySnapshot(snapshot);
-                    }
-                });
+                try {
+                    display.asyncExec(() -> {
+                        if (!root.isDisposed()
+                                && this.coordinator.shouldApply(token)) {
+                            applySnapshot(snapshot);
+                        }
+                    });
+                } catch (org.eclipse.swt.SWTException e) {
+                    // Display was disposed between the guard and dispatch.
+                }
             }
         });
+    }
+
+    private void logLoadFailure(GsdRefreshCoordinator.RefreshToken token, Exception error) {
+        GsdLoadFailureLogGuard.Decision decision =
+                loadFailureLogGuard.register(token.projectRoot(), error);
+        if (!decision.shouldLog()) {
+            return;
+        }
+        String message = String.format(
+                "event=gsd_async_load_failed opId=%s projectRoot=%s errorType=%s suppressedDuplicates=%d", //$NON-NLS-1$
+                quoteLogValue("gsd-load-" + token.generation()), //$NON-NLS-1$
+                quoteLogValue(token.projectRoot().toString()),
+                quoteLogValue(error.getClass().getName()),
+                decision.suppressedDuplicates());
+        LOG.warn(message, error);
+    }
+
+    private static String quoteLogValue(String value) {
+        String escaped = value == null ? "" : value //$NON-NLS-1$
+                .replace("\\", "\\\\") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\"", "\\\"") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\r", "\\r") //$NON-NLS-1$ //$NON-NLS-2$
+                .replace("\n", "\\n"); //$NON-NLS-1$ //$NON-NLS-2$
+        return '"' + escaped + '"';
     }
 
     /**
@@ -319,10 +416,12 @@ public class GsdStatusPanel {
      * @param snapshot the snapshot to display; {@code null} is treated as empty
      */
     public void applySnapshot(GsdUiSnapshot snapshot) {
+        if (root.isDisposed() || coordinator.isDisposed()) {
+            return;
+        }
         final GsdUiSnapshot normalized = (snapshot != null) ? snapshot : GsdUiSnapshot.empty();
         this.currentSnapshot = normalized;
 
-        Display display = root.getDisplay();
         if (display == null || display.isDisposed()) {
             return;
         }
@@ -331,7 +430,11 @@ public class GsdStatusPanel {
         if (display.getThread() == Thread.currentThread()) {
             applySnapshotOnUiThread(normalized);
         } else {
-            display.asyncExec(() -> applySnapshotOnUiThread(normalized));
+            try {
+                display.asyncExec(() -> applySnapshotOnUiThread(normalized));
+            } catch (org.eclipse.swt.SWTException e) {
+                // Display was disposed between the guard and dispatch.
+            }
         }
     }
 
@@ -349,6 +452,8 @@ public class GsdStatusPanel {
      * Disposes all resources held by this panel.
      */
     public void dispose() {
+        refreshRequestSequence.incrementAndGet();
+        coordinator.dispose();
         if (!root.isDisposed()) {
             root.dispose();
         }
@@ -385,7 +490,7 @@ public class GsdStatusPanel {
         String profileId = snapshot.suggestedProfileId();
         if (!profileId.isEmpty()) {
             profileHintLabel.setText(profileId + " (suggested)"); //$NON-NLS-1$
-            profileHintLabel.setToolTipText("Click to open profile preferences"); //$NON-NLS-1$
+            profileHintLabel.setToolTipText("Click to select this profile for this chat"); //$NON-NLS-1$
         } else {
             profileHintLabel.setText("—"); //$NON-NLS-1$
             profileHintLabel.setToolTipText(null);

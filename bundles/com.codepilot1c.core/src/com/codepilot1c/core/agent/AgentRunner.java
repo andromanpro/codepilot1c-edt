@@ -44,6 +44,8 @@ import com.codepilot1c.core.agent.graph.ToolGraphRouter;
 import com.codepilot1c.core.agent.graph.ToolGraphToolFilter;
 import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
+import com.codepilot1c.core.agent.profiles.DynamicToolCapability;
+import com.codepilot1c.core.agent.profiles.ProfileToolAccess;
 import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
 import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.agent.prompts.ToolPromptRenderer;
@@ -61,10 +63,13 @@ import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.permissions.PermissionRule;
 import com.codepilot1c.core.permissions.ProfilePermissionGate;
 import com.codepilot1c.core.provider.ILlmProvider;
+import com.codepilot1c.core.provider.LlmRequestCancellation;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolContextGate;
+import com.codepilot1c.core.tools.ToolExecutionService;
 import com.codepilot1c.core.tools.ToolLogger;
 import com.codepilot1c.core.tools.ToolRegistry;
+import com.codepilot1c.core.tools.ToolRegistry.ToolResolution;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.meta.DiscoverToolsTool;
@@ -120,6 +125,7 @@ public class AgentRunner implements IAgentRunner {
     // For proper cancellation handling
     private final AtomicReference<CompletableFuture<LlmResponse>> currentStreamingFuture =
             new AtomicReference<>();
+    private volatile LlmRequestCancellation requestCancellation = new LlmRequestCancellation();
     private final AtomicReference<ConfirmationRequiredEvent> pendingConfirmation =
             new AtomicReference<>();
 
@@ -142,6 +148,7 @@ public class AgentRunner implements IAgentRunner {
     private volatile int maxToolResultHistoryChars = AgentConfig.DEFAULT_MAX_TOOL_OUTPUT_SIZE;
     private final Map<Integer, String> stepTraceEventIds = new ConcurrentHashMap<>();
     private final Map<String, String> toolTraceEventIds = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> authorizedToolSensitivity = new ConcurrentHashMap<>();
 
     /**
      * Создает AgentRunner.
@@ -261,6 +268,7 @@ public class AgentRunner implements IAgentRunner {
      */
     private void resetState() {
         cancelRequested.set(false);
+        requestCancellation = new LlmRequestCancellation();
         currentStep.set(0);
         toolCallsCount.set(0);
         startTimeMs.set(System.currentTimeMillis());
@@ -272,6 +280,7 @@ public class AgentRunner implements IAgentRunner {
         agentStartedTraceEventId = null;
         stepTraceEventIds.clear();
         toolTraceEventIds.clear();
+        authorizedToolSensitivity.clear();
         toolRepetitionDetector.resetForNewTurn();
         initializeDeferredToolSession();
     }
@@ -341,7 +350,7 @@ public class AgentRunner implements IAgentRunner {
             if (config.isStreamingEnabled() && executionProvider.supportsStreaming()) {
                 responseFuture = executeStreaming(request, step);
             } else {
-                responseFuture = executionProvider.complete(request);
+                responseFuture = executionProvider.complete(request, requestCancellation);
             }
         } catch (Exception e) {
             // Handle synchronous provider exceptions
@@ -420,7 +429,7 @@ public class AgentRunner implements IAgentRunner {
         };
 
         try {
-            executionProvider.streamComplete(request, chunkHandler);
+            executionProvider.streamComplete(request, chunkHandler, requestCancellation);
         } catch (Exception e) {
             future.completeExceptionally(e);
         }
@@ -502,7 +511,8 @@ public class AgentRunner implements IAgentRunner {
      */
     private CompletableFuture<Void> executeSingleToolCall(ToolCall call, AgentConfig config) {
         String toolName = call.getName();
-        ITool tool = toolRegistry.getTool(toolName);
+        ToolResolution resolution = toolRegistry.resolveTool(toolName);
+        ITool tool = resolution.tool();
         int step = currentStep.get();
 
         if (tool == null) {
@@ -512,23 +522,22 @@ public class AgentRunner implements IAgentRunner {
             emit(new ToolResultEvent(step, toolName, call.getId(), errorResult, 0));
             return CompletableFuture.completedFuture(null);
         }
+        authorizedToolSensitivity.put(call.getId(), Boolean.valueOf(
+                tool.getTags() != null && tool.getTags().contains("sensitive"))); //$NON-NLS-1$
 
         // Check if tool is allowed
-        if (!config.isToolAllowed(toolName)) {
+        AgentProfile profile = resolveProfile(config);
+        if (!isAllowedByConfig(config, profile, resolution)) {
             ToolResult disabledResult = ToolResult.failure("Инструмент отключен: " + toolName);
             addToolResult(call.getId(), disabledResult);
             emit(new ToolResultEvent(step, toolName, call.getId(), disabledResult, 0));
             return CompletableFuture.completedFuture(null);
         }
 
-        AgentProfile profile = resolveProfile(config);
         ToolExecutionContext executionContext =
-                ToolExecutionContext.of(profile, config.getDelegationDepth());
-        Set<String> profileAllowed = profile.getAllowedTools();
-        boolean deferredDiscovery = deferredToolSession.isDeferredLoadingActive()
-                && "discover_tools".equals(toolName); //$NON-NLS-1$
-        if (profileAllowed != null && !profileAllowed.isEmpty()
-                && !profileAllowed.contains(toolName) && !deferredDiscovery) {
+                ToolExecutionContext.of(profile, config.getDelegationDepth(),
+                        config.getProjectPath(), config.getSessionId());
+        if (!ProfileToolAccess.allows(profile, resolution)) {
             ToolResult deniedResult = permissionDenied(
                     toolName, profile.getId(), null, "tool_not_in_profile", //$NON-NLS-1$
                     "profile", null); //$NON-NLS-1$
@@ -560,7 +569,11 @@ public class AgentRunner implements IAgentRunner {
         }
 
         boolean gateAsk = gate.decision() == ProfilePermissionGate.GateDecision.ASK;
-        boolean effectiveConfirmation = gateAsk || tool.requiresConfirmation();
+        boolean destructive = tool.isDestructive()
+                || resolution.dynamicCapability() == DynamicToolCapability.MUTATING;
+        boolean effectiveConfirmation = gateAsk
+                || tool.requiresConfirmation()
+                || destructive;
 
         // Emit tool call event
         emit(new ToolCallEvent(step, call, args, effectiveConfirmation));
@@ -568,11 +581,12 @@ public class AgentRunner implements IAgentRunner {
         // Check if confirmation is required
         if (effectiveConfirmation) {
             return requestConfirmation(
-                    call, tool, args, profile.getId(), executionContext, gate, gateAsk);
+                    call, resolution, args, profile.getId(), executionContext,
+                    gate, gateAsk, destructive);
         }
 
         // Execute directly
-        return executeToolAndAddResult(call, args, executionContext);
+        return executeToolAndAddResult(call, args, executionContext, resolution);
     }
 
     private List<PermissionRule> globalRulesSafe() {
@@ -598,9 +612,10 @@ public class AgentRunner implements IAgentRunner {
      * Запрашивает подтверждение у пользователя.
      */
     private CompletableFuture<Void> requestConfirmation(
-            ToolCall call, ITool tool, Map<String, Object> args, String profileId,
+            ToolCall call, ToolResolution resolution, Map<String, Object> args, String profileId,
             ToolExecutionContext executionContext,
-            ProfilePermissionGate.GateResult gate, boolean gateAsk) {
+            ProfilePermissionGate.GateResult gate, boolean gateAsk,
+            boolean destructive) {
 
         int step = currentStep.get();
         if (!hasConfirmationSink()) {
@@ -626,9 +641,9 @@ public class AgentRunner implements IAgentRunner {
         ConfirmationRequiredEvent event = new ConfirmationRequiredEvent(
                 step,
                 call,
-                tool.getDescription(),
+                resolution.tool().getDescription(),
                 args,
-                tool.isDestructive()
+                destructive
         );
         pendingConfirmation.set(event);
         emit(event);
@@ -640,7 +655,7 @@ public class AgentRunner implements IAgentRunner {
             ToolResult toolResult;
             switch (result) {
                 case CONFIRMED:
-                    return executeToolAndAddResult(call, args, executionContext);
+                    return executeToolAndAddResult(call, args, executionContext, resolution);
                 case SKIPPED:
                     toolResult = ToolResult.success("Операция пропущена пользователем",
                             ToolResult.ToolResultType.CONFIRMATION);
@@ -689,12 +704,18 @@ public class AgentRunner implements IAgentRunner {
      * Выполняет инструмент и добавляет результат в историю.
      */
     private CompletableFuture<Void> executeToolAndAddResult(
-            ToolCall call, Map<String, Object> args, ToolExecutionContext executionContext) {
+            ToolCall call, Map<String, Object> args, ToolExecutionContext executionContext,
+            ToolResolution resolution) {
         long toolStartTime = System.currentTimeMillis();
         int step = currentStep.get();
         String parentTraceEventId = toolTraceEventIds.get(call.getId());
 
-        return toolRegistry.execute(call, args, traceSession, parentTraceEventId, executionContext)
+        CompletableFuture<ToolResult> dispatched = toolRegistry.getExecutionService()
+                .executeIfCurrent(call, args, traceSession, parentTraceEventId,
+                        executionContext, resolution)
+                .orElseGet(() -> CompletableFuture.completedFuture(
+                        ToolExecutionService.staleResolutionResult(call.getName())));
+        return dispatched
                 .handle((result, error) -> {
                     long executionTime = System.currentTimeMillis() - toolStartTime;
                     toolCallsCount.incrementAndGet();
@@ -731,6 +752,21 @@ public class AgentRunner implements IAgentRunner {
     /**
      * Создает LlmRequest с инструментами.
      */
+    private boolean isAllowedByConfig(
+            AgentConfig config, AgentProfile profile, ToolResolution resolution) {
+        String toolName = resolution.name();
+        if (config.getDisabledTools().contains(toolName)) {
+            return false;
+        }
+        if (ProfileToolAccess.allows(profile, resolution)
+                && resolution.dynamicCapability() != DynamicToolCapability.NONE) {
+            // Profile-created configs enumerate only static names. A trusted
+            // runtime grant remains live as MCP/UI tools are added or removed.
+            return true;
+        }
+        return config.isToolAllowed(toolName);
+    }
+
     private LlmRequest buildRequest(AgentConfig config) {
         List<ToolDefinition> tools = new ArrayList<>();
         ToolGraphToolFilter graphFilter = toolGraphRouter != null
@@ -738,27 +774,23 @@ public class AgentRunner implements IAgentRunner {
                 : ToolGraphToolFilter.allowAll();
         AgentProfile profile = resolveProfile(config);
         ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(profile);
-        Set<String> profileAllowed = profile.getAllowedTools();
         Set<String> contextExcluded = contextGate.computeExcludedTools();
         int totalCount = 0;
         int deferredCount = 0;
         int baseBuiltinCount = 0;
         int baseDynamicCount = 0;
 
-        for (ITool tool : toolRegistry.getAllTools()) {
+        for (ToolResolution resolution : toolRegistry.getModelFacingToolResolutions()) {
             totalCount++;
+            ITool tool = resolution.tool();
             String name = tool.getName();
-            if (!profileAllowed.isEmpty() && !profileAllowed.contains(name)) {
-                // Always allow discover_tools when deferred loading is active
-                if (!(deferredToolSession.isDeferredLoadingActive()
-                        && "discover_tools".equals(name))) { //$NON-NLS-1$
-                    continue;
-                }
+            if (!ProfileToolAccess.allows(profile, resolution)) {
+                continue;
             }
             if (contextExcluded.contains(name)) {
                 continue;
             }
-            if (!config.isToolAllowed(name)) {
+            if (!isAllowedByConfig(config, profile, resolution)) {
                 continue;
             }
             if (!graphFilter.allows(name)) {
@@ -819,8 +851,11 @@ public class AgentRunner implements IAgentRunner {
         try {
             if (config != null && config.getProfileName() != null && !config.getProfileName().isBlank()) {
                 return AgentProfileRegistry.getInstance()
-                        .getProfile(config.getProfileName())
-                        .orElseGet(ToolSurfaceContext::defaultProfile);
+                        .getAvailableProfile(config.getProfileName())
+                        .orElseGet(() -> AgentProfileRegistry.getInstance()
+                                .getProfile(config.getProfileName()).isPresent()
+                                        ? AgentProfileRegistry.getInstance().getExploreProfile()
+                                        : ToolSurfaceContext.defaultProfile());
             }
             return AgentProfileRegistry.getInstance().getDefaultProfile();
         } catch (Throwable e) {
@@ -832,13 +867,20 @@ public class AgentRunner implements IAgentRunner {
      * Строит системный промпт.
      */
     private String buildSystemPrompt(String prompt, AgentConfig config) {
-        String addition = config.getSystemPromptAddition();
-        return SystemPromptAssembler.getInstance().assembleDetailedForCurrentSession(
+        return SystemPromptAssembler.getInstance().assembleDetailed(
+                buildPromptAssemblyInput(prompt, config))
+                .prompt();
+    }
+
+    SystemPromptAssembler.AssemblyInput buildPromptAssemblyInput(String prompt, AgentConfig config) {
+        return new SystemPromptAssembler.AssemblyInput(
                 systemPrompt,
-                addition,
+                config.getSystemPromptAddition(),
                 config.getProfileName(),
                 List.copyOf(config.getRequestedSkills()),
-                prompt).prompt();
+                config.getProjectPath(),
+                config.getSessionId(),
+                prompt);
     }
 
     /**
@@ -1079,12 +1121,7 @@ public class AgentRunner implements IAgentRunner {
         cancelRequested.set(true);
         state.set(AgentState.CANCELLED);
 
-        // Cancel provider
-        try {
-            executionProvider.cancel();
-        } catch (Exception e) {
-            logWarning("Ошибка при отмене провайдера", e);
-        }
+        requestCancellation.cancel();
 
         // Complete pending streaming future
         CompletableFuture<LlmResponse> streamFuture = currentStreamingFuture.getAndSet(null);
@@ -1253,8 +1290,14 @@ public class AgentRunner implements IAgentRunner {
         payload.put("execution_time_ms", Long.valueOf(event.getExecutionTimeMs())); //$NON-NLS-1$
         payload.put("result_type", result.getType().name()); //$NON-NLS-1$
 
-        ITool tool = toolRegistry.getTool(event.getToolName());
-        boolean sensitive = tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
+        // The authorization map is a short-lived optimization for an executing call,
+        // not the authority for trace redaction.  A result can be emitted after a
+        // cancelled/replayed call has already been removed from that map; resolve the
+        // registered tool as a fail-closed fallback so that such a boundary can never
+        // turn a sensitive result into trace content.
+        boolean sensitive = Boolean.TRUE.equals(
+                authorizedToolSensitivity.remove(event.getCallId()))
+                || isSensitiveTool(event.getToolName());
         if (sensitive) {
             String resultText = result.isSuccess() ? result.getContent() : result.getErrorMessage();
             payload.put("content_omitted", Boolean.TRUE); //$NON-NLS-1$
@@ -1264,5 +1307,10 @@ public class AgentRunner implements IAgentRunner {
             payload.put("error_message", result.getErrorMessage()); //$NON-NLS-1$
         }
         return payload;
+    }
+
+    private boolean isSensitiveTool(String toolName) {
+        ITool tool = toolRegistry.getTool(toolName);
+        return tool != null && tool.getTags() != null && tool.getTags().contains("sensitive"); //$NON-NLS-1$
     }
 }

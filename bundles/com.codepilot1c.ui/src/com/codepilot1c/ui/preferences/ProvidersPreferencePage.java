@@ -406,17 +406,16 @@ public class ProvidersPreferencePage extends PreferencePage implements IWorkbenc
 
     @Override
     public boolean performOk() {
-        // Save providers to config store
         LlmProviderConfigStore store = LlmProviderConfigStore.getInstance();
-        store.saveProviders(providers);
-        if (activeProviderId == null) {
-            store.setActiveProviderId(""); //$NON-NLS-1$
+        boolean saved = store.saveProviders(providers, activeProviderId);
+        if (!saved) {
+            setErrorMessage(Messages.ProvidersPreferencePage_SaveError);
+            return false;
         }
+
+        setErrorMessage(null);
         LlmProviderRegistry registry = LlmProviderRegistry.getInstance();
         registry.refreshDynamicProviders();
-        if (activeProviderId != null) {
-            registry.setActiveProvider(activeProviderId);
-        }
 
         return super.performOk();
     }

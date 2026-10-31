@@ -26,6 +26,7 @@ import org.eclipse.emf.common.util.EMap;
 import org.eclipse.emf.ecore.EObject;
 import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
+import org.eclipse.emf.ecore.util.EcoreUtil;
 
 import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.bm.core.IBmPlatformTransaction;
@@ -36,6 +37,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.CompatibilityMode;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
+import com._1c.g5.v8.dt.metadata.mdclass.ObjectBelonging;
 import com._1c.g5.v8.dt.metadata.mdclass.extension.type.MdPropertyState;
 import com._1c.g5.v8.dt.platform.version.Version;
 import com.codepilot1c.core.edt.BmObjectHelper;
@@ -506,7 +508,10 @@ public class EdtExtensionService {
                         "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
             }
 
-            MdObject source = findSourceObject(txConfiguration, sourceRef);
+            MdObject source = ExtensionRootResolver.resolve(txConfiguration, sourceRef);
+            if (source == null) {
+                source = findSourceObject(txConfiguration, sourceRef);
+            }
             if (source == null) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.METADATA_NOT_FOUND,
@@ -589,7 +594,22 @@ public class EdtExtensionService {
         }
         Path projectPath = request.effectiveProjectPath(defaultContainer);
 
+        Configuration baseConfiguration = gateway.getConfigurationProvider().getConfiguration(baseProject);
+        if (baseConfiguration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Base configuration is unavailable for project: " + baseProjectName, false); //$NON-NLS-1$
+        }
+
         Configuration configuration = MdClassFactory.eINSTANCE.createConfiguration();
+        configuration.setObjectBelonging(ObjectBelonging.ADOPTED);
+        // Platform import requires the configuration's internal type declarations.
+        // Reuse class identities, giving the extension its own object identities.
+        configuration.getContainedObjects().addAll(EcoreUtil.copyAll(baseConfiguration.getContainedObjects()));
+        configuration.getContainedObjects().forEach(object -> object.setObjectId(UUID.randomUUID()));
+        // The model factory may default to a platform newer than this project supports.
+        // Root compatibility and extension compatibility are independent settings.
+        configuration.setCompatibilityMode(baseConfiguration.getCompatibilityMode());
         // Без собственного идентификатора EDT создаёт проект, но экспортировать его в формат
         // платформы уже нельзя: 1cedtcli падает с «Ошибка экспорта во внешний поток для
         // Configuration.xml» (exit 204) и оставляет файл обрезанным на третьей строке —

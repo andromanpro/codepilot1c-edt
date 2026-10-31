@@ -24,6 +24,7 @@ public class LlmRequest {
     private final double temperature;
     private final boolean stream;
     private final ToolChoice toolChoice;
+    private final String providerSessionId;
 
     private LlmRequest(Builder builder) {
         this.messages = Collections.unmodifiableList(new ArrayList<>(builder.messages));
@@ -33,6 +34,7 @@ public class LlmRequest {
         this.temperature = builder.temperature;
         this.stream = builder.stream;
         this.toolChoice = builder.toolChoice;
+        this.providerSessionId = builder.providerSessionId;
     }
 
     public List<LlmMessage> getMessages() {
@@ -68,6 +70,15 @@ public class LlmRequest {
     }
 
     /**
+     * Stable per-conversation id for provider transports that require session
+     * affinity headers. It is intentionally provider-neutral; transports decide
+     * whether and how to project it onto their wire protocol.
+     */
+    public String getProviderSessionId() {
+        return providerSessionId;
+    }
+
+    /**
      * Specifies how the model should choose tools.
      */
     public enum ToolChoice {
@@ -99,6 +110,7 @@ public class LlmRequest {
         private double temperature = 0.7;
         private boolean stream = false;
         private ToolChoice toolChoice = ToolChoice.AUTO;
+        private String providerSessionId;
 
         /**
          * Adds a message to the request.
@@ -219,6 +231,19 @@ public class LlmRequest {
          */
         public Builder toolChoice(ToolChoice toolChoice) {
             this.toolChoice = toolChoice;
+            return this;
+        }
+
+        /**
+         * Sets a stable per-conversation id for provider wire affinity headers.
+         *
+         * @param providerSessionId stable id for the current chat/session
+         * @return this builder
+         */
+        public Builder providerSessionId(String providerSessionId) {
+            this.providerSessionId = providerSessionId != null && !providerSessionId.isBlank()
+                    ? providerSessionId.trim()
+                    : null;
             return this;
         }
 

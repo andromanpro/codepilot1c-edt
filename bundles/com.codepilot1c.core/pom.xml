@@ -7,11 +7,52 @@
     <parent>
         <groupId>com.codepilot1c</groupId>
         <artifactId>bundles-parent</artifactId>
-        <version>1.3.3-SNAPSHOT</version>
+        <version>1.3.9-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>com.codepilot1c.core</artifactId>
     <packaging>eclipse-plugin</packaging>
     <name>1C Copilot - Core</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.codepilot1c</groupId>
+            <artifactId>codepilot-runtime-kernel</artifactId>
+            <version>${codepilot.runtime.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>embed-runtime-kernel</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>com.codepilot1c</groupId>
+                                    <artifactId>codepilot-runtime-kernel</artifactId>
+                                    <version>${codepilot.runtime.version}</version>
+                                    <type>jar</type>
+                                    <outputDirectory>${project.basedir}/lib</outputDirectory>
+                                    <destFileName>codepilot-runtime-kernel.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <overWriteReleases>true</overWriteReleases>
+                            <overWriteSnapshots>true</overWriteSnapshots>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

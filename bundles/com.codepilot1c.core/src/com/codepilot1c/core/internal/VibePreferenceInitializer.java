@@ -55,11 +55,8 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
         defaults.putBoolean(VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_ENABLED, true);
         defaults.putInt(VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_THRESHOLD_PERCENT, 85);
         defaults.putBoolean(VibePreferenceConstants.PREF_CHAT_SHOW_TOKEN_USAGE, true);
+        defaults.putBoolean(VibePreferenceConstants.PREF_GSD_ENABLED, true);
         defaults.put(VibePreferenceConstants.PREF_QA_VA_EPF_PATH, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_TERMINAL_CWD_MODE, "project"); //$NON-NLS-1$
-        defaults.putBoolean(VibePreferenceConstants.PREF_TERMINAL_NO_COLOR, false);
-        defaults.put(VibePreferenceConstants.PREF_TERMINAL_TITLE_PREFIX, ""); //$NON-NLS-1$
-        defaults.putBoolean(VibePreferenceConstants.PREF_TERMINAL_ALWAYS_USE_ACTIVE_PROJECT, false);
 
         // Prompt customization (empty values mean "use built-in templates")
         defaults.put(VibePreferenceConstants.PREF_PROMPT_SYSTEM_PREFIX, ""); //$NON-NLS-1$
@@ -85,9 +82,12 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
         defaults.putInt(VibePreferenceConstants.PREF_MCP_HOST_HTTP_PORT, 8765);
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE,
             McpHostConfig.AuthMode.OAUTH_OR_BEARER.name());
+        defaults.putBoolean(VibePreferenceConstants.PREF_MCP_HOST_LLM_ENABLED, true);
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION,
             McpHostConfig.MutationPolicy.ALLOW.name());
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, "*"); //$NON-NLS-1$
+        defaults.putInt(VibePreferenceConstants.PREF_MCP_HOST_SESSION_IDLE_TIMEOUT_SECONDS,
+            McpHostConfig.DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS);
 
         // Completion/review are not part of OSS edition; their preferences are not initialized here.
         

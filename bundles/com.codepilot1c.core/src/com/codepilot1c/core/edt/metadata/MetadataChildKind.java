@@ -14,7 +14,16 @@ public enum MetadataChildKind {
     DIMENSION("Dimension"),
     RESOURCE("Resource"),
     REQUISITE("Requisite"),
-    ENUM_VALUE("EnumValue");
+    ENUM_VALUE("EnumValue"),
+    PREDEFINED_ITEM("PredefinedItem"),
+    /** {@code HTTPService.urlTemplates}, an EDT {@code URLTemplate} carrying the exact URL path. */
+    HTTP_URL_TEMPLATE("URLTemplate"),
+    /**
+     * {@code URLTemplate.methods}. The EDT containment type is {@code Method}; {@code HTTPMethod} is
+     * only the verb enumeration, so the display name that drives factory lookup and FQN building
+     * must stay {@code Method}.
+     */
+    HTTP_METHOD("Method");
 
     private final String displayName;
 
@@ -43,6 +52,9 @@ public enum MetadataChildKind {
             case "resource", "ресурс" -> RESOURCE; //$NON-NLS-1$ //$NON-NLS-2$
             case "requisite", "реквизитрегистра" -> REQUISITE; //$NON-NLS-1$ //$NON-NLS-2$
             case "enum_value", "enumvalue", "значениеперечисления" -> ENUM_VALUE; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "predefined_item", "predefineditem", "predefined", "предопределенныйэлемент", "предопределенный" -> PREDEFINED_ITEM; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            case "url_template", "urltemplate", "http_url_template", "httpurltemplate", "шаблонurl", "шаблонадреса" -> HTTP_URL_TEMPLATE; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            case "http_method", "httpmethod", "method", "метод" -> HTTP_METHOD; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             default -> throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_KIND,
                     "Unsupported child metadata kind: " + value, false); //$NON-NLS-1$

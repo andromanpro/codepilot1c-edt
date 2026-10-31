@@ -50,6 +50,7 @@ public class EdtInfobaseConnectService {
 
     public enum ConnectionKind {
         FILE,
+        SERVER,
         STANDALONE;
 
         public static ConnectionKind parse(String raw) {
@@ -62,6 +63,9 @@ public class EdtInfobaseConnectService {
             }
             if ("file".equalsIgnoreCase(trimmed)) { //$NON-NLS-1$
                 return FILE;
+            }
+            if ("server".equalsIgnoreCase(trimmed)) { //$NON-NLS-1$
+                return SERVER;
             }
             if ("standalone".equalsIgnoreCase(trimmed)) { //$NON-NLS-1$
                 return STANDALONE;
@@ -80,6 +84,7 @@ public class EdtInfobaseConnectService {
         private final Integer serverPort;
         private final String runtimeVersion;
         private final boolean force;
+        private final String serverAddress;
 
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion) {
@@ -88,6 +93,12 @@ public class EdtInfobaseConnectService {
 
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force) {
+            this(projectName, databasePath, kind, login, password, setPrimary, serverPort, runtimeVersion, force, null);
+        }
+
+        public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
+                String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force,
+                String serverAddress) {
             this.projectName = projectName;
             this.databasePath = databasePath;
             this.kind = kind;
@@ -97,6 +108,7 @@ public class EdtInfobaseConnectService {
             this.serverPort = serverPort;
             this.runtimeVersion = runtimeVersion;
             this.force = force;
+            this.serverAddress = serverAddress;
         }
 
         public String projectName() { return projectName; }
@@ -108,6 +120,7 @@ public class EdtInfobaseConnectService {
         public Integer serverPort() { return serverPort; }
         public String runtimeVersion() { return runtimeVersion; }
         public boolean force() { return force; }
+        public String serverAddress() { return serverAddress; }
     }
 
     public static final class ConnectResult {
@@ -163,6 +176,7 @@ public class EdtInfobaseConnectService {
         IProject project = resolveProject(request.projectName());
         return switch (request.kind()) {
             case FILE -> connectFile(project, request);
+            case SERVER -> connectServer(project, request);
             case STANDALONE -> connectStandalone(project, request);
         };
     }
@@ -176,8 +190,37 @@ public class EdtInfobaseConnectService {
         }
         if (request.kind() == null) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
-                    "kind is required and must be 'file' or 'standalone'"); //$NON-NLS-1$
+                    "kind is required and must be 'file', 'server' or 'standalone'"); //$NON-NLS-1$
         }
+        if (request.kind() == ConnectionKind.SERVER) {
+            validateServerAddress(request.serverAddress(), "server_address"); //$NON-NLS-1$
+            validateServerAddress(request.databasePath(), "database_path (server infobase name)"); //$NON-NLS-1$
+        }
+    }
+
+    private static void validateServerAddress(String value, String parameter) {
+        if (value == null || value.isBlank() || value.chars().anyMatch(character ->
+                Character.isWhitespace(character) || character == ';' || character == '"'
+                || character == '\'' || character == '/' || character == '\\')) {
+            throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                    parameter + " must be a nonempty server address or infobase name, not a connection string"); //$NON-NLS-1$
+        }
+    }
+
+    /** Associate an existing client/server infobase; never create a server or database. */
+    protected ConnectResult connectServer(IProject project, ConnectRequest request) {
+        validate(request);
+        String replacedPrevious = checkExistingPrimary(project, request);
+        InfobaseReference reference = InfobaseReferences.newServerInfobaseReference(
+                request.serverAddress(), request.databasePath());
+        reference.setName(request.serverAddress() + "/" + request.databasePath()); //$NON-NLS-1$
+        persistReference(reference);
+        storeAccessSettings(reference, request.login(), request.password());
+        boolean primary = associate(project, reference, request.setPrimary());
+        LOG.info("connect_infobase(server) project=%s server=%s infobase=%s primary=%s", //$NON-NLS-1$
+                request.projectName(), request.serverAddress(), request.databasePath(), Boolean.valueOf(primary));
+        return new ConnectResult(ConnectionKind.SERVER, request.serverAddress() + "/" + request.databasePath(), //$NON-NLS-1$
+                reference.getName(), sanitizeLogin(request.login()), null, primary, replacedPrevious);
     }
 
     private IProject resolveProject(String projectName) {
@@ -387,15 +430,20 @@ public class EdtInfobaseConnectService {
             // Copy the existing entry's UUID onto the in-memory reference so downstream calls
             // (storeSettings, associate) target the already-registered row.
             UUID existingUuid = existing.get().getUuid();
-            if (existingUuid != null && reference.getUuid() == null) {
-                reference.setUuid(existingUuid);
+            if (existingUuid == null) {
+                // A local UUID would not repair the persisted row: association lookup would
+                // still be unable to resolve it. Do not silently create another identity.
+                throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                        "Registered infobase has no UUID; repair its persisted ID before reconnecting: "
+                                + reference.getName()); //$NON-NLS-1$
             }
-            if (reference.getUuid() == null) {
-                // Defense-in-depth: existing entry had no UUID either — assign a fresh one so
-                // storeSettings doesn't NPE.
-                reference.setUuid(UUID.randomUUID());
-            }
+            reference.setUuid(existingUuid);
             return;
+        }
+        // EDT persists the supplied UUID verbatim; add() does not generate it. Assign it
+        // before saving so the launcher registry and project association share one identity.
+        if (reference.getUuid() == null) {
+            reference.setUuid(UUID.randomUUID());
         }
         try {
             manager.add(reference, null);
@@ -404,11 +452,6 @@ public class EdtInfobaseConnectService {
                     ? e.getMessage() : e.getClass().getSimpleName();
             throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
                     "Failed to register infobase reference: " + detail, e); //$NON-NLS-1$
-        }
-        // manager.add() normally populates the UUID; if it didn't, assign one locally so the
-        // subsequent storeSettings call has a non-null key.
-        if (reference.getUuid() == null) {
-            reference.setUuid(UUID.randomUUID());
         }
     }
 
@@ -526,8 +569,10 @@ public class EdtInfobaseConnectService {
 
     protected boolean associate(IProject project, InfobaseReference reference, boolean setPrimary) {
         IInfobaseAssociationManager associationManager = gateway.getInfobaseAssociationManager();
-        InfobaseAssociationSettings settings = InfobaseAssociationSettings.alreadySynchronized();
+        InfobaseAssociationContext context;
         try {
+            context = gateway.getInfobaseAssociationContext(project);
+            InfobaseAssociationSettings settings = InfobaseAssociationSettings.alreadySynchronized(context);
             associationManager.associate(project, reference, settings);
         } catch (InfobaseAssociationException e) {
             String detail = e.getMessage() != null && !e.getMessage().isBlank()
@@ -537,7 +582,7 @@ public class EdtInfobaseConnectService {
         }
         if (setPrimary) {
             try {
-                associationManager.setDefaultInfobase(project, reference, InfobaseAssociationContext.empty());
+                associationManager.setDefaultInfobase(project, reference, context);
             } catch (InfobaseAssociationException e) {
                 String detail = e.getMessage() != null && !e.getMessage().isBlank()
                         ? e.getMessage() : e.getClass().getSimpleName();
@@ -703,6 +748,30 @@ public class EdtInfobaseConnectService {
         }
     }
 
+    /**
+     * Reads the infobase UUID EDT bound to the created standalone server module.
+     *
+     * <p>{@code StandaloneServerInfobase} exposed {@code getInfobaseId()} up to EDT 2025.2; the
+     * accessor is absent from 2026.1 onwards, where the module keeps no infobase UUID at all.
+     * Reading it reflectively keeps the precise UUID lookup on the releases that still publish it
+     * and falls back to the name lookup below on the releases that removed it, instead of pinning
+     * the plug-in to a single EDT line.</p>
+     *
+     * @param standaloneInfobase EDT module to read, never {@code null} here
+     * @return the bound UUID, or {@code null} when this EDT release does not expose one
+     */
+    private static UUID readStandaloneInfobaseUuid(StandaloneServerInfobase standaloneInfobase) {
+        try {
+            Method accessor = standaloneInfobase.getClass().getMethod("getInfobaseId"); //$NON-NLS-1$
+            Object value = accessor.invoke(standaloneInfobase);
+            return value instanceof UUID uuid ? uuid : null;
+        } catch (NoSuchMethodException e) {
+            return null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
     private InfobaseReference resolveBoundReference(StandaloneServerInfobase standaloneInfobase,
             InfobaseReference fallback) {
         if (standaloneInfobase == null) {
@@ -710,8 +779,9 @@ public class EdtInfobaseConnectService {
         }
         try {
             IInfobaseManager manager = gateway.getInfobaseManager();
-            if (standaloneInfobase.getInfobaseId() != null) {
-                return manager.findInfobaseByUuid(standaloneInfobase.getInfobaseId()).orElse(fallback);
+            UUID boundUuid = readStandaloneInfobaseUuid(standaloneInfobase);
+            if (boundUuid != null) {
+                return manager.findInfobaseByUuid(boundUuid).orElse(fallback);
             }
             if (standaloneInfobase.getName() != null) {
                 return manager.findInfobaseByName(standaloneInfobase.getName()).orElse(fallback);

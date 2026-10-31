@@ -43,8 +43,8 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "child_kind": {
                   "type": "string",
-                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue"],
-                  "description": "Kind of new child object. Do not use for top-level objects. Use EnumValue to add a value to an existing Enum (parent_fqn=Enum.<Имя>; create_metadata cannot create enum values)."
+                  "enum": ["Attribute", "Tabular_Section", "Command", "Form", "Template", "Dimension", "Resource", "Requisite", "EnumValue", "PredefinedItem", "URLTemplate", "Method", "HTTPMethod"],
+                  "description": "Kind of new child object. Do not use for top-level objects. Use EnumValue to add a value to an existing Enum (parent_fqn=Enum.<Имя>; create_metadata cannot create enum values). Use PredefinedItem to add a predefined element to a catalog / chart of characteristic types / chart of accounts / chart of calculation types. Use URLTemplate under an HTTPService parent (parent_fqn = HTTPService.<Name>) and Method (same as HTTPMethod) under a URLTemplate parent (parent_fqn = HTTPService.<Name>.URLTemplate.<TemplateName>)."
                 },
                 "name": {
                   "type": "string",
@@ -60,8 +60,8 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "form_usage": {
                   "type": "string",
-                  "enum": ["OBJECT", "LIST", "CHOICE", "AUXILIARY", "object", "list", "choice", "auxiliary"],
-                  "description": "Роль формы (используется при child_kind=Form)"
+                  "enum": ["OBJECT", "RECORD", "LIST", "CHOICE", "AUXILIARY", "object", "record", "list", "choice", "auxiliary"],
+                  "description": "Роль формы (используется при child_kind=Form). RECORD — форма записи регистра сведений (defaultRecordForm); OBJECT у регистра сведений означает то же. У перечисления и регистров накопления, бухгалтерии, расчёта формы объекта нет — OBJECT отклоняется."
                 },
                 "managed": {
                   "type": "boolean",
@@ -75,14 +75,27 @@ public class AddMetadataChildTool extends AbstractTool {
                   "type": "integer",
                   "description": "Таймаут ожидания материализации формы в файлы"
                 },
+                "template": {
+                  "type": "string",
+                  "description": "Точный путь URL-шаблона (child_kind=URLTemplate), например \\"/state\\" или \\"/items/{id}\\". Без пробелов, query и fragment."
+                },
+                "http_method": {
+                  "type": "string",
+                  "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "MERGE", "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "PROPPATCH", "MOVE", "COPY", "LOCK", "UNLOCK", "MKCOL", "ANY"],
+                  "description": "HTTP-метод (child_kind=HTTPMethod). Соответствует перечислению EDT HTTPMethod."
+                },
+                "handler": {
+                  "type": "string",
+                  "description": "Имя процедуры-обработчика в модуле HTTP-сервиса (child_kind=HTTPMethod)."
+                },
                 "template_type": {
                   "type": "string",
-                  "enum": ["spreadsheet", "html", "text", "binary", "dcs", "active_document"],
-                  "description": "Тип макета (используется при child_kind=Template). По умолчанию spreadsheet (табличный документ .mxl)"
+                  "enum": ["spreadsheet", "html", "text", "binary", "dcs"],
+                  "description": "Тип макета (child_kind=Template); он же выбирает файл содержимого рядом с макетом: spreadsheet (по умолчанию) — Template.mxl, text — пустой Template.txt, binary — пустой Template.bin, html — Template.htmldoc без страниц, dcs — файл не создаётся (Template.dcs ведёт dcs_manage). В пакете children тип задаётся каждому элементу своим template_type. Принимаются и имена EDT (TextDocument, BinaryData, HTMLDocument, SpreadsheetDocument). Неизвестное значение и макеты активного документа, географической и графической схемы, внешней компоненты отклоняются до создания — их содержимое заводится в EDT."
                 },
                 "properties": {
                   "type": "object",
-                  "description": "Дополнительные параметры. Для batch: children=[{name,synonym,comment}]"
+                  "description": "Дополнительные параметры. Для batch: children=[{name,synonym,comment}]. Для Attribute/Dimension/Resource/Requisite: type (String, String(50) или объект type+stringQualifiers), length, fixed, precision, scale, nonNegative, dateFractions, stringQualifiers, numberQualifiers, dateQualifiers (целые: 50 и 50.0), multiLine, passwordMode, markNegatives, mask, fillChecking, dataHistory, fullTextSearch, indexing; неизвестный ключ отклоняется (INVALID_PROPERTY_VALUE), а не теряется. Для child_kind=PredefinedItem: description (Наименование; по умолчанию берётся synonym), code (Код; по умолчанию следующий по порядку среди уже заведённых), is_folder (Это группа), parent (имя предопределённой группы для вложения). Значения реквизитов предопределённому элементу не задаются — их в модели метаданных нет. Для child_kind=URLTemplate: template (точный путь шаблона, обязателен). Для child_kind=Method/HTTPMethod: http_method и handler (оба обязательны). Эти поля можно передать и параметрами верхнего уровня; пакетное создание через children для них не поддерживается."
                 },
                 "validation_token": {
                   "type": "string",
@@ -112,7 +125,8 @@ public class AddMetadataChildTool extends AbstractTool {
     @Override
     public String getDescription() {
         return "Создаёт дочерний объект метаданных под существующим владельцем через EDT BM API. " //$NON-NLS-1$
-                + "Поддерживает Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue."; //$NON-NLS-1$
+                + "Поддерживает Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue, PredefinedItem, " //$NON-NLS-1$
+                + "URLTemplate (под HTTPService) и Method/HTTPMethod (под URLTemplate)."; //$NON-NLS-1$
     }
 
     @Override
@@ -243,6 +257,20 @@ public class AddMetadataChildTool extends AbstractTool {
             String childKindValue
     ) {
         String normalizedKind = childKindValue == null ? "" : childKindValue.toLowerCase(java.util.Locale.ROOT); //$NON-NLS-1$
+        MetadataChildKind httpKind = tryParseHttpKind(childKindValue);
+        if (httpKind != null) {
+            Map<String, Object> merged = new LinkedHashMap<>();
+            if (baseProperties != null && !baseProperties.isEmpty()) {
+                merged.putAll(baseProperties);
+            }
+            if (httpKind == MetadataChildKind.HTTP_URL_TEMPLATE) {
+                putIfPresent(merged, "template", parameters.get("template")); //$NON-NLS-1$ //$NON-NLS-2$
+            } else {
+                putIfPresent(merged, "http_method", parameters.get("http_method")); //$NON-NLS-1$ //$NON-NLS-2$
+                putIfPresent(merged, "handler", parameters.get("handler")); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            return merged;
+        }
         if ("template".equals(normalizedKind) || "макет".equals(normalizedKind)) { //$NON-NLS-1$ //$NON-NLS-2$
             Map<String, Object> merged = new LinkedHashMap<>();
             if (baseProperties != null && !baseProperties.isEmpty()) {
@@ -251,18 +279,31 @@ public class AddMetadataChildTool extends AbstractTool {
             putIfPresent(merged, "template_type", parameters.get("template_type")); //$NON-NLS-1$ //$NON-NLS-2$
             return merged;
         }
-        if (!"form".equals(normalizedKind)) { //$NON-NLS-1$
+        // One list and one kind check with the validate step: the token has to carry exactly this merge.
+        if (!MetadataRequestValidationService.isFormChildKind(childKindValue)) {
             return baseProperties;
         }
         Map<String, Object> merged = new LinkedHashMap<>();
         if (baseProperties != null && !baseProperties.isEmpty()) {
             merged.putAll(baseProperties);
         }
-        putIfPresent(merged, "form_usage", parameters.get("form_usage")); //$NON-NLS-1$ //$NON-NLS-2$
-        putIfPresent(merged, "managed", parameters.get("managed")); //$NON-NLS-1$ //$NON-NLS-2$
-        putIfPresent(merged, "set_as_default", parameters.get("set_as_default")); //$NON-NLS-1$ //$NON-NLS-2$
-        putIfPresent(merged, "wait_ms", parameters.get("wait_ms")); //$NON-NLS-1$ //$NON-NLS-2$
+        for (String formOption : MetadataRequestValidationService.ADD_CHILD_FORM_OPTIONS) {
+            putIfPresent(merged, formOption, parameters.get(formOption));
+        }
         return merged;
+    }
+
+    /**
+     * Returns the HTTP service child kind for this request, or {@code null} for every other kind
+     * (including an unparseable one, which the validation service rejects with the canonical error).
+     */
+    private MetadataChildKind tryParseHttpKind(String childKindValue) {
+        try {
+            MetadataChildKind kind = MetadataChildKind.fromString(childKindValue);
+            return com.codepilot1c.core.edt.metadata.HttpServiceChildProperties.applies(kind) ? kind : null;
+        } catch (MetadataOperationException e) {
+            return null;
+        }
     }
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {

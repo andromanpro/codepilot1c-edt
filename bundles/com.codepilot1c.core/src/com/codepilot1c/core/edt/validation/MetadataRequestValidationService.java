@@ -11,6 +11,8 @@ import org.eclipse.core.resources.IProject;
 
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 
+import com.codepilot1c.core.edt.cmi.CommandInterfaceFragments;
+import com.codepilot1c.core.edt.cmi.CommandInterfaceLayout;
 import com.codepilot1c.core.edt.forms.CreateFormRequest;
 import com.codepilot1c.core.edt.forms.FormRecipeMode;
 import com.codepilot1c.core.edt.forms.FormRecipeRequest;
@@ -29,6 +31,7 @@ import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.RenameMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
 import com.codepilot1c.core.edt.metadata.EnsureModuleArtifactRequest;
+import com.codepilot1c.core.edt.metadata.HttpServiceChildProperties;
 import com.codepilot1c.core.edt.metadata.MetadataChildKind;
 import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
@@ -138,6 +141,17 @@ public class MetadataRequestValidationService {
         return validatedPayload;
     }
 
+    /** Consumes a token only for the exact canonical payload supplied to the mutation tool. */
+    public Map<String, Object> consumeToken(
+            String token,
+            ValidationOperation operation,
+            String projectName,
+            Map<String, Object> normalizedPayload
+    ) {
+        ensureRuntimeReady(projectName);
+        return tokenStore.consumeToken(token, operation, projectName, normalizedPayload);
+    }
+
     public Map<String, Object> normalizeCreatePayload(
             String projectName,
             String kindValue,
@@ -195,6 +209,38 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    /**
+     * Top-level {@code add_metadata_child} parameters that the tool folds into {@code properties}.
+     * Keeping the list here means the validate step and the mutation step agree by construction.
+     */
+    private static final List<String> ADD_CHILD_TOP_LEVEL_PROPERTIES = List.of(
+            "template_type", //$NON-NLS-1$
+            HttpServiceChildProperties.TEMPLATE,
+            HttpServiceChildProperties.HTTP_METHOD,
+            HttpServiceChildProperties.HANDLER);
+
+    /**
+     * Top-level {@code add_metadata_child} options of a form child ({@code child_kind=Form}), folded into
+     * {@code properties} by the tool and by the validate step alike. Without them in the token the mutation applied
+     * a payload without the form role (Gitea #148): {@code form_usage=OBJECT} of an information register form was
+     * lost and the form came out as a list form. The top-level value wins over a {@code properties} entry here, as
+     * in the tool.
+     */
+    public static final List<String> ADD_CHILD_FORM_OPTIONS = List.of(
+            "form_usage", //$NON-NLS-1$
+            "managed", //$NON-NLS-1$
+            "set_as_default", //$NON-NLS-1$
+            "wait_ms"); //$NON-NLS-1$
+
+    /** Whether {@code childKindValue} names a form child; an unparseable kind is left to the canonical validation. */
+    public static boolean isFormChildKind(String childKindValue) {
+        try {
+            return MetadataChildKind.fromString(childKindValue) == MetadataChildKind.FORM;
+        } catch (MetadataOperationException e) {
+            return false;
+        }
+    }
+
     public Map<String, Object> normalizeAddChildPayload(
             String projectName,
             String parentFqn,
@@ -205,8 +251,11 @@ public class MetadataRequestValidationService {
             Map<String, Object> properties
     ) {
         MetadataChildKind kind = MetadataChildKind.fromString(childKindValue);
+        // HTTP service children carry their own required fields; canonicalize them before the token
+        // is minted so the bound payload is byte-for-byte the payload the mutation will apply.
+        Map<String, Object> effectiveProperties = HttpServiceChildProperties.normalize(kind, properties);
         AddMetadataChildRequest request = new AddMetadataChildRequest(
-                projectName, parentFqn, kind, name, synonym, comment, properties);
+                projectName, parentFqn, kind, name, synonym, comment, effectiveProperties);
         request.validate();
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -220,9 +269,9 @@ public class MetadataRequestValidationService {
         if (comment != null && !comment.isBlank()) {
             payload.put("comment", comment); //$NON-NLS-1$
         }
-        if (properties != null && !properties.isEmpty()) {
-            validateTypeDescriptionValue(getMapValueIgnoreCase(properties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
-            payload.put("properties", properties); //$NON-NLS-1$
+        if (effectiveProperties != null && !effectiveProperties.isEmpty()) {
+            validateTypeDescriptionValue(getMapValueIgnoreCase(effectiveProperties, "type"), "properties.type"); //$NON-NLS-1$ //$NON-NLS-2$
+            payload.put("properties", effectiveProperties); //$NON-NLS-1$
         }
         return payload;
     }
@@ -1035,6 +1084,32 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    public Map<String, Object> normalizeMutateCommandInterfacePayload(
+            String projectName,
+            String ownerFqn,
+            List<Map<String, Object>> operations
+    ) {
+        if (projectName == null || projectName.isBlank()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "project is required", false); //$NON-NLS-1$
+        }
+        String owner = CommandInterfaceFragments.normalizeOwnerFqn(ownerFqn);
+        if (operations == null || operations.isEmpty()) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_METADATA_NAME,
+                    "operations must contain at least one operation", false); //$NON-NLS-1$
+        }
+        List<Map<String, Object>> normalizedOperations = new ArrayList<>();
+        for (Map<String, Object> operation : operations) {
+            Map<String, Object> normalized = CommandInterfaceLayout.normalize(operation);
+            normalizedOperations.add(normalized);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("owner_fqn", owner); //$NON-NLS-1$
+        payload.put("operations", normalizedOperations); //$NON-NLS-1$
+        return payload;
+    }
+
     public Map<String, Object> normalizeRenderTemplatePayload(
             String projectName,
             String templateFqn,
@@ -1286,7 +1361,8 @@ public class MetadataRequestValidationService {
         return normalized;
     }
 
-    private Map<String, Object> normalizePayload(ValidationRequest request, List<String> checks) {
+    /** Package-private so same-package tests can drive normalization without a live EDT project. */
+    Map<String, Object> normalizePayload(ValidationRequest request, List<String> checks) {
         return switch (request.operation()) {
             case CREATE_METADATA -> {
                 Map<String, Object> payload = normalizeCreatePayload(
@@ -1448,10 +1524,22 @@ public class MetadataRequestValidationService {
             }
             case ADD_METADATA_CHILD -> {
                 Map<String, Object> childProps = new java.util.LinkedHashMap<>(asMap(request.payload().get("properties"))); //$NON-NLS-1$
-                // Merge template_type from top-level payload into properties if not already present
-                Object templateTypeVal = request.payload().get("template_type"); //$NON-NLS-1$
-                if (templateTypeVal != null && !childProps.containsKey("template_type")) { //$NON-NLS-1$
-                    childProps.put("template_type", templateTypeVal); //$NON-NLS-1$
+                // add_metadata_child publishes these as top-level parameters and merges them into
+                // properties before mutating, so the token has to be minted over the same merge.
+                // An explicit properties entry wins, so exactly one payload is ever bound.
+                for (String topLevel : ADD_CHILD_TOP_LEVEL_PROPERTIES) {
+                    Object value = request.payload().get(topLevel);
+                    if (value != null && !childProps.containsKey(topLevel)) {
+                        childProps.put(topLevel, value);
+                    }
+                }
+                if (isFormChildKind(asString(request.payload().get("child_kind")))) { //$NON-NLS-1$
+                    for (String formOption : ADD_CHILD_FORM_OPTIONS) {
+                        Object value = request.payload().get(formOption);
+                        if (value != null && !(value instanceof String text && text.isBlank())) {
+                            childProps.put(formOption, value);
+                        }
+                    }
                 }
                 Map<String, Object> payload = normalizeAddChildPayload(
                         coalesceProject(request.projectName(), request.payload()),
@@ -1516,6 +1604,14 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("role")), //$NON-NLS-1$
                         asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
                 checks.add("Операция mutate_role_rights валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case MUTATE_COMMAND_INTERFACE -> {
+                Map<String, Object> payload = normalizeMutateCommandInterfacePayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("owner_fqn")), //$NON-NLS-1$
+                        asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
+                checks.add("Операция mutate_command_interface валидирована: владелец и имена операций."); //$NON-NLS-1$
                 yield payload;
             }
             case RENDER_TEMPLATE -> {

@@ -29,6 +29,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Meta-tool for discovering domain-specific tools by category.
@@ -53,9 +54,12 @@ public class DiscoverToolsTool extends AbstractTool {
                   "type": "string",
                   "description": "Tool category to discover: bsl|metadata|forms|extensions|dcs|qa|diagnostics|workspace",
                   "enum": ["bsl", "metadata", "forms", "extensions", "dcs", "qa", "diagnostics", "workspace"]
+                },
+                "tool_name": {
+                  "type": "string",
+                  "description": "Exact tool name: return its effective description and complete input schema without revealing a category. Pass exactly one of category or tool_name."
                 }
-              },
-              "required": ["category"]
+              }
             }
             """; //$NON-NLS-1$
 
@@ -86,7 +90,7 @@ public class DiscoverToolsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Показывает скрытые domain tools по категории, когда текущей поверхности недостаточно. Сам работу не выполняет, только раскрывает инструменты."; //$NON-NLS-1$
+        return "Раскрывает инструменты по category или возвращает описание и полную схему одного tool_name. Передай ровно один параметр. Справка не выполняет инструмент и не раскрывает категорию."; //$NON-NLS-1$
     }
 
     @Override
@@ -107,6 +111,13 @@ public class DiscoverToolsTool extends AbstractTool {
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
         Map<String, Object> p = params.getRaw();
+        if (p.containsKey("category") == p.containsKey("tool_name")) { //$NON-NLS-1$ //$NON-NLS-2$
+            return CompletableFuture.completedFuture(ToolResult.failure(
+                    "Pass exactly one of category or tool_name.")); //$NON-NLS-1$
+        }
+        if (p.containsKey("tool_name")) { //$NON-NLS-1$
+            return describeTool(params.requireString("tool_name")); //$NON-NLS-1$
+        }
         String categoryName = p.get("category") != null //$NON-NLS-1$
                 ? String.valueOf(p.get("category")) : null; //$NON-NLS-1$
 
@@ -134,7 +145,9 @@ public class DiscoverToolsTool extends AbstractTool {
         ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(
                 ToolSurfaceContext.defaultProfile());
 
-        for (ITool tool : toolRegistry.getAllTools()) {
+        for (ToolRegistry.ToolResolution resolution
+                : toolRegistry.getModelFacingToolResolutions()) {
+            ITool tool = resolution.tool();
             ToolCategory toolCategory = BuiltinToolTaxonomy.categoryOf(tool);
             if (toolCategory == category) {
                 ToolDefinition def = toolRegistry.getToolDefinition(tool, surfaceContext);
@@ -171,6 +184,32 @@ public class DiscoverToolsTool extends AbstractTool {
 
         return CompletableFuture.completedFuture(
                 ToolResult.success(GSON.toJson(result)));
+    }
+
+    /** Reads documentation from the effective registry; never invokes the tool or reveals a category. */
+    private CompletableFuture<ToolResult> describeTool(String toolName) {
+        ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(
+                ToolSurfaceContext.defaultProfile());
+        for (ToolRegistry.ToolResolution resolution : toolRegistry.getModelFacingToolResolutions()) {
+            ITool tool = resolution.tool();
+            if (!toolName.equals(tool.getName())) {
+                continue;
+            }
+            ToolDefinition def = toolRegistry.getToolDefinition(tool, surfaceContext);
+            JsonObject result = new JsonObject();
+            result.addProperty("status", "documented"); //$NON-NLS-1$ //$NON-NLS-2$
+            result.addProperty("name", def.getName()); //$NON-NLS-1$
+            result.addProperty("category", tool.getCategory()); //$NON-NLS-1$
+            result.addProperty("description", def.getDescription()); //$NON-NLS-1$
+            result.add("input_schema", JsonParser.parseString(def.getParametersSchema())); //$NON-NLS-1$
+            result.addProperty("requires_confirmation", tool.requiresConfirmation()); //$NON-NLS-1$
+            result.addProperty("destructive", tool.isDestructive()); //$NON-NLS-1$
+            result.addProperty("mutating", tool.isMutating()); //$NON-NLS-1$
+            result.addProperty("requires_validation_token", tool.requiresValidationToken()); //$NON-NLS-1$
+            return CompletableFuture.completedFuture(ToolResult.success(GSON.toJson(result), result));
+        }
+        return CompletableFuture.completedFuture(ToolResult.failure(
+                "Unknown tool: " + toolName + ". Use category to discover available tools.")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private record ToolSummary(String name, String description, boolean hasParameters) {

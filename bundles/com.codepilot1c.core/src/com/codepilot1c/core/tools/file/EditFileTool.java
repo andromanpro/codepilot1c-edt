@@ -10,6 +10,8 @@ import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
+import com.codepilot1c.core.tools.ActiveProjectSupport;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -30,8 +32,6 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 
-import com.codepilot1c.core.session.Session;
-import com.codepilot1c.core.session.SessionManager;
 import com.codepilot1c.core.diagnostics.BslSilentTypeLinter;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
@@ -92,7 +92,7 @@ public class EditFileTool extends AbstractTool {
                     },
                     "allow_metadata_descriptor_edit": {
                         "type": "boolean",
-                        "description": "Аварийный override: разрешить редактирование .mdo (не рекомендуется, используйте только когда BM API не покрывает кейс)."
+                        "description": "Аварийный override: разрешить редактирование .mdo и командного интерфейса .cmi (не рекомендуется, используйте только когда BM API не покрывает кейс; для .cmi есть inspect_command_interface/mutate_command_interface)."
                     },
                     "allow_supported_object_edit": {
                         "type": "boolean",
@@ -129,6 +129,12 @@ public class EditFileTool extends AbstractTool {
 
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
+        return doExecute(params, ToolExecutionContext.unscoped());
+    }
+
+    @Override
+    protected CompletableFuture<ToolResult> doExecute(
+            ToolParameters params, ToolExecutionContext context) {
         return CompletableFuture.supplyAsync(() -> {
             long startTime = System.currentTimeMillis();
 
@@ -158,6 +164,14 @@ public class EditFileTool extends AbstractTool {
                     }
                     LOG.warn("edit_file: аварийный override .mdo включен для %s", normalizedPath); //$NON-NLS-1$
                 }
+                if (EdtModelFileGuard.isCommandInterfacePath(normalizedPath)) {
+                    if (!allowMetadataDescriptorEdit) {
+                        LOG.warn("edit_file: заблокирована прямая правка командного интерфейса без override: %s", normalizedPath); //$NON-NLS-1$
+                        return ToolResult.failure(
+                                EdtModelFileGuard.commandInterfaceRefusal("allow_metadata_descriptor_edit")); //$NON-NLS-1$
+                    }
+                    LOG.warn("edit_file: аварийный override .cmi включен для %s", normalizedPath); //$NON-NLS-1$
+                }
 
                 // FORM/DCS/TEMPLATE artifacts are structured EDT files and must be changed through semantic tools.
                 if (isStructuredEdtArtifactPath(normalizedPath)) {
@@ -170,10 +184,10 @@ public class EditFileTool extends AbstractTool {
                 }
 
                 // Find or create file in workspace
-                IFile file = findWorkspaceFile(normalizedPath);
+                IFile file = findWorkspaceFile(normalizedPath, context);
 
                 if (file == null || !file.exists()) {
-                    IFile newFile = create ? findWorkspaceFileHandle(normalizedPath) : null;
+                    IFile newFile = create ? findWorkspaceFileHandle(normalizedPath, context) : null;
                     if (content != null && isProjectRootCodeMd(newFile)) {
                         LOG.info("edit_file: создание Code.md в корне проекта %s", //$NON-NLS-1$
                                 newFile.getProject().getName());
@@ -338,7 +352,7 @@ public class EditFileTool extends AbstractTool {
     /**
      * Finds a file in the workspace by path.
      */
-    private IFile findWorkspaceFile(String path) {
+    private IFile findWorkspaceFile(String path, ToolExecutionContext context) {
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
         LOG.debug("findWorkspaceFile: ищем файл по пути '%s'", path); //$NON-NLS-1$
         LOG.debug("findWorkspaceFile: workspace root = %s", root.getLocation()); //$NON-NLS-1$
@@ -347,7 +361,7 @@ public class EditFileTool extends AbstractTool {
         try {
             org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
             if (ipath.segmentCount() == 1) {
-                IProject project = resolveCurrentProject(root);
+                IProject project = resolveCurrentProject(context);
                 if (project != null) {
                     IFile file = project.getFile(ipath);
                     if (file.exists()) {
@@ -402,7 +416,7 @@ public class EditFileTool extends AbstractTool {
         return null;
     }
 
-    private IFile findWorkspaceFileHandle(String path) {
+    private IFile findWorkspaceFileHandle(String path, ToolExecutionContext context) {
         if (path == null || path.isBlank()) {
             return null;
         }
@@ -411,7 +425,7 @@ public class EditFileTool extends AbstractTool {
         try {
             org.eclipse.core.runtime.IPath ipath = Path.fromOSString(path);
             if (ipath.segmentCount() == 1) {
-                IProject project = resolveCurrentProject(root);
+                IProject project = resolveCurrentProject(context);
                 return project != null ? project.getFile(ipath) : null;
             }
             return root.getFile(ipath);
@@ -421,25 +435,8 @@ public class EditFileTool extends AbstractTool {
         }
     }
 
-    private IProject resolveCurrentProject(IWorkspaceRoot root) {
-        try {
-            Session session = SessionManager.getInstance().getOrCreateCurrentSession();
-            if (session != null && session.getProjectPath() != null && !session.getProjectPath().isEmpty()) {
-                IProject project = SessionManager.getInstance().findProjectByPath(session.getProjectPath());
-                if (project != null && project.exists() && project.isOpen()) {
-                    return project;
-                }
-            }
-        } catch (Exception e) {
-            LOG.debug("resolveCurrentProject: session lookup failed: %s", e.getMessage()); //$NON-NLS-1$
-        }
-
-        for (IProject project : root.getProjects()) {
-            if (project.exists() && project.isOpen()) {
-                return project;
-            }
-        }
-        return null;
+    private IProject resolveCurrentProject(ToolExecutionContext context) {
+        return ActiveProjectSupport.resolveActiveProject(context);
     }
 
     private boolean isProjectRootCodeMd(IFile file) {
@@ -665,11 +662,12 @@ public class EditFileTool extends AbstractTool {
         if (lfIndex > 0 && content.charAt(lfIndex - 1) == '\r') {
             return "\r\n"; //$NON-NLS-1$
         }
-        if (content.indexOf('\r') >= 0) {
-            return "\r"; //$NON-NLS-1$
-        }
+        // A later CRLF must not turn LF-first mixed text into CR-only text.
         if (lfIndex >= 0) {
             return "\n"; //$NON-NLS-1$
+        }
+        if (content.indexOf('\r') >= 0) {
+            return "\r"; //$NON-NLS-1$
         }
         return System.lineSeparator();
     }

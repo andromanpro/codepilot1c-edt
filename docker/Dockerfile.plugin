@@ -4,7 +4,7 @@
 # Этот файл используется в GitHub Actions для автоматической сборки и публикации.
 #
 # Сборка вручную:
-#   mvn package -Dmaven.test.skip=true
+#   mvn -Dedt.home=/path/to/1cedt/Eclipse -Dmaven.test.skip=true package
 #   cp repositories/com.codepilot1c.update/target/com.codepilot1c.update-*.zip docker/plugin.zip
 #   docker build -f docker/Dockerfile.plugin \
 #     --build-arg EDT_VERSION=2025.2.3-30 \

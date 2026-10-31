@@ -12,8 +12,6 @@ import org.eclipse.jface.preference.BooleanFieldEditor;
 import org.eclipse.jface.preference.FileFieldEditor;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
 import org.eclipse.jface.preference.IntegerFieldEditor;
-import org.eclipse.jface.preference.RadioGroupFieldEditor;
-import org.eclipse.jface.preference.StringFieldEditor;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPreferencePage;
 import org.eclipse.ui.preferences.ScopedPreferenceStore;
@@ -87,6 +85,11 @@ public class VibePreferencePage extends FieldEditorPreferencePage implements IWo
                 Messages.PreferencePage_ShowTokenUsageLabel,
                 getFieldEditorParent()));
 
+        addField(new BooleanFieldEditor(
+                VibePreferenceConstants.PREF_GSD_ENABLED,
+                Messages.PreferencePage_GsdEnabledLabel,
+                getFieldEditorParent()));
+
         FileFieldEditor vaEpfEditor = new FileFieldEditor(
                 VibePreferenceConstants.PREF_QA_VA_EPF_PATH,
                 Messages.PreferencePage_VaEpfPathLabel,
@@ -95,35 +98,5 @@ public class VibePreferencePage extends FieldEditorPreferencePage implements IWo
         vaEpfEditor.setFileExtensions(new String[] { "*.epf" }); //$NON-NLS-1$
         vaEpfEditor.setEmptyStringAllowed(true);
         addField(vaEpfEditor);
-
-        addField(new RadioGroupFieldEditor(
-                VibePreferenceConstants.PREF_TERMINAL_CWD_MODE,
-                Messages.PreferencePage_TerminalCwdModeLabel,
-                2,
-                new String[][] {
-                        { Messages.PreferencePage_TerminalCwdModeProject, "project" }, //$NON-NLS-1$
-                        { Messages.PreferencePage_TerminalCwdModeSelection, "selection" }, //$NON-NLS-1$
-                        { Messages.PreferencePage_TerminalCwdModeWorkspace, "workspace" }, //$NON-NLS-1$
-                        { Messages.PreferencePage_TerminalCwdModeHome, "home" } //$NON-NLS-1$
-                },
-                getFieldEditorParent(),
-                true));
-
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_TERMINAL_ALWAYS_USE_ACTIVE_PROJECT,
-                Messages.PreferencePage_TerminalAlwaysUseActiveProjectLabel,
-                getFieldEditorParent()));
-
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_TERMINAL_NO_COLOR,
-                Messages.PreferencePage_TerminalNoColorLabel,
-                getFieldEditorParent()));
-
-        StringFieldEditor terminalTitlePrefix = new StringFieldEditor(
-                VibePreferenceConstants.PREF_TERMINAL_TITLE_PREFIX,
-                Messages.PreferencePage_TerminalTitlePrefixLabel,
-                getFieldEditorParent());
-        terminalTitlePrefix.setEmptyStringAllowed(true);
-        addField(terminalTitlePrefix);
     }
 }
