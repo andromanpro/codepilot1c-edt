@@ -4,7 +4,7 @@
 `formProperties.parameters`, including names, types, qualifiers, key flags and comments.
 These are distinct from form data attributes and visual controls.
 
-`mutate_form_model` and `apply_form_recipe.layout_ops` accept:
+`mutate_form_model` and `apply_form_recipe.layout` accept:
 
 ```json
 [
