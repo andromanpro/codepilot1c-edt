@@ -16,6 +16,4 @@ Create custom command groups through `create_metadata`, inspect the owner, then 
 
 Visibility changes the common flag and retains role overrides. Placement removes only the requested commands from other placement groups and their old order entries. Order puts requested commands first, retaining the unspecified tail. Unrelated entries, including platform commands, are preserved. Cleanup (`prune_orphans`/`delete`) must use a separate batch. No role grants or command group ordering changes are implicit.
 
-Verification uses real EMF model objects: normalization and token payload, visibility preservation, idempotent placement, stale order removal, preserved order tails, and actual command resolution. Existing command-interface/file guards and native extension/background-update regressions are included. The same two surface tests against the prior installed classes fail specifically because that validator only supports `prune_orphans` and `delete`.
-
 After installation, verify the resulting model with `inspect_command_interface`, load the extension through EDT, and inspect the actual 1C menu. Unit tests cannot prove menu appearance or permission behavior.

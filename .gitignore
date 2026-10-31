@@ -26,9 +26,6 @@ skills-lock.json
 docs/*
 !docs/release-notes/
 !docs/release-notes/**
-!docs/research/
-docs/research/*
-!docs/research/edt-and-edt-mcp-2026-10-31.md
 # Local notes
 OSS_SUMMARY.md
 AGENTS.md
@@ -88,3 +85,9 @@ tmp/
 # internal working dirs (kept local only)
 _codex-tasks/
 .serena/
+
+# Private research, plans and working reports
+docs/research/
+docs/reports/
+docs/superpowers/
+tasks/qwen-codex-queue/automation/

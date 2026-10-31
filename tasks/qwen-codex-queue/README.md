@@ -28,8 +28,3 @@ Recommended workflow:
    ```
 
 If a task lands in `needs_human/`, the queue runner can automatically generate one or more `review-followup` tasks back into `todo/` from the latest Codex findings.
-
-Automation prompt templates live in:
-
-- [`automation/codex-app-queue-run.prompt.md`](automation/codex-app-queue-run.prompt.md) for direct queue sweeps
-- [`automation/codex-app-plan-run.prompt.md`](automation/codex-app-plan-run.prompt.md) for plan-driven background runs from a planning bundle
